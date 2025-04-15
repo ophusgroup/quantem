@@ -122,10 +122,13 @@ class AutoSerialize:
 
 # Load an autoserialized class
 def load(path):
-    with tempfile.TemporaryDirectory() as tmpdir:
-        with ZipFile(path, 'r') as zf:
-            zf.extractall(tmpdir)
-        store = LocalStore(tmpdir)
-        root = zarr.group(store=store)
-        class_def = dill.loads(bytes.fromhex(root.attrs['_class_def']))
-        return class_def._recursive_load(root)
+    if os.path.isdir(path):
+        store = LocalStore(path)
+    else:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with ZipFile(path, 'r') as zf:
+                zf.extractall(tmpdir)
+            store = LocalStore(tmpdir)
+            root = zarr.group(store=store)
+            class_def = dill.loads(bytes.fromhex(root.attrs['_class_def']))
+            return class_def._recursive_load(root)
