@@ -2,11 +2,11 @@ from setuptools import setup, find_packages
 
 setup(
     name="quantem",
-    version=version_ns["__version__"],
+    # version=version_ns["__version__"],
     packages=find_packages(),
     description="quantitative electron microscopy analysis toolkit",
-    long_description="TODO",
-    long_description_content_type="text/markdown",
+    # long_description="TODO",
+    # long_description_content_type="text/markdown",
     url="https://github.com/ophusgroup/quantem/",
     author="Colin Ophus",
     author_email="cophus@gmail.com",
@@ -17,8 +17,9 @@ setup(
         "colorspacious >= 1.1.2",
         "dill >= 0.3.3",
         "gdown >= 5.1.0",
+        "jupyterlab",
         "matplotlib >= 3.2.2",
-        "numpy >= 1.19",
+        "numpy >= 2.0",
         "scipy >= 1.5.2",
         "tqdm >= 4.46.1",
         "zarr"

@@ -174,3 +174,5 @@ cython_debug/
 .pypirc
 
 quantem/.DS_Store
+
+.DS_Store
