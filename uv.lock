@@ -3,6 +3,20 @@ revision = 1
 requires-python = ">=3.12"
 
 [[package]]
+name = "cmasher"
+version = "1.9.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorspacious" },
+    { name = "matplotlib" },
+    { name = "numpy" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2f/ca/39152b506133881be74bd46cced27ec10d9bbc85db5bdfc22c8f8e4011f9/cmasher-1.9.2.tar.gz", hash = "sha256:6c90c2cec87146e3210d3e7f2321fceee38ac7d87c136cd0de25160a14f57ff5", size = 520860 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/91/d2/6fcb93a60777fef7662d84ba60846d2dee9b6b70b4a62472515110f79cee/cmasher-1.9.2-py3-none-any.whl", hash = "sha256:2fe45fde06051050dda5c023a527ba9066ca21f161c793f22839a6ebe6e4bbbb", size = 506496 },
+]
+
+[[package]]
 name = "colorama"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -415,6 +429,7 @@ name = "quantem"
 version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "cmasher" },
     { name = "colorspacious" },
     { name = "dill" },
     { name = "matplotlib" },
@@ -426,6 +441,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cmasher", specifier = ">=1.9.2" },
     { name = "colorspacious" },
     { name = "dill" },
     { name = "matplotlib" },
