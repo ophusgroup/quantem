@@ -55,25 +55,6 @@ class AutoSerialize:
         else:
             raise ValueError(f"Unknown store type: {store}")
 
-    @classmethod
-    def load(cls, path, store_type='auto'):
-        if store_type == 'auto':
-            store_type = 'dir' if os.path.isdir(path) else 'zip'
-
-        if store_type == 'dir':
-            store = LocalStore(path)
-        elif store_type == 'zip':
-            with tempfile.TemporaryDirectory() as tmpdir:
-                with ZipFile(path, 'r') as zf:
-                    zf.extractall(tmpdir)
-                store = LocalStore(tmpdir)
-        else:
-            raise ValueError(f"Unknown store_type: {store_type}")
-
-        root = zarr.group(store=store)
-        obj = cls._recursive_load(root)
-        return obj
-
     def _recursive_save(self, obj, group):
         if '_class_def' not in group.attrs:
             group.attrs['_class_def'] = dill.dumps(obj.__class__).hex()
@@ -124,6 +105,11 @@ class AutoSerialize:
 def load(path):
     if os.path.isdir(path):
         store = LocalStore(path)
+        root = zarr.group(store=store)
+        if '_class_def' not in root.attrs:
+            raise KeyError("Missing '_class_def' in Zarr root attributes. This directory may not have been saved using AutoSerialize.")
+        class_def = dill.loads(bytes.fromhex(root.attrs['_class_def']))
+        return class_def._recursive_load(root)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, 'r') as zf:
