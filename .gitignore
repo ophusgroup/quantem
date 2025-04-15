@@ -173,6 +173,5 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-quantem/.DS_Store
 
 .DS_Store
