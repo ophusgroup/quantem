@@ -8,7 +8,7 @@ packages = ["quantem"]
 [project]
 name = "quantem"
 version = "0.1.0"
-description = "quantitative electron microscopy analysis toolkit"
+description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
 license = "MIT"
