@@ -1,1 +1,1 @@
-from quantem import io
+from quantem import io as io
