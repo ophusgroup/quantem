@@ -1,39 +1,78 @@
-# Base class for serializing data
 
 import os
 import dill
 import zarr
 import numpy as np
-# import numcodecs
+import numcodecs
 import tempfile
 import shutil
 from zipfile import ZipFile
 from zarr.storage import LocalStore
 
+
+# Base class for automatic serialization of classes
 class AutoSerialize:
-    def save(self, path):
+    def save(self, path, mode='w', store='auto'):
+        if store == 'auto':
+            store = 'zip' if path.endswith('.zip') else 'dir'
+
+        if store == 'zip' and not path.endswith('.zip'):
+            print(f"Warning: appending .zip to path '{path}'")
+            path += '.zip'
+
         if os.path.exists(path):
-            os.remove(path)
-        with tempfile.TemporaryDirectory() as tmpdir:
-            store = LocalStore(tmpdir)
-            root = zarr.group(store=store, overwrite=True)
+            if mode == 'o':
+                if os.path.isdir(path):
+                    shutil.rmtree(path)
+                else:
+                    os.remove(path)
+            else:
+                raise FileExistsError(f"File '{path}' already exists. Use mode='o' to overwrite.")
+        if store == 'auto':
+            store = 'zip' if path.endswith('.zip') else 'dir'
+
+        if store == 'zip':
+            if not path.endswith('.zip'):
+                print(f"Warning: appending .zip to path '{path}'")
+                path += '.zip'
+            with tempfile.TemporaryDirectory() as tmpdir:
+                store_obj = LocalStore(tmpdir)
+                root = zarr.group(store=store_obj, overwrite=True)
+                self._recursive_save(self, root)
+                with ZipFile(path, mode='w') as zf:
+                    for dirpath, _, filenames in os.walk(tmpdir):
+                        for filename in filenames:
+                            full_path = os.path.join(dirpath, filename)
+                            rel_path = os.path.relpath(full_path, tmpdir)
+                            zf.write(full_path, arcname=rel_path)
+        elif store == 'dir':
+            if os.path.splitext(path)[1]:
+                raise ValueError(f"Expected a directory path for store='dir', but got file-like path '{path}'")
+            os.makedirs(path, exist_ok=True)
+            store_obj = LocalStore(path)
+            root = zarr.group(store=store_obj, overwrite=True)
             self._recursive_save(self, root)
-            with ZipFile(path, mode='w') as zf:
-                for dirpath, _, filenames in os.walk(tmpdir):
-                    for filename in filenames:
-                        full_path = os.path.join(dirpath, filename)
-                        rel_path = os.path.relpath(full_path, tmpdir)
-                        zf.write(full_path, arcname=rel_path)
+        else:
+            raise ValueError(f"Unknown store type: {store}")
 
     @classmethod
-    def load(cls, path):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with ZipFile(path, 'r') as zf:
-                zf.extractall(tmpdir)
-            store = LocalStore(tmpdir)
-            root = zarr.group(store=store)
-            obj = cls._recursive_load(root)
-            return obj
+    def load(cls, path, store_type='auto'):
+        if store_type == 'auto':
+            store_type = 'dir' if os.path.isdir(path) else 'zip'
+
+        if store_type == 'dir':
+            store = LocalStore(path)
+        elif store_type == 'zip':
+            with tempfile.TemporaryDirectory() as tmpdir:
+                with ZipFile(path, 'r') as zf:
+                    zf.extractall(tmpdir)
+                store = LocalStore(tmpdir)
+        else:
+            raise ValueError(f"Unknown store_type: {store_type}")
+
+        root = zarr.group(store=store)
+        obj = cls._recursive_load(root)
+        return obj
 
     def _recursive_save(self, obj, group):
         if '_class_def' not in group.attrs:
@@ -46,8 +85,7 @@ class AutoSerialize:
                         name=attr_name,
                         data=attr_value,
                         shape=attr_value.shape,
-                        dtype=attr_value.dtype,
-                        # compressors=[numcodecs.Blosc()]
+                        dtype=attr_value.dtype
                     )
             elif isinstance(attr_value, (int, float, str, bool, type(None))):
                 group.attrs[attr_name] = attr_value
@@ -82,8 +120,7 @@ class AutoSerialize:
 
         return obj
 
-
-# load serialized files without instantiating AutoSerialize
+# Load an autoserialized class
 def load(path):
     with tempfile.TemporaryDirectory() as tmpdir:
         with ZipFile(path, 'r') as zf:
