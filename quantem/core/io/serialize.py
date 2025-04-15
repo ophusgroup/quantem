@@ -25,7 +25,9 @@ class AutoSerialize:
                 else:
                     os.remove(path)
             else:
-                raise FileExistsError(f"File '{path}' already exists. Use mode='o' to overwrite.")
+                raise FileExistsError(
+                    f"File '{path}' already exists. Use mode='o' to overwrite."
+                )
         if store == "auto":
             store = "zip" if path.endswith(".zip") else "dir"
 
@@ -111,7 +113,7 @@ def load(path):
             raise KeyError(
                 "Missing '_class_def' in Zarr root attributes. This directory may not have been saved using AutoSerialize."
             )
-        class_def = dill.loads(bytes.fromhex(root.attrs["_class_def"])) #type:ignore 
+        class_def = dill.loads(bytes.fromhex(root.attrs["_class_def"]))  # type:ignore
         return class_def._recursive_load(root)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -119,5 +121,5 @@ def load(path):
                 zf.extractall(tmpdir)
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
-            class_def = dill.loads(bytes.fromhex(root.attrs["_class_def"])) #type:ignore 
+            class_def = dill.loads(bytes.fromhex(root.attrs["_class_def"]))  # type:ignore
             return class_def._recursive_load(root)
