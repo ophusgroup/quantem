@@ -19,4 +19,5 @@ dependencies = [
   "tqdm",
   "zarr",
   "cmasher>=1.9.2",
+  "cowsay>=6.1",
 ]
