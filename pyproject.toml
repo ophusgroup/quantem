@@ -1,0 +1,17 @@
+[project]
+name = "quantem"
+version = "0.1.0"
+description = "quantitative electron microscopy analysis toolkit"
+keywords = ["EM","TEM","STEM","4DSTEM"]
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.12"
+dependencies = [
+  "colorspacious",
+  "dill",
+  "numpy>2",
+  "matplotlib",
+  "scipy",
+  "tqdm",
+  "zarr",
+]
