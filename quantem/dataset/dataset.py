@@ -9,6 +9,7 @@ class Dataset(AutoSerialize):
     ):
         self.data = np.random.rand(100, 100)
         self.info = {"key": "value"}
+        self.info = {"key2": "value2"}
         # self.child =
         # self.child.info = {"key": "value"}
 
