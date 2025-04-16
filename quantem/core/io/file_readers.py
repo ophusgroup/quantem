@@ -1,13 +1,13 @@
 from quantem.core.datastructures import Dataset as Dataset
 import numpy as np
+import importlib
 
 
 def read_4D(
     file_path,
     file_type,
 ):
-    from rsciio.digitalmicrograph import file_reader
-
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
     dataset = Dataset(
         data=imported_data["data"],
