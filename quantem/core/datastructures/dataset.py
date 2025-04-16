@@ -16,14 +16,24 @@ class Dataset(AutoSerialize):
         self.array = data
         if name is None:
             self.name = f"{data.ndim}d dataset"
+        else:
+            self.name = name
         if origin is None:
             self.origin = np.zeros(data.ndim)
+        else:
+            self.origin = origin
         if sampling is None:
             self.sampling = np.ones(data.ndim)
+        else:
+            self.sampling = sampling
         if units is None:
             self.units = ["pixels"] * data.ndim
+        else:
+            self.units = units
         if signal_units is None:
             self.signal_units = "arb. units"
+        else:
+            self.signal_units = signal_units
 
     # Properties
     @property
