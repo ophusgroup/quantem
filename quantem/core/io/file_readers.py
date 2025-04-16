@@ -3,6 +3,7 @@ import importlib
 import numpy as np
 
 from quantem.core.datastructures import Dataset as Dataset
+from quantem.core.datastructures import Dataset4d as Dataset4d
 
 
 def read_4D(
@@ -26,7 +27,7 @@ def read_4D(
     """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset(
+    dataset = Dataset4d(
         data=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],
