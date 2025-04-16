@@ -23,6 +23,7 @@ dependencies = [
   "zarr",
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
+  "h5py>=3.13.0",
 ]
 
 [dependency-groups]
