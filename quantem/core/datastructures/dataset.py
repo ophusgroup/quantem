@@ -20,15 +20,15 @@ class Dataset(AutoSerialize):
         else:
             self.name = name
         if origin is None:
-            self.origin = np.zeros(data.ndim)
+            self.origin = [np.zeros(data.ndim)]
         else:
             self.origin = origin
         if sampling is None:
-            self.sampling = np.ones(data.ndim)
+            self.sampling = [np.ones(data.ndim)]
         else:
             self.sampling = sampling
         if units is None:
-            self.units = ["pixels"] * data.ndim
+            self.units = [["pixels"] * data.ndim]
         else:
             self.units = units
         if signal_units is None:
@@ -74,3 +74,9 @@ class Dataset(AutoSerialize):
             f"  signal units: {self.signal_units}",
         ]
         return "\n".join(description)
+
+    def mean(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        mean = self.array.mean((axes))
+        return mean
