@@ -22,7 +22,7 @@ dependencies = [
   "tqdm",
   "zarr",
   "cmasher>=1.9.2",
-  "awkward>=2.8.1",
+  "rosettasciio>=0.8.0",
 ]
 
 [dependency-groups]
