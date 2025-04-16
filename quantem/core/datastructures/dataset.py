@@ -80,3 +80,15 @@ class Dataset(AutoSerialize):
             axes = tuple(np.arange(self.ndim))
         mean = self.array.mean((axes))
         return mean
+
+    def max(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        maximum = self.array.max((axes))
+        return maximum
+
+    def min(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        minimum = self.array.max((axes))
+        return minimum
