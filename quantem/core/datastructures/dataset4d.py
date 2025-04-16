@@ -5,6 +5,9 @@ from quantem.core.datastructures.dataset import Dataset as Dataset
 
 # class for quantem 4d datasets
 class Dataset4d(Dataset):
+    def __init__(self, **kwargs):
+        Dataset.__init__(self, kwargs)
+
     def get_dp_mean(
         self,
         attach: bool = True,

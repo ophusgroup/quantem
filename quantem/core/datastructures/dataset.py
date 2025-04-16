@@ -42,7 +42,7 @@ class Dataset(AutoSerialize):
         elif isinstance(arr, (list, tuple)):
             self._array = np.array(arr)
         else:
-            raise TypeError
+            raise TypeError(f"bad type{type(arr)}")
 
     @property
     def name(self) -> str:
@@ -136,3 +136,21 @@ class Dataset(AutoSerialize):
             f"  signal units: {self.signal_units}",
         ]
         return "\n".join(description)
+
+    def mean(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        mean = self.array.mean((axes))
+        return mean
+
+    def max(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        maximum = self.array.max((axes))
+        return maximum
+
+    def min(self, axes=None):
+        if axes is None:
+            axes = tuple(np.arange(self.ndim))
+        minimum = self.array.max((axes))
+        return minimum
