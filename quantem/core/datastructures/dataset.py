@@ -15,7 +15,7 @@ class Dataset(AutoSerialize):
     ):
         self.array = data
         if name is None:
-            self.name = (f"{data.ndim}d dataset",)
+            self.name = f"{data.ndim}d dataset"
         if origin is None:
             self.origin = np.zeros(data.ndim)
         if sampling is None:
@@ -37,6 +37,10 @@ class Dataset(AutoSerialize):
     @property
     def dtype(self):
         return self.array.dtype
+
+    @property
+    def device(self):
+        return self.array.device
 
     # Summaries
     def __repr__(self):
