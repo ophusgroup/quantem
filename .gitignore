@@ -175,3 +175,6 @@ cython_debug/
 
 # DS 
 .DS_Store
+
+# jupyter notebooks
+*.ipynb
