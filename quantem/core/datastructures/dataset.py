@@ -1,5 +1,6 @@
-from quantem.core.io.serialize import AutoSerialize
 import numpy as np
+
+from quantem.core.io.serialize import AutoSerialize
 
 
 # base class for quantem datasets

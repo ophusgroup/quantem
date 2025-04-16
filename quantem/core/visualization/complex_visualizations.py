@@ -1,6 +1,7 @@
-from colorspacious import cspace_convert
-from quantem.core.visualization.visualization_utils import return_clipped_array
 import numpy as np
+from colorspacious import cspace_convert
+
+from quantem.core.visualization.visualization_utils import return_clipped_array
 
 
 def complex_array_to_rgb(

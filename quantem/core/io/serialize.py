@@ -1,10 +1,11 @@
 import os
-import dill
-import zarr
-import numpy as np
-import tempfile
 import shutil
+import tempfile
 from zipfile import ZipFile
+
+import dill
+import numpy as np
+import zarr
 from zarr.storage import LocalStore
 
 

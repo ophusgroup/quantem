@@ -1,6 +1,8 @@
-from quantem.core.datastructures import Dataset as Dataset
-import numpy as np
 import importlib
+
+import numpy as np
+
+from quantem.core.datastructures import Dataset as Dataset
 
 
 def read_4D(
