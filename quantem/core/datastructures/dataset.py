@@ -22,9 +22,9 @@ class Dataset(AutoSerialize):
     ):
         self.array = data
         self.name = f"{data.ndim}d dataset" if name is None else name
-        self.origin = np.zeros(data.ndim) if origin is None else origin
-        self.sampling = np.zeros(data.ndim) if sampling is None else sampling
-        self.units = ["pixels"] * data.ndim if units is None else units
+        self.origin = [np.zeros(data.ndim)] if origin is None else origin
+        self.sampling = [np.zeros(data.ndim)] if sampling is None else sampling
+        self.units = [["pixels"] * data.ndim] if units is None else units
         self.signal_units = "arb. units" if signal_units is None else signal_units
 
     # Properties
@@ -59,7 +59,7 @@ class Dataset(AutoSerialize):
     @origin.setter
     def origin(self, val: np.ndarray | list):
         origin = np.array(val)
-        if origin.ndim != self.ndim:
+        if len(origin) != self.ndim:
             raise ValueError(
                 f"Got origin dimension {origin.ndim} which does not match data dimension {self.ndim}"
             )
@@ -72,7 +72,7 @@ class Dataset(AutoSerialize):
     @sampling.setter
     def sampling(self, val: np.ndarray | list):
         sampling = np.array(val)
-        if sampling.ndim != self.ndim:
+        if len(sampling) != self.ndim:
             raise ValueError(
                 f"Got sampling dimension {sampling.ndim} which does not match data dimension {self.ndim}"
             )
