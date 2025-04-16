@@ -1,18 +1,29 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
 
+from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
+
+if TYPE_CHECKING:
+    import cupy as cp
+else:
+    if config.get("has_cupy"):
+        import cupy as cp
+    else:
+        import numpy as cp
 
 
 # base class for quantem datasets
 class Dataset(AutoSerialize):
     def __init__(
         self,
-        data,
-        name=None,
-        origin=None,
-        sampling=None,
-        units=None,
-        signal_units=None,
+        data: np.ndarray | cp.ndarray,
+        name: str | None = None,
+        origin: list | None = None,
+        sampling: list | None = None,
+        units: list[str] | None = None,
+        signal_units: str | None = None,
     ):
         self.array = data
         if name is None:
@@ -20,15 +31,15 @@ class Dataset(AutoSerialize):
         else:
             self.name = name
         if origin is None:
-            self.origin = [np.zeros(data.ndim)]
+            self.origin = np.zeros(data.ndim)
         else:
             self.origin = origin
         if sampling is None:
-            self.sampling = [np.ones(data.ndim)]
+            self.sampling = np.ones(data.ndim)
         else:
             self.sampling = sampling
         if units is None:
-            self.units = [["pixels"] * data.ndim]
+            self.units = ["pixels"] * data.ndim
         else:
             self.units = units
         if signal_units is None:
@@ -37,6 +48,19 @@ class Dataset(AutoSerialize):
             self.signal_units = signal_units
 
     # Properties
+    @property
+    def array(self) -> np.ndarray | cp.ndarray:
+        return self._array
+
+    @array.setter
+    def array(self, arr):
+        if isinstance(arr, (np.ndarray, cp.ndarray)):
+            self._array = arr
+        elif isinstance(arr, (list, tuple)):
+            self._array = np.array(arr)
+        else:
+            raise TypeError
+
     @property
     def shape(self):
         return self.array.shape
@@ -74,21 +98,3 @@ class Dataset(AutoSerialize):
             f"  signal units: {self.signal_units}",
         ]
         return "\n".join(description)
-
-    def mean(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
-        mean = self.array.mean((axes))
-        return mean
-
-    def max(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
-        maximum = self.array.max((axes))
-        return maximum
-
-    def min(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
-        minimum = self.array.max((axes))
-        return minimum

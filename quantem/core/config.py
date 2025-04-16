@@ -10,18 +10,39 @@ from typing import Any, Literal, Union
 
 import yaml
 
+_defaults = {}
+try:
+    import torch as torch
+
+    _defaults["has_torch"] = True
+except ModuleNotFoundError:
+    _defaults["has_torch"] = False
+
+try:
+    import cupy as cupy
+
+    _defaults["has_cupy"] = True
+except ModuleNotFoundError:
+    _defaults["has_cupy"] = False
+
 no_default = "__no_default__"
 
 PATH = Path(os.getenv("QUANTUM_CONFIG", "~/.config/quantem")).expanduser().resolve()
 paths = [PATH]
+
 config: dict = {}
+
+aliases: dict[str, dict[str, str]] = {
+    "device": {"gpu": "cuda:0"},
+}
 deprecations: dict[str, str | None] = {}
 
 config_lock = threading.Lock()
 
-defaults: list[Mapping] = []
+defaults: list[Mapping] = [_defaults]
 
-# TODO - add a write option
+# TODO - clean up the torch/cupy part, working but rough. check if has cupy or torch on refresh or initialize
+# TODO - add a write to disk option, update docstrings
 
 
 class set:
@@ -38,8 +59,6 @@ class set:
         ``.``, allowing nested values to be easily set.
     """
 
-    # _record: list[tuple[Literal["insert", "replace"], tuple[str, ...], Any]]
-
     def __init__(
         self,
         arg: Union[Mapping, None] = None,
@@ -51,32 +70,16 @@ class set:
 
         if arg is not None:
             for key, value in arg.items():
-                key = check_deprecations(key)
+                key, value = check_key_val(key, value)
                 self._assign(key.split("."), value, config)
         if kwargs:
             for key, value in kwargs.items():
                 key = key.replace("__", ".")
-                key = check_deprecations(key)
+                key, value = check_key_val(key, value)
                 self._assign(key.split("."), value, config)
 
     def __enter__(self):
         return self.config
-
-    # def __exit__(self, type, value, traceback):
-    #     for op, path, value in reversed(self._record):
-    #         d = self.config
-    #         if op == "replace":
-    #             for key in path[:-1]:
-    #                 d = d.setdefault(key, {})
-    #             d[path[-1]] = value
-    #         else:  # insert
-    #             for key in path[:-1]:
-    #                 try:
-    #                     d = d[key]
-    #                 except KeyError:
-    #                     break
-    #             else:
-    #                 d.pop(path[-1], None)
 
     def _assign(
         self,
@@ -84,7 +87,6 @@ class set:
         value: Any,
         d: dict,
         path: tuple[str, ...] = (),
-        record: bool = True,
     ) -> None:
         """Assign value into a nested configuration dictionary
 
@@ -98,28 +100,17 @@ class set:
             value
         path : tuple[str], optional
             The path history up to this point.
-        record : bool, optional
-            Whether this operation needs to be recorded to allow for rollback.
         """
         key = canonical_name(keys[0], d)
 
         path = path + (key,)
 
         if len(keys) == 1:
-            if record:
-                if key in d:
-                    self._record.append(("replace", path, d[key]))
-                else:
-                    self._record.append(("insert", path, None))
             d[key] = value
         else:
             if key not in d:
-                if record:
-                    self._record.append(("insert", path, None))
                 d[key] = {}
-                # No need to record subsequent operations after an insert
-                record = False
-            self._assign(keys[1:], value, d[key], path, record=record)
+            self._assign(keys[1:], value, d[key], path)
 
 
 def refresh(
@@ -330,18 +321,6 @@ def collect(
     return merge(*configs)
 
 
-# @overload
-# def collect_yaml(
-#     paths: Sequence[str], *, return_paths: Literal[False] = False
-# ) -> Iterator[dict]: ...
-
-
-# @overload
-# def collect_yaml(
-#     paths: Sequence[str], *, return_paths: Literal[True]
-# ) -> Iterator[tuple[Path, dict]]: ...
-
-
 def collect_yaml(
     paths: Sequence[os.PathLike], *, return_paths: bool = False
 ) -> Iterator[dict | tuple[Path, dict]]:
@@ -457,7 +436,9 @@ def _load_config_file(path: str) -> dict | None:
     return config
 
 
-def check_deprecations(key: str, deprecations: dict = deprecations) -> str:
+def check_key_val(
+    key: str, val: Any, deprecations: dict = deprecations
+) -> tuple[str, Any]:
     """Check if the provided value has been renamed or removed
 
     Parameters
@@ -496,11 +477,40 @@ def check_deprecations(key: str, deprecations: dict = deprecations) -> str:
                     key, new
                 )
             )
-            return new
         else:
             raise ValueError(f'Configuration value "{key}" has been removed')
+
+    new_val = val
+    if key in aliases:
+        val_aliases = aliases[key]
+        if val in val_aliases:
+            new_val = val_aliases[val]
+
+    if key == "device":
+        if "cuda" in val:
+            gpu_id = _get_device_id(val)
+            if config["has_torch"]:
+                torch.cuda.set_device(val)
+            if config["has_cupy"]:
+                cupy.cuda.runtime.setDevice(gpu_id)
+
+    return key, new_val
+
+
+def _get_device_id(dev: str | int) -> int:
+    if isinstance(dev, str):
+        if not dev.startswith("cuda:"):
+            raise NotImplementedError(f"found a new case for string device id: {dev}")
+        id = int(dev[5:])
     else:
-        return key
+        if not isinstance(dev, int):
+            raise NotImplementedError(f"found a new case for numeric device id: {dev}")
+        id = dev
+    if id > torch.cuda.device_count() - 1:
+        raise ValueError(
+            f"Trying to set device {dev} but only found {torch.cuda.device_count()} GPUs"
+        )
+    return id
 
 
 refresh()
