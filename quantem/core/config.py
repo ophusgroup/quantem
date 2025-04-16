@@ -5,7 +5,7 @@ import threading
 import warnings
 from typing import Any, Literal, Union
 import ast
-import yaml  
+import yaml
 
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
@@ -22,6 +22,7 @@ config_lock = threading.Lock()
 defaults: list[Mapping] = []
 
 # TODO - add a write option
+
 
 class set:
     """Temporarily set configuration values within a context manager
@@ -121,7 +122,9 @@ class set:
             self._assign(keys[1:], value, d[key], path, record=record)
 
 
-def refresh(config: dict = config, defaults: list[Mapping] = defaults, **kwargs) -> None:
+def refresh(
+    config: dict = config, defaults: list[Mapping] = defaults, **kwargs
+) -> None:
     """
     Update configuration by re-reading yaml files and env variables
 
@@ -183,7 +186,9 @@ def get(
     return result
 
 
-def update_defaults(new: Mapping, config: dict = config, defaults: list[Mapping] = defaults) -> None:
+def update_defaults(
+    new: Mapping, config: dict = config, defaults: list[Mapping] = defaults
+) -> None:
     """Add a new set of defaults to the configuration
 
     It does two things:
@@ -196,10 +201,7 @@ def update_defaults(new: Mapping, config: dict = config, defaults: list[Mapping]
     defaults.append(new)
     # defaults.append(new)
     update(config, new, priority="new-defaults", defaults=current_defaults)
-    # TODO rewrite this so it works like we want 
-
-
-
+    # TODO rewrite this so it works like we want
 
 
 def _initialize() -> None:
@@ -301,7 +303,10 @@ def update(
 
     return old
 
-def collect(paths: Sequence[os.PathLike] = paths, env: Mapping[str, str] | None = None) -> dict:
+
+def collect(
+    paths: Sequence[os.PathLike] = paths, env: Mapping[str, str] | None = None
+) -> dict:
     """
     Collect configuration from paths and environment variables
 
@@ -355,7 +360,8 @@ def collect_yaml(
                         sorted(
                             os.path.join(path, p)
                             for p in os.listdir(path)
-                            if os.path.splitext(p)[1].lower() in (".json", ".yaml", ".yml")
+                            if os.path.splitext(p)[1].lower()
+                            in (".json", ".yaml", ".yml")
                         )
                     )
                 except OSError:
@@ -449,6 +455,7 @@ def _load_config_file(path: str) -> dict | None:
             f"a dict as the top level object, got a {type(config).__name__} instead"
         )
     return config
+
 
 def check_deprecations(key: str, deprecations: dict = deprecations) -> str:
     """Check if the provided value has been renamed or removed
