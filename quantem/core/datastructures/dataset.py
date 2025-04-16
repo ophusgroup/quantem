@@ -1,4 +1,4 @@
-from quantem.io.serialize import AutoSerialize
+from quantem.core.io.serialize import AutoSerialize
 import numpy as np
 
 
@@ -6,12 +6,33 @@ import numpy as np
 class Dataset(AutoSerialize):
     def __init__(
         self,
+        data,
+        origin = None,
+        sampling = None,
+        units = None,
     ):
-        self.data = np.random.rand(100, 100)
-        self.info = {"key": "value"}
-        self.info = {"key2": "value2"}
-        # self.child =
-        # self.child.info = {"key": "value"}
+        self.array = data
 
-    def test_sum(self):
-        return self.data.sum()
+        if origin is None:
+            self.origin = np.zeros(data.ndim)
+
+        if sampling is None:
+            self.sampling = np.ones(data.ndim)
+
+        if units is None:
+            self.units = ['pixels']*data.ndim
+
+    @property
+    def shape(self):
+        return self.array.shape
+
+    @property
+    def ndim(self):
+        return self.array.ndim
+
+    @property
+    def dtype(self):
+        return self.array.dtype
+
+
+

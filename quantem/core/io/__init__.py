@@ -1,1 +1,1 @@
-from quantem.io.serialize import AutoSerialize as AutoSerialize, load as load
+from quantem.core.io.serialize import AutoSerialize as AutoSerialize, load as load
