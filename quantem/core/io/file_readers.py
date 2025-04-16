@@ -4,9 +4,24 @@ import importlib
 
 
 def read_4D(
-    file_path,
-    file_type,
+    file_path: str,
+    file_type: str,
 ):
+    """
+    File reader for 4D-STEM data
+
+    Parameters
+    ----------
+    file_path: str
+        Path to data
+    file_type: str
+        The type of file reader needed. See rosettasciio for supported formats
+        https://hyperspy.org/rosettasciio/supported_formats/index.html
+
+    Returns
+    --------
+    Dataset
+    """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
     dataset = Dataset(
@@ -33,6 +48,52 @@ def read_4D(
                 imported_data["axes"][1]["units"],
                 imported_data["axes"][2]["units"],
                 imported_data["axes"][3]["units"],
+            ]
+        ),
+    )
+
+    return dataset
+
+
+def read_2D(
+    file_path: str,
+    file_type: str,
+):
+    """
+    File reader for images
+
+    Parameters
+    ----------
+    file_path: str
+        Path to data
+    file_type: str
+        The type of file reader needed. See rosettasciio for supported formats
+        https://hyperspy.org/rosettasciio/supported_formats/index.html
+
+    Returns
+    --------
+    Dataset
+    """
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
+    imported_data = file_reader(file_path)[0]
+    dataset = Dataset(
+        data=imported_data["data"],
+        sampling=np.asarray(
+            [
+                imported_data["axes"][0]["scale"],
+                imported_data["axes"][1]["scale"],
+            ]
+        ),
+        origin=np.asarray(
+            [
+                imported_data["axes"][0]["offset"],
+                imported_data["axes"][1]["offset"],
+            ]
+        ),
+        units=np.asarray(
+            [
+                imported_data["axes"][0]["units"],
+                imported_data["axes"][1]["units"],
             ]
         ),
     )
