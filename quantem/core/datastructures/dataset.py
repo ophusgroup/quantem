@@ -1,18 +1,29 @@
+from typing import TYPE_CHECKING
+
 import numpy as np
 
+from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
+
+if TYPE_CHECKING:
+    import cupy as cp
+else:
+    if config.get("has_cupy"):
+        import cupy as cp
+    else:
+        import numpy as cp
 
 
 # base class for quantem datasets
 class Dataset(AutoSerialize):
     def __init__(
         self,
-        data,
-        name=None,
-        origin=None,
-        sampling=None,
-        units=None,
-        signal_units=None,
+        data: np.ndarray | cp.ndarray,
+        name: str | None = None,
+        origin: list | None = None,
+        sampling: list | None = None,
+        units: list[str] | None = None,
+        signal_units: str | None = None,
     ):
         self.array = data
         if name is None:
@@ -37,6 +48,19 @@ class Dataset(AutoSerialize):
             self.signal_units = signal_units
 
     # Properties
+    @property
+    def array(self) -> np.ndarray | cp.ndarray:
+        return self._array
+
+    @array.setter
+    def array(self, arr):
+        if isinstance(arr, (np.ndarray, cp.ndarray)):
+            self._array = arr
+        elif isinstance(arr, (list, tuple)):
+            self._array = np.array(arr)
+        else:
+            raise TypeError
+
     @property
     def shape(self):
         return self.array.shape
