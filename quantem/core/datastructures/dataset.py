@@ -1,3 +1,5 @@
+from collections.abc import Iterable
+
 import numpy as np
 
 from quantem.core import config
@@ -15,16 +17,16 @@ class Dataset(AutoSerialize):
         self,
         data: np.ndarray | cp.ndarray,
         name: str | None = None,
-        origin: list | None = None,
-        sampling: list | None = None,
+        origin: np.ndarray | list | None = None,
+        sampling: np.ndarray | list | None = None,
         units: list[str] | None = None,
         signal_units: str | None = None,
     ):
         self.array = data
         self.name = f"{data.ndim}d dataset" if name is None else name
-        self.origin = [np.zeros(data.ndim)] if origin is None else origin
-        self.sampling = [np.zeros(data.ndim)] if sampling is None else sampling
-        self.units = [["pixels"] * data.ndim] if units is None else units
+        self.origin = np.zeros(data.ndim) if origin is None else origin
+        self.sampling = np.zeros(data.ndim) if sampling is None else sampling
+        self.units = ["pixels"] * data.ndim if units is None else units
         self.signal_units = "arb. units" if signal_units is None else signal_units
 
     # Properties
@@ -35,14 +37,23 @@ class Dataset(AutoSerialize):
     @array.setter
     def array(self, arr):
         if isinstance(arr, np.ndarray):
-            self._array = arr
+            pass
         elif config.get("has_cupy"):
             if isinstance(arr, cp.ndarray):
-                self._array = arr
+                pass
         elif isinstance(arr, (list, tuple)):
-            self._array = np.array(arr)
+            arr = np.array(arr)
         else:
             raise TypeError(f"bad type{type(arr)}")
+
+        if hasattr(self, "_array"):
+            if arr.ndim != self.ndim:
+                raise ValueError(
+                    f"Dimension of new array, {arr.ndim}, must equal current ndim: {self.ndim}"
+                )
+            self._array = arr.astype(self.dtype)
+        else:
+            self._array = arr
 
     @property
     def name(self) -> str:
@@ -57,11 +68,15 @@ class Dataset(AutoSerialize):
         return self._origin
 
     @origin.setter
-    def origin(self, val: np.ndarray | list):
+    def origin(self, val: np.ndarray | list | tuple):
+        if not isinstance(val, Iterable):
+            raise TypeError(
+                f"origin should be set with a ndarray/list/tuple. Got type {type(val)}"
+            )
         origin = np.array(val)
         if len(origin) != self.ndim:
             raise ValueError(
-                f"Got origin dimension {origin.ndim} which does not match data dimension {self.ndim}"
+                f"Got origin length {len(origin)} which does not match data dimension {self.ndim}"
             )
         self._origin = origin
 
@@ -70,11 +85,15 @@ class Dataset(AutoSerialize):
         return self._sampling
 
     @sampling.setter
-    def sampling(self, val: np.ndarray | list):
+    def sampling(self, val: np.ndarray | list | tuple):
+        if not isinstance(val, Iterable):
+            raise TypeError(
+                f"sampling should be set with a ndarray/list/tuple. Got type {type(val)}"
+            )
         sampling = np.array(val)
         if len(sampling) != self.ndim:
             raise ValueError(
-                f"Got sampling dimension {sampling.ndim} which does not match data dimension {self.ndim}"
+                f"Got sampling length {len(sampling)} which does not match data dimension {self.ndim}"
             )
         self._sampling = sampling
 
@@ -83,11 +102,15 @@ class Dataset(AutoSerialize):
         return self._units
 
     @units.setter
-    def units(self, val: np.ndarray | list):
+    def units(self, val: list | tuple):
+        if not isinstance(val, Iterable):
+            raise TypeError(
+                f"units should be set with a ndarray/list/tuple. Got type {type(val)}"
+            )
         units = [str(v) for v in val]
         if len(units) != self.ndim:
             raise ValueError(
-                f"Got units dimension {len(units)} which does not match data dimension {self.ndim}"
+                f"Got units length {len(units)} which does not match data dimension {self.ndim}"
             )
         self._units = units
 
@@ -100,20 +123,25 @@ class Dataset(AutoSerialize):
         self._signal_units = str(val)
 
     @property
-    def shape(self):
+    def shape(self) -> tuple:
         return self.array.shape
 
     @property
-    def ndim(self):
+    def ndim(self) -> int:
         return self.array.ndim
 
     @property
-    def dtype(self):
+    def dtype(self) -> np.dtype:
         return self.array.dtype
 
     @property
-    def device(self):
-        return self.array.device
+    def device(self) -> str:
+        """
+        Outputting a string is likely temporary -- once we have our use cases we can
+        figure out a more permanent device solution that enables easier translation between
+        numpy <-> cupy <-> torch <-> numpy
+        """
+        return str(self.array.device)
 
     # Summaries
     def __repr__(self):
@@ -140,17 +168,17 @@ class Dataset(AutoSerialize):
     def mean(self, axes=None):
         if axes is None:
             axes = tuple(np.arange(self.ndim))
-        mean = self.array.mean((axes))
+        mean = self.array.mean(axis=axes)
         return mean
 
     def max(self, axes=None):
         if axes is None:
             axes = tuple(np.arange(self.ndim))
-        maximum = self.array.max((axes))
+        maximum = self.array.max(axis=axes)
         return maximum
 
     def min(self, axes=None):
         if axes is None:
             axes = tuple(np.arange(self.ndim))
-        minimum = self.array.max((axes))
+        minimum = self.array.max(axis=axes)
         return minimum
