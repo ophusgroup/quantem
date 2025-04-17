@@ -4,6 +4,13 @@ from quantem.core.io.serialize import AutoSerialize
 
 
 class Vector(AutoSerialize):
+    """
+    Class for holding vector data, with ragged array lengths.
+    This class has any number of fixed dimensions (which are indexed first)
+    followed by a ragged numpy array, which can have any number of entries (rows)
+    and columns (fields).
+    """
+
     def __init__(
         self,
         shape,
@@ -14,12 +21,6 @@ class Vector(AutoSerialize):
         sampling=None,
         units=None,
     ):
-        """
-        Class for holding vector data, with ragged array lengths.
-        This class has any number of fixed dimensions (which are indexed first)
-        followed by a ragged numpy array, which can have any number of entries (rows)
-        and columns (fields).
-        """
         self.shape = shape
         self.num_fields = num_fields
         self.ndim = len(shape) + 2
@@ -45,64 +46,82 @@ class Vector(AutoSerialize):
             ref = ref[idx]
         ref[indices[-1]] = value
 
-    def get_data(self, *indices):
-        if len(indices) != len(self.shape):
-            raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
+    # def get_data(self, *indices):
+    #     if len(indices) != len(self.shape):
+    #         raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
 
-        ref = self.data
-        for idx in indices:
-            ref = ref[idx]
-        return ref
+    #     ref = self.data
+    #     for idx in indices:
+    #         ref = ref[idx]
+    #     return ref
 
     def __getitem__(self, idx):
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        # Expand indexing to full dimensionality with slices if needed
-        full_idx = list(idx) + [slice(None)] * (len(self.shape) - len(idx))
+        return_np = True
+        for ind in range(min(len(self.shape), len(idx))):
+            if type(idx[ind]) is not int:
+                return_np = False
+        if len(idx) < len(self.shape):
+            return_np = False
 
-        def resolve_index(dim_idx, dim_size):
-            if isinstance(dim_idx, slice):
-                return list(range(*dim_idx.indices(dim_size)))
-            elif isinstance(dim_idx, np.ndarray) and dim_idx.dtype == bool:
-                return np.where(dim_idx)[0].tolist()
-            elif isinstance(dim_idx, (list, np.ndarray)):
-                return list(dim_idx)
-            else:
-                return [dim_idx]
+        if return_np:
+            # Return a view into the numpy array at the user-specified index
+            view = self.data
+            for i in range(len(idx)):
+                view = view[idx[i]]
+            return view
 
-        def recursive_index(data, dims, shape):
-            if len(dims) == 0:
-                return data
-            i, *rest = dims
-            size = shape[0]
-            idx_list = resolve_index(i, size)
-            return [recursive_index(data[j], rest, shape[1:]) for j in idx_list]
+        if return_np:
+            # Return a view into the numpy array at the user-specified index
+            view = self.data
+            for i in range(len(idx)):
+                view = view[idx[i]]
+            return view
 
-        sliced_data = recursive_index(self.data, full_idx, self.shape)
+        else:
+            # Return a view as a new Vector class
+            full_idx = list(idx) + [slice(None)] * (len(self.shape) - len(idx))
 
-        # If result is a full element (leaf), return directly
-        if not isinstance(sliced_data, list):
-            return sliced_data
+            def resolve_index(dim_idx, dim_size):
+                if isinstance(dim_idx, slice):
+                    return list(range(*dim_idx.indices(dim_size)))
+                elif isinstance(dim_idx, np.ndarray) and dim_idx.dtype == bool:
+                    return np.where(dim_idx)[0].tolist()
+                elif isinstance(dim_idx, (list, np.ndarray)):
+                    return list(dim_idx)
+                else:
+                    return [dim_idx]
 
-        # Compute new shape
-        new_shape = []
-        for i, s in enumerate(full_idx):
-            resolved = resolve_index(s, self.shape[i])
-            if isinstance(resolved, list) and all(isinstance(x, int) for x in resolved):
+            def recursive_index(data, dims, shape):
+                if len(dims) == 0 or not isinstance(data, list):
+                    return data
+                i, *rest = dims
+                size = shape[0] if shape else len(data)
+                idx_list = resolve_index(i, size)
+                return [recursive_index(data[j], rest, shape[1:]) for j in idx_list]
+
+            sliced_data = recursive_index(self.data, full_idx, self.shape)
+
+            new_shape = []
+            for i, s in enumerate(full_idx):
+                if i >= len(self.shape):
+                    continue
+                resolved = resolve_index(s, self.shape[i])
                 new_shape.append(len(resolved))
 
-        new_vector = Vector(
-            shape=tuple(new_shape),
-            num_fields=self.num_fields,
-            name=self.name + "[view]",
-            field_names=self.field_names,
-            origin=self.origin,
-            sampling=self.sampling,
-            units=self.units,
-        )
-        new_vector.data = sliced_data
-        return new_vector
+            vector_new = Vector(
+                shape=tuple(new_shape),
+                num_fields=self.num_fields,
+                name=self.name + "[view]",
+                field_names=self.field_names,
+                origin=self.origin,
+                sampling=self.sampling,
+                units=self.units,
+            )
+            vector_new.data = sliced_data
+            return vector_new
 
     def __setitem__(self, idx, value):
         if not isinstance(idx, tuple):
@@ -134,9 +153,6 @@ class Vector(AutoSerialize):
             value = value.data
         recursive_assign(self.data, list(idx), value)
 
-    def __str__(self):
-        return f"Vector(name={self.name}, shape={self.shape}, num_fields={self.num_fields})"
-
     def flatten(self):
         """
         Flatten and stack all non-None numpy arrays along axis 0.
@@ -157,6 +173,9 @@ class Vector(AutoSerialize):
         if not arrays:
             return np.empty((0, self.num_fields))
         return np.vstack(arrays)
+
+    def __str__(self):
+        return f"Vector(name={self.name}, shape={self.shape}, num_fields={self.num_fields})"
 
 
 def nested_list(shape, fill=None):
