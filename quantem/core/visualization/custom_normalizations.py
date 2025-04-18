@@ -3,6 +3,15 @@ from dataclasses import dataclass
 import matplotlib as mpl
 import numpy as np
 
+"""
+Custom normalization based on astropy's visualization routines.
+
+Original implementation:
+https://github.com/astropy/astropy/blob/main/astropy/visualization/mpl_normalize.py
+
+Licensed under a 3-clause BSD style license.
+"""
+
 
 class BaseInterval:
     """
