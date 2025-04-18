@@ -15,18 +15,18 @@ else:
 class Dataset(AutoSerialize):
     def __init__(
         self,
-        data: np.ndarray | cp.ndarray,
+        array: np.ndarray | cp.ndarray,
         name: str | None = None,
         origin: np.ndarray | list | None = None,
         sampling: np.ndarray | list | None = None,
         units: list[str] | None = None,
         signal_units: str | None = None,
     ):
-        self.array = data
-        self.name = f"{data.ndim}d dataset" if name is None else name
-        self.origin = np.zeros(data.ndim) if origin is None else origin
-        self.sampling = np.zeros(data.ndim) if sampling is None else sampling
-        self.units = ["pixels"] * data.ndim if units is None else units
+        self.array = array
+        self.name = f"{array.ndim}d arrayset" if name is None else name
+        self.origin = np.zeros(array.ndim) if origin is None else origin
+        self.sampling = np.zeros(array.ndim) if sampling is None else sampling
+        self.units = ["pixels"] * array.ndim if units is None else units
         self.signal_units = "arb. units" if signal_units is None else signal_units
 
     # Properties
@@ -76,7 +76,7 @@ class Dataset(AutoSerialize):
         origin = np.array(val)
         if len(origin) != self.ndim:
             raise ValueError(
-                f"Got origin length {len(origin)} which does not match data dimension {self.ndim}"
+                f"Got origin length {len(origin)} which does not match array dimension {self.ndim}"
             )
         self._origin = origin
 
@@ -93,7 +93,7 @@ class Dataset(AutoSerialize):
         sampling = np.array(val)
         if len(sampling) != self.ndim:
             raise ValueError(
-                f"Got sampling length {len(sampling)} which does not match data dimension {self.ndim}"
+                f"Got sampling length {len(sampling)} which does not match array dimension {self.ndim}"
             )
         self._sampling = sampling
 
@@ -110,7 +110,7 @@ class Dataset(AutoSerialize):
         units = [str(v) for v in val]
         if len(units) != self.ndim:
             raise ValueError(
-                f"Got units length {len(units)} which does not match data dimension {self.ndim}"
+                f"Got units length {len(units)} which does not match array dimension {self.ndim}"
             )
         self._units = units
 
@@ -165,6 +165,17 @@ class Dataset(AutoSerialize):
         ]
         return "\n".join(description)
 
+    def copy(self):
+        dataset = Dataset(
+            array=self.array.copy(),
+            name=self.name,
+            origin=self.origin.copy(),
+            sampling=self.sampling.copy(),
+            units=self.units,
+            signal_units=self.units,
+        )
+        return dataset
+
     def mean(self, axes=None):
         if axes is None:
             axes = tuple(np.arange(self.ndim))
@@ -182,3 +193,6 @@ class Dataset(AutoSerialize):
             axes = tuple(np.arange(self.ndim))
         minimum = self.array.max(axis=axes)
         return minimum
+
+    # def pad(self, pad_width, modify_in_place = False, **kwargs):
+    #     if modify_in_place is False:

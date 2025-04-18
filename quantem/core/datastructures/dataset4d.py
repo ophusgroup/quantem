@@ -13,7 +13,7 @@ else:
 class Dataset4d(Dataset):
     def __init__(
         self,
-        data: np.ndarray | cp.ndarray,
+        array: np.ndarray | cp.ndarray,
         name: str | None = None,
         origin: list | None = None,
         sampling: list | None = None,
@@ -21,7 +21,7 @@ class Dataset4d(Dataset):
         signal_units: str | None = None,
     ):
         super().__init__(
-            data=data,
+            array=array,
             name=name,
             origin=origin,
             sampling=sampling,
@@ -62,7 +62,7 @@ class Dataset4d(Dataset):
         dp_mean = self.mean((0, 1))
 
         dp_mean_dataset = Dataset(
-            data=dp_mean,
+            array=dp_mean,
             name=self.name + "_dp_mean",
             origin=self.origin[-2:],
             sampling=self.sampling[-2:],
@@ -103,7 +103,7 @@ class Dataset4d(Dataset):
         dp_max = self.max((0, 1))
 
         dp_max_dataset = Dataset(
-            data=dp_max,
+            array=dp_max,
             name=self.name + "_dp_max",
             origin=self.origin[-2:],
             sampling=self.sampling[-2:],
@@ -144,7 +144,7 @@ class Dataset4d(Dataset):
         dp_median = np.median(self.array, axis=(0, 1))
 
         dp_median_dataset = Dataset(
-            data=dp_median,
+            array=dp_median,
             name=self.name + "_dp_median",
             origin=self.origin[-2:],
             sampling=self.sampling[-2:],
@@ -191,7 +191,7 @@ class Dataset4d(Dataset):
         virtual_image = np.sum(self.array * mask, axis=(-1, -2))
 
         virtual_image_dataset = Dataset(
-            data=virtual_image,
+            array=virtual_image,
             name=name,
             origin=self.origin[0:2],
             sampling=self.sampling[0:2],
