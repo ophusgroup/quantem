@@ -202,7 +202,7 @@ class Dataset(AutoSerialize):
         else:
             self.array = np.pad(self.array, pad_width=pad_width, **kwargs)
 
-    def crop(self, crop_widths, modify_in_place=False, **kwargs):
+    def crop(self, crop_widths, modify_in_place=False):
         if len(crop_widths) != self.ndim:
             raise ValueError(
                 "Length of crop_widths must match number of array dimensions."
