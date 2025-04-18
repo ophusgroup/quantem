@@ -27,3 +27,5 @@ visualize:
   cmap: "viridis"
   # The default colormap to use for plotting the phase
   phase_cmap: "hsluv"
+  
+  default_colors: ""

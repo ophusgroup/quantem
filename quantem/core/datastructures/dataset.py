@@ -172,7 +172,7 @@ class Dataset(AutoSerialize):
             origin=self.origin.copy(),
             sampling=self.sampling.copy(),
             units=self.units,
-            signal_units=self.units,
+            signal_units=self.signal_units,
         )
         return dataset
 
