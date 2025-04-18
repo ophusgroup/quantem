@@ -1,4 +1,7 @@
+import matplotlib as mpl
+import matplotlib.pyplot as plt
 import numpy as np
+from colorspacious import cspace_convert
 
 
 def return_clipped_array(array, vmin=None, vmax=None, normalize=False):
@@ -55,3 +58,70 @@ def return_clipped_array(array, vmin=None, vmax=None, normalize=False):
         vmax = 1
 
     return clipped_array, vmin, vmax
+
+
+def scalar_array_to_rgb(
+    scalar_array, vmin=None, vmax=None, power=1, cmap="gray", normalization="linear"
+):
+    """ """
+
+    if normalization == "linear":
+        norm = mpl.colors.Normalize()
+    elif normalization == "power-law":
+        norm = mpl.colors.PowerNorm(gamma=power)
+    elif normalization == "logarithmic":
+        norm = mpl.colors.LogNorm()
+    elif normalization == "centered":
+        norm = mpl.colors.CenteredNorm()
+    else:
+        raise ValueError()
+
+    scaled_array, vmin, vmax = return_clipped_array(scalar_array, vmin=vmin, vmax=vmax)
+    scaled_array = norm(scaled_array)
+
+    cmap = plt.get_cmap(cmap)
+    rgb = cmap(scaled_array)
+
+    return rgb
+
+
+def complex_array_to_rgb(complex_array, vmin=None, vmax=None, power=1, chroma_boost=1):
+    """
+    Utility function for converting complex arrays to clipped rgb values
+    based on histogram distribution of pixel values
+
+    Parameters
+    ----------
+    complex_array: np.array
+        complex_array to be scaled
+    vmin: float
+        lower fraction cutoff to clip amplitude values
+    vmax: float
+        upper fraction cutoff to clip amplitude values
+    power: float
+        power to raise amplitude before clipping
+    chroma_boost: float
+        boosts chroma amplitude for higher contrast
+
+    Returns
+    ----------
+    rgb: np.array
+        clipped rgb JCh array
+    """
+
+    amplitude = np.abs(complex_array) ** power
+    phase = np.angle(complex_array)
+
+    scaled_amplitude, _, _ = return_clipped_array(
+        amplitude, vmin=vmin, vmax=vmax, normalize=True
+    )
+    scaled_amplitude = scaled_amplitude.clip(1e-16, 1)
+
+    J = scaled_amplitude * 61.5
+    C = np.minimum(chroma_boost * 98 * J / 123, 110)
+    h = np.rad2deg(phase) + 180
+
+    JCh = np.stack((J, C, h), axis=-1)
+    rgb = cspace_convert(JCh, "JCh", "sRGB1").clip(0, 1)
+
+    return rgb
