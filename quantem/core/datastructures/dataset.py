@@ -194,5 +194,27 @@ class Dataset(AutoSerialize):
         minimum = self.array.max(axis=axes)
         return minimum
 
-    # def pad(self, pad_width, modify_in_place = False, **kwargs):
-    #     if modify_in_place is False:
+    def pad(self, pad_width, modify_in_place=False, **kwargs):
+        if modify_in_place is False:
+            dataset = self.copy()
+            dataset.array = np.pad(dataset.array, pad_width=pad_width, **kwargs)
+            return dataset
+        else:
+            self.array = np.pad(self.array, pad_width=pad_width, **kwargs)
+
+    def crop(self, crop_widths, modify_in_place=False, **kwargs):
+        if len(crop_widths) != self.ndim:
+            raise ValueError(
+                "Length of crop_widths must match number of array dimensions."
+            )
+        slices = tuple(
+            slice(before, dim - after if after != 0 else None)
+            for (before, after), dim in zip(crop_widths, self.shape)
+        )
+
+        if modify_in_place is False:
+            dataset = self.copy()
+            dataset.array = dataset.array[slices]
+            return dataset
+        else:
+            self.array = self.array[slices]
