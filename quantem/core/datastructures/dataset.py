@@ -202,19 +202,94 @@ class Dataset(AutoSerialize):
         else:
             self.array = np.pad(self.array, pad_width=pad_width, **kwargs)
 
-    def crop(self, crop_widths, modify_in_place=False):
-        if len(crop_widths) != self.ndim:
-            raise ValueError(
-                "Length of crop_widths must match number of array dimensions."
-            )
-        slices = tuple(
-            slice(before, dim - after if after != 0 else None)
-            for (before, after), dim in zip(crop_widths, self.shape)
-        )
+    def crop(self, crop_widths, axes=None, modify_in_place=False):
+        if axes is None:
+            if len(crop_widths) != self.ndim:
+                raise ValueError(
+                    "crop_widths must match number of dimensions when axes is None."
+                )
+            axes = tuple(range(self.ndim))
+        elif np.isscalar(axes):
+            axes = (axes,)
+            crop_widths = (crop_widths,)
+        else:
+            axes = tuple(axes)
+
+        if len(crop_widths) != len(axes):
+            raise ValueError("Length of crop_widths must match length of axes.")
+
+        full_slices = []
+        crop_dict = dict(zip(axes, crop_widths))
+        for axis, dim in enumerate(self.shape):
+            if axis in crop_dict:
+                before, after = crop_dict[axis]
+                start = before
+                stop = dim - after if after != 0 else None
+                full_slices.append(slice(start, stop))
+            else:
+                full_slices.append(slice(None))
+        if modify_in_place is False:
+            dataset = self.copy()
+            dataset.array = dataset.array[tuple(full_slices)]
+            return dataset
+        else:
+            self.array = self.array[tuple(full_slices)]
+
+    def bin(
+        self,
+        bin_factors,
+        axes=None,
+        modify_in_place=False,
+    ):
+        if axes is None:
+            axes = tuple(range(self.ndim))
+        elif np.isscalar(axes):
+            axes = (axes,)
+
+        if isinstance(bin_factors, int):
+            bin_factors = tuple([bin_factors] * len(axes))
+        elif isinstance(bin_factors, (list, tuple)):
+            if len(bin_factors) != len(axes):
+                raise ValueError("bin_factors and axes must have the same length.")
+            bin_factors = tuple(bin_factors)
+        else:
+            raise TypeError("bin_factors must be an int or tuple of ints.")
+
+        axis_to_factor = dict(zip(axes, bin_factors))
+
+        slices = []
+        new_shape = []
+        for axis in range(self.ndim):
+            if axis in axis_to_factor:
+                factor = axis_to_factor[axis]
+                length = self.shape[axis] - (self.shape[axis] % factor)
+                slices.append(slice(0, length))
+                new_shape.extend([length // factor, factor])
+            else:
+                slices.append(slice(None))
+                new_shape.append(self.shape[axis])
+
+        reshape_dims = []
+        reduce_axes = []
+        current_axis = 0
+
+        for axis in range(self.ndim):
+            if axis in axis_to_factor:
+                reshape_dims.extend([new_shape[current_axis], axis_to_factor[axis]])
+                reduce_axes.append(len(reshape_dims) - 1)
+                current_axis += 2
+            else:
+                reshape_dims.append(new_shape[current_axis])
+                current_axis += 1
 
         if modify_in_place is False:
             dataset = self.copy()
-            dataset.array = dataset.array[slices]
+            dataset.array = np.sum(
+                dataset.array[tuple(slices)].reshape(reshape_dims),
+                axis=tuple(reduce_axes),
+            )
             return dataset
         else:
-            self.array = self.array[slices]
+            self.array = np.sum(
+                self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
+            )
