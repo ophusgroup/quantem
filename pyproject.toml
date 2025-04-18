@@ -5,6 +5,13 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["quantem"]
 
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+testpaths = "tests"
+
+
 [project]
 name = "quantem"
 version = "0.1.0"
@@ -24,6 +31,7 @@ dependencies = [
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
+  "pytest>=8.3.5",
 ]
 
 [dependency-groups]
@@ -32,3 +40,4 @@ dev = [
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
 ]
+

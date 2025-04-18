@@ -8,3 +8,13 @@ repos:
       args: [ --select, I, --exclude, __init__.py, --fix ]
     # Run the formatter.
     - id: ruff-format
+- repo: local 
+  hooks: 
+    # Run tests
+    - id: pytest
+      name: pytest
+      entry: pytest tests
+      language: system
+      types: [python]
+      pass_filenames: false
+      always_run: true 

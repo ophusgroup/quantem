@@ -1,7 +1,5 @@
 import importlib
 
-import numpy as np
-
 from quantem.core.datastructures import Dataset as Dataset
 from quantem.core.datastructures import Dataset4d as Dataset4d
 
