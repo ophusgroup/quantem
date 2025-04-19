@@ -1,3 +1,5 @@
+from collections.abc import Sequence
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -202,9 +204,6 @@ def _show_2d(
         )
 
     return fig, ax
-
-
-from collections.abc import Sequence
 
 
 def _normalize_show_input_to_grid(arrays):
