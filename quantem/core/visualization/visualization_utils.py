@@ -204,3 +204,8 @@ def turbo_black(num_colors=256, fade_len=None):
     fade = np.linspace(0, 1, fade_len)[:, None]
     colors[:fade_len, :3] *= fade
     return mpl.colors.ListedColormap(colors)
+
+
+_turbo_black = turbo_black()
+mpl.colormaps.register(_turbo_black, name="turbo_black")
+mpl.colormaps.register(_turbo_black.reversed(), name="turbo_black_r")
