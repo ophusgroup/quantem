@@ -6,6 +6,7 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from quantem.core.visualization.custom_normalizations import CustomNormalization
+from quantem.core.visualization.visualization_utils import array_to_rgba
 
 
 def estimate_scalebar_length(length, sampling):
@@ -113,7 +114,7 @@ def add_arg_cbar_to_ax(
     return cb_angle
 
 
-def _show_2D(
+def _show_2d(
     array,
     *,
     interval_type: str = "quantile",
@@ -200,4 +201,57 @@ def _show_2D(
             scalebar_loc,
         )
 
-    return None
+    return fig, ax
+
+
+from collections.abc import Sequence
+
+
+def _normalize_show_input_to_grid(arrays):
+    """ """
+    if isinstance(arrays, np.ndarray):
+        return [[arrays]]
+    if isinstance(arrays, Sequence) and not isinstance(arrays[0], Sequence):
+        return [arrays]
+    return arrays
+
+
+def show_2d(
+    arrays,
+    *,
+    figax=None,
+    axsize=(4, 4),
+    tight_layout=True,
+    **kwargs,
+):
+    """ """
+    grid = _normalize_show_input_to_grid(arrays)
+    nrows = len(grid)
+    ncols = max(len(row) for row in grid)
+
+    if figax is not None:
+        fig, axs = figax
+        if axs.shape != (nrows, ncols):
+            raise ValueError()
+    else:
+        fig, axs = plt.subplots(
+            nrows, ncols, figsize=(axsize[0] * ncols, axsize[1] * nrows), squeeze=False
+        )
+
+    for i, row in enumerate(grid):
+        for j, array in enumerate(row):
+            figax = (fig, axs[i][j])
+            _show_2d(
+                array,
+                figax=figax,
+                **kwargs,
+            )
+
+    # Hide unused axes in incomplete rows
+    for j in range(len(row), ncols):
+        axs[i][j].axis("off")
+
+    if tight_layout():
+        fig.tight_layout()
+
+    return fig, axs
