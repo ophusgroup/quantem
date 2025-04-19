@@ -17,7 +17,9 @@ def array_to_rgba(
     chroma_boost: float = 1,
 ):
     """ """
-    cmap = cmap if isinstance(cmap, mpl.colors.Colormap) else plt.get_cmap(cmap)
+    cmap = (
+        cmap if isinstance(cmap, mpl.colors.Colormap) else mpl.colormaps.get_cmap(cmap)
+    )
     if scaled_angle is None:
         rgba = cmap(scaled_amplitude)
     else:
@@ -191,3 +193,14 @@ def add_arg_cbar_to_ax(
     )
 
     return cb_angle
+
+
+def turbo_black(num_colors=256, fade_len=None):
+    """ """
+    if fade_len is None:
+        fade_len = num_colors // 8
+    turbo = mpl.colormaps.get_cmap("turbo").resampled(num_colors)
+    colors = turbo(np.linspace(0, 1, num_colors))
+    fade = np.linspace(0, 1, fade_len)[:, None]
+    colors[:fade_len, :3] *= fade
+    return mpl.colors.ListedColormap(colors)
