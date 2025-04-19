@@ -4,6 +4,7 @@ import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
+from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from quantem.core.visualization.custom_normalizations import CustomNormalization
 
@@ -75,14 +76,16 @@ class ScalebarConfig:
 
 
 def _resolve_scalebar(cfg) -> ScalebarConfig:
-    if cfg is None:
+    if cfg is None or cfg is False:
         return None
+    elif cfg is True:
+        return ScalebarConfig()
     elif isinstance(cfg, dict):
         return ScalebarConfig(**cfg)
     elif isinstance(cfg, ScalebarConfig):
         return cfg
     else:
-        raise TypeError("scalebar must be None, dict, or ScalebarConfig")
+        raise TypeError("scalebar must be None, dict, bool, or ScalebarConfig")
 
 
 def estimate_scalebar_length(length, sampling):
