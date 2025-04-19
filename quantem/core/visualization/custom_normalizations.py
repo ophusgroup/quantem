@@ -473,3 +473,50 @@ class CustomNormalization(mpl.colors.Normalize):
         values = self.stretch.inverse(values)
         values = self.interval.inverse(values)
         return values
+
+
+@dataclass
+class NormalizationConfig:
+    interval_type: str = "quantile"
+    stretch_type: str = "linear"
+    lower_quantile: float = 0.02
+    upper_quantile: float = 0.98
+    vmin: float | None = None
+    vmax: float | None = None
+    vcenter: float = 0.0
+    half_range: float | None = None
+    power: float = 1.0
+    logarithmic_index: float = 1000.0
+    asinh_linear_range: float = 0.1
+
+
+NORMALIZATION_PRESETS = {
+    "linear_auto": lambda: NormalizationConfig(),
+    "linear_minmax": lambda: NormalizationConfig(interval_type="manual"),
+    "linear_centered": lambda: NormalizationConfig(interval_type="centered"),
+    "log_auto": lambda: NormalizationConfig(stretch_type="logarithmic"),
+    "log_minmax": lambda: NormalizationConfig(
+        stretch_type="logarithmic", interval_type="manual"
+    ),
+    "power_squared": lambda: NormalizationConfig(stretch_type="power", power=2.0),
+    "power_sqrt": lambda: NormalizationConfig(stretch_type="power", power=0.5),
+    "asinh_centered": lambda: NormalizationConfig(
+        stretch_type="asinh", interval_type="centered"
+    ),
+}
+
+
+def _resolve_normalization(norm) -> NormalizationConfig:
+    """ """
+    if norm is None:
+        return NormalizationConfig()
+    elif isinstance(norm, dict):
+        return NormalizationConfig(**norm)
+    elif isinstance(norm, str):
+        if norm not in NORMALIZATION_PRESETS:
+            raise ValueError(f"Unknown normalization preset: {norm}")
+        return NORMALIZATION_PRESETS[norm]()
+    elif isinstance(norm, NormalizationConfig):
+        return norm
+    else:
+        raise TypeError("norm must be None, dict, str, or NormalizationConfig")

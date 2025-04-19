@@ -8,7 +8,11 @@ from colorspacious import cspace_convert
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
-from quantem.core.visualization.custom_normalizations import CustomNormalization
+from quantem.core.visualization.custom_normalizations import (
+    CustomNormalization,
+    NormalizationConfig,
+    _resolve_normalization,
+)
 from quantem.core.visualization.visualization_utils import (
     array_to_rgba,
     list_of_arrays_to_rgba,
@@ -123,17 +127,7 @@ def add_arg_cbar_to_ax(
 def _show_2d(
     array,
     *,
-    interval_type: str = "quantile",
-    stretch_type: str = "linear",
-    lower_quantile: float = 0.02,
-    upper_quantile: float = 0.98,
-    vmin: float | None = None,
-    vmax: float | None = None,
-    vcenter: float = 0.0,
-    half_range: float | None = None,
-    power: float = 1.0,
-    logarithmic_index: float = 1000.0,
-    asinh_linear_range: float = 0.1,
+    norm: NormalizationConfig | dict | str = None,
     cmap: str | mpl.colors.Colormap = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
@@ -157,19 +151,21 @@ def _show_2d(
         amplitude = array
         angle = None
 
+    norm_config = _resolve_normalization(norm)
+
     norm = CustomNormalization(
-        interval_type=interval_type,
-        stretch_type=stretch_type,
+        interval_type=norm_config.interval_type,
+        stretch_type=norm_config.stretch_type,
+        lower_quantile=norm_config.lower_quantile,
+        upper_quantile=norm_config.upper_quantile,
+        vmin=norm_config.vmin,
+        vmax=norm_config.vmin,
+        vcenter=norm_config.vcenter,
+        half_range=norm_config.half_range,
+        power=norm_config.power,
+        logarithmic_index=norm_config.logarithmic_index,
+        asinh_linear_range=norm_config.asinh_linear_range,
         data=amplitude,
-        lower_quantile=lower_quantile,
-        upper_quantile=upper_quantile,
-        vmin=vmin,
-        vmax=vmin,
-        vcenter=vcenter,
-        half_range=half_range,
-        power=power,
-        logarithmic_index=logarithmic_index,
-        asinh_linear_range=asinh_linear_range,
     )
 
     scaled_amplitude = norm(amplitude)
@@ -213,17 +209,7 @@ def _show_2d(
 def _show_2d_combined(
     list_of_arrays,
     *,
-    interval_type: str = "quantile",
-    stretch_type: str = "linear",
-    lower_quantile: float = 0.02,
-    upper_quantile: float = 0.98,
-    vmin: float | None = None,
-    vmax: float | None = None,
-    vcenter: float = 0.0,
-    half_range: float | None = None,
-    power: float = 1.0,
-    logarithmic_index: float = 1000.0,
-    asinh_linear_range: float = 0.1,
+    norm: NormalizationConfig | dict | str = None,
     cmap: str | mpl.colors.Colormap = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
@@ -240,18 +226,20 @@ def _show_2d_combined(
 ):
     """ """
 
+    norm_config = _resolve_normalization(norm)
+
     norm = CustomNormalization(
-        interval_type=interval_type,
-        stretch_type=stretch_type,
-        lower_quantile=lower_quantile,
-        upper_quantile=upper_quantile,
-        vmin=vmin,
-        vmax=vmin,
-        vcenter=vcenter,
-        half_range=half_range,
-        power=power,
-        logarithmic_index=logarithmic_index,
-        asinh_linear_range=asinh_linear_range,
+        interval_type=norm_config.interval_type,
+        stretch_type=norm_config.stretch_type,
+        lower_quantile=norm_config.lower_quantile,
+        upper_quantile=norm_config.upper_quantile,
+        vmin=norm_config.vmin,
+        vmax=norm_config.vmin,
+        vcenter=norm_config.vcenter,
+        half_range=norm_config.half_range,
+        power=norm_config.power,
+        logarithmic_index=norm_config.logarithmic_index,
+        asinh_linear_range=norm_config.asinh_linear_range,
     )
 
     rgba = list_of_arrays_to_rgba(
