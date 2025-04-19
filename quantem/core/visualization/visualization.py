@@ -1,4 +1,5 @@
 from collections.abc import Sequence
+from functools import update_wrapper
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
@@ -219,7 +220,7 @@ def show_2d(
     arrays,
     *,
     figax=None,
-    axsize=(4, 4),
+    axsize=(6, 6),
     tight_layout=True,
     **kwargs,
 ):
@@ -250,7 +251,10 @@ def show_2d(
     for j in range(len(row), ncols):
         axs[i][j].axis("off")
 
-    if tight_layout():
+    if tight_layout:
         fig.tight_layout()
 
     return fig, axs
+
+
+update_wrapper(show_2d, _show_2d)
