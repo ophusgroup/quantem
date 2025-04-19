@@ -225,13 +225,15 @@ class Dataset4d(Dataset):
 
     def show(
         self,
+        index=(0, 0),
         scalebar=True,
         figax=None,
         axsize=(4, 4),
         **kwargs,
     ):
         """ """
-        list_of_objs = [self[0, 0]]
+
+        list_of_objs = [self[index]]
         if hasattr(self, "_dp_mean"):
             list_of_objs.append(self.dp_mean)
         if hasattr(self, "_dp_max"):

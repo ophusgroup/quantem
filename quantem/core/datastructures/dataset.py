@@ -299,6 +299,7 @@ class Dataset(AutoSerialize):
     def show(
         self,
         scalebar=True,
+        title=None,
         **kwargs,
     ):
         """ """
@@ -311,6 +312,7 @@ class Dataset(AutoSerialize):
                 units=self.units[-1],
             )
 
-        kwargs.pop("title", None)
+        if title is None:
+            title = self.name
 
-        return show_2d(self.array, scalebar=scalebar, title=self.name, **kwargs)
+        return show_2d(self.array, scalebar=scalebar, title=title, **kwargs)
