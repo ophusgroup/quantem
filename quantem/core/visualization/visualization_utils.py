@@ -3,6 +3,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
 
+from quantem.core.visualization.custom_normalizations import CustomNormalization
+
 
 def array_to_rgba(
     scaled_amplitude: np.ndarray,
@@ -31,3 +33,29 @@ def array_to_rgba(
         rgba = np.dstack((rgb, alpha))
 
     return rgba
+
+
+def list_of_arrays_to_rgba(
+    list_of_arrays,
+    *,
+    norm: CustomNormalization = CustomNormalization(),
+    chroma_boost: float = 1,
+):
+    """Converts a list of arrays to a perceptually-uniform RGB array."""
+    list_of_arrays = [norm(array) for array in list_of_arrays]
+    bins = np.asarray(list_of_arrays)
+    n = bins.shape[0]
+
+    # circular encoding
+    hue_angles = np.linspace(0.0, 2.0 * np.pi, n, endpoint=False)
+    hue_angles += np.linspace(0.0, 0.5, n) * (
+        2 * np.pi / n / 2
+    )  # jitter to avoid cancellation
+    complex_weights = np.exp(1j * hue_angles)[:, None, None] * bins
+
+    # weighted average direction (w/ normalization)
+    complex_sum = complex_weights.sum(0)
+    scaled_amplitude = np.clip(np.abs(complex_sum), 0, 1)
+    scaled_angle = np.angle(complex_sum)
+
+    return array_to_rgba(scaled_amplitude, scaled_angle, chroma_boost=chroma_boost)

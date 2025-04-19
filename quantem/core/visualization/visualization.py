@@ -9,7 +9,10 @@ from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 
 from quantem.core.visualization.custom_normalizations import CustomNormalization
-from quantem.core.visualization.visualization_utils import array_to_rgba
+from quantem.core.visualization.visualization_utils import (
+    array_to_rgba,
+    list_of_arrays_to_rgba,
+)
 
 
 def estimate_scalebar_length(length, sampling):
@@ -207,6 +210,83 @@ def _show_2d(
     return fig, ax
 
 
+def _show_2d_combined(
+    list_of_arrays,
+    *,
+    interval_type: str = "quantile",
+    stretch_type: str = "linear",
+    lower_quantile: float = 0.02,
+    upper_quantile: float = 0.98,
+    vmin: float | None = None,
+    vmax: float | None = None,
+    vcenter: float = 0.0,
+    half_range: float | None = None,
+    power: float = 1.0,
+    logarithmic_index: float = 1000.0,
+    asinh_linear_range: float = 0.1,
+    cmap: str | mpl.colors.Colormap = "gray",
+    chroma_boost: float = 1.0,
+    cbar: bool = False,
+    scalebar: bool = False,
+    scalebar_sampling: float = 1.0,
+    scalebar_units: str = "pixels",
+    scalebar_length: float = None,
+    scalebar_width_px: float = 1,
+    scalebar_pad_px: float = 0.5,
+    scalebar_color: str = "white",
+    scalebar_loc: str | int = "lower right",
+    figax: tuple = None,
+    figsize: tuple = (8, 8),
+):
+    """ """
+
+    norm = CustomNormalization(
+        interval_type=interval_type,
+        stretch_type=stretch_type,
+        lower_quantile=lower_quantile,
+        upper_quantile=upper_quantile,
+        vmin=vmin,
+        vmax=vmin,
+        vcenter=vcenter,
+        half_range=half_range,
+        power=power,
+        logarithmic_index=logarithmic_index,
+        asinh_linear_range=asinh_linear_range,
+    )
+
+    rgba = list_of_arrays_to_rgba(
+        list_of_arrays,
+        norm=norm,
+        chroma_boost=chroma_boost,
+    )
+
+    if figax is None:
+        fig, ax = plt.subplots(figsize=figsize)
+    else:
+        fig, ax = figax
+
+    ax.imshow(rgba)
+    ax.set(xticks=[], yticks=[])
+
+    if cbar:
+        raise NotImplementedError()
+
+    if scalebar:
+        add_scalebar_to_ax(
+            ax,
+            rgba.shape[1],
+            scalebar_sampling,
+            scalebar_length,
+            scalebar_units,
+            scalebar_width_px,
+            scalebar_pad_px,
+            scalebar_color,
+            scalebar_loc,
+        )
+
+    return fig, ax
+
+
 def _normalize_show_input_to_grid(arrays):
     """ """
     if isinstance(arrays, np.ndarray):
@@ -222,12 +302,19 @@ def show_2d(
     figax=None,
     axsize=(6, 6),
     tight_layout=True,
+    combine_images=False,
     **kwargs,
 ):
     """ """
     grid = _normalize_show_input_to_grid(arrays)
     nrows = len(grid)
     ncols = max(len(row) for row in grid)
+
+    if combine_images:
+        if nrows > 1:
+            raise ValueError()
+
+        return _show_2d_combined(grid[0], figax=figax, **kwargs)
 
     if figax is not None:
         fig, axs = figax
