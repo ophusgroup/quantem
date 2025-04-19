@@ -34,6 +34,7 @@ def _show_2d(
     cbar: bool = False,
     figax: tuple = None,
     figsize: tuple = (8, 8),
+    title: str = None,
 ):
     """ """
     is_complex = np.iscomplexobj(array)
@@ -71,7 +72,7 @@ def _show_2d(
         fig, ax = figax
 
     ax.imshow(rgba)
-    ax.set(xticks=[], yticks=[])
+    ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:
         divider = make_axes_locatable(ax)
@@ -176,7 +177,7 @@ def show_2d(
     arrays,
     *,
     figax=None,
-    axsize=(6, 6),
+    axsize=(4, 4),
     tight_layout=True,
     combine_images=False,
     **kwargs,

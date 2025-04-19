@@ -1,7 +1,10 @@
+import matplotlib.pyplot as plt
 import numpy as np
 
 from quantem.core import config
 from quantem.core.datastructures.dataset import Dataset as Dataset
+from quantem.core.visualization.visualization import show_2d
+from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 if config.get("has_cupy"):
     import cupy as cp
@@ -33,6 +36,22 @@ class Dataset4d(Dataset):
         ## it means it can't be type protected, but it is implicitly by only setting values
         ## with self.get_virtual_image()
         self._virtual_images: dict[str, Dataset] = {}
+
+    def __getitem__(self, index):
+        """Simple indexing function to return Dataset view"""
+
+        array_view = self.array[index]
+        ndim = array_view.ndim
+        calibrated_origin = self.origin.ndim == self.ndim
+
+        return Dataset(
+            array=array_view,
+            name=self.name + str(index),
+            origin=self.origin[index] if calibrated_origin else self.origin[-ndim:],
+            sampling=self.sampling[-ndim:],
+            units=self.units[-ndim:],
+            signal_units=self.signal_units,
+        )
 
     @property
     def dp_mean(self) -> Dataset:
@@ -203,3 +222,36 @@ class Dataset4d(Dataset):
             self.virtual_images[name] = virtual_image_dataset
 
         return virtual_image_dataset
+
+    def show(
+        self,
+        scalebar=True,
+        figax=None,
+        axsize=(4, 4),
+        **kwargs,
+    ):
+        """ """
+        list_of_objs = [self[0, 0]]
+        if hasattr(self, "_dp_mean"):
+            list_of_objs.append(self.dp_mean)
+        if hasattr(self, "_dp_max"):
+            list_of_objs.append(self.dp_max)
+        if hasattr(self, "_dp_median"):
+            list_of_objs.append(self.dp_median)
+
+        ncols = len(list_of_objs)
+
+        if figax is None:
+            figsize = (axsize[0] * ncols, axsize[1])
+            fig, axs = plt.subplots(1, ncols, figsize=figsize, squeeze=False)
+        else:
+            fig, axs = figax
+            if not isinstance(axs, np.ndarray):
+                axs = np.array([[axs]])
+            elif axs.ndim == 1:
+                axs = axs.reshape(1, -1)
+            if axs.shape != (1, ncols):
+                raise ValueError()
+
+        for obj, ax in zip(list_of_objs, axs[0]):
+            obj.show(scalebar=scalebar, figax=(fig, ax), **kwargs)

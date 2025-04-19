@@ -4,6 +4,8 @@ import numpy as np
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.visualization.visualization import show_2d
+from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 if config.get("has_cupy"):
     import cupy as cp
@@ -293,3 +295,22 @@ class Dataset(AutoSerialize):
             self.array = np.sum(
                 self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
             )
+
+    def show(
+        self,
+        scalebar=True,
+        **kwargs,
+    ):
+        """ """
+        if self.ndim != 2:
+            raise NotImplementedError()  # base class only provides 2D. subclasses can override.
+
+        if scalebar is True:
+            scalebar = ScalebarConfig(
+                sampling=self.sampling[-1],
+                units=self.units[-1],
+            )
+
+        kwargs.pop("title", None)
+
+        return show_2d(self.array, scalebar=scalebar, title=self.name, **kwargs)
