@@ -318,6 +318,10 @@ def show_2d(
 
     if figax is not None:
         fig, axs = figax
+        if not isinstance(axs, np.ndarray):
+            axs = np.array([[axs]])
+        elif axs.ndim == 1:
+            axs = axs.reshape(1, -1)
         if axs.shape != (nrows, ncols):
             raise ValueError()
     else:

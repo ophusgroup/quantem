@@ -439,10 +439,10 @@ class CustomNormalization(mpl.colors.Normalize):
         else:
             raise ValueError("unrecognized interval_type.")
 
-        if stretch_type == "linear":
-            self.stretch = LinearStretch()
-        elif stretch_type == "power":
+        if stretch_type == "power" or power != 1.0:
             self.stretch = PowerLawStretch(power)
+        elif stretch_type == "linear":
+            self.stretch = LinearStretch()
         elif stretch_type == "logarithmic":
             self.stretch = LogarithmicStretch(logarithmic_index)
         elif stretch_type == "asinh":
