@@ -14,131 +14,24 @@ from quantem.core.visualization.custom_normalizations import (
     _resolve_normalization,
 )
 from quantem.core.visualization.visualization_utils import (
+    ScalebarConfig,
+    _resolve_scalebar,
+    add_arg_cbar_to_ax,
+    add_cbar_to_ax,
+    add_scalebar_to_ax,
     array_to_rgba,
     list_of_arrays_to_rgba,
 )
-
-
-def estimate_scalebar_length(length, sampling):
-    """ """
-    d = length * sampling / 2
-    exp = np.floor(np.log10(d))
-    base = d / (10**exp)
-    if base >= 1 and base < 2.1:
-        _spacing = 0.5
-    elif base >= 2.1 and base < 4.6:
-        _spacing = 1.0
-    elif base >= 4.6 and base <= 10:
-        _spacing = 2.0
-    spacing = _spacing * 10**exp
-    return spacing, spacing / sampling
-
-
-def add_scalebar_to_ax(
-    ax,
-    array_size,
-    sampling,
-    length_units,
-    units,
-    width_px,
-    pad_px,
-    color,
-    loc,
-):
-    """ """
-    if length_units is None:
-        length_units, length_px = estimate_scalebar_length(array_size, sampling)
-    else:
-        length_px = length_units / sampling
-
-    if length_units % 1 == 0.0:
-        label = f"{length_units:.0f} {units}"
-    else:
-        label = f"{length_units:.2f} {units}"
-
-    if isinstance(loc, int):
-        loc_codes = mpl.legend.Legend.codes
-        loc_strings = {v: k for k, v in loc_codes.items()}
-        loc = loc_strings[loc]
-
-    bar = AnchoredSizeBar(
-        ax.transData,
-        length_px,
-        label,
-        loc,
-        pad=pad_px,
-        color=color,
-        frameon=False,
-        label_top=loc[:3] == "low",
-        size_vertical=width_px,
-    )
-    ax.add_artist(bar)
-
-
-def add_cbar_to_ax(
-    fig,
-    cax,
-    norm,
-    cmap,
-    eps=1e-8,
-):
-    """ """
-    tick_locator = mpl.ticker.AutoLocator()
-    ticks = tick_locator.tick_values(norm.vmin, norm.vmax)
-    ticks = ticks[(ticks >= norm.vmin - eps) & (ticks <= norm.vmax + eps)]
-
-    formatter = mpl.ticker.ScalarFormatter(useMathText=True)
-    formatter.set_scientific(True)
-    formatter.set_powerlimits((-1, 1))
-
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
-    cb = fig.colorbar(sm, cax=cax, ticks=ticks, format=formatter)
-    return cb
-
-
-def add_arg_cbar_to_ax(
-    fig,
-    cax,
-    chroma_boost=1,
-):
-    """ """
-
-    h = np.linspace(0, 360, 256, endpoint=False)
-    J = np.full_like(h, 61.5)
-    C = np.full_like(h, np.minimum(49 * chroma_boost, 110))
-    JCh = np.stack((J, C, h), axis=-1)
-    rgb_vals = cspace_convert(JCh, "JCh", "sRGB1").clip(0, 1)
-
-    angle_cmap = mpl.colors.ListedColormap(rgb_vals)
-    angle_norm = mpl.colors.Normalize(vmin=-np.pi, vmax=np.pi)
-    sm = mpl.cm.ScalarMappable(norm=angle_norm, cmap=angle_cmap)
-    cb_angle = fig.colorbar(sm, cax=cax)
-
-    cb_angle.set_label("arg", rotation=0, ha="center", va="bottom")
-    cb_angle.ax.yaxis.set_label_coords(0.5, -0.05)
-    cb_angle.set_ticks([-np.pi, -np.pi / 2, 0, np.pi / 2, np.pi])
-    cb_angle.set_ticklabels(
-        [r"$-\pi$", r"$-\dfrac{\pi}{2}$", "$0$", r"$\dfrac{\pi}{2}$", r"$\pi$"]
-    )
-
-    return cb_angle
 
 
 def _show_2d(
     array,
     *,
     norm: NormalizationConfig | dict | str = None,
+    scalebar: ScalebarConfig | dict = None,
     cmap: str | mpl.colors.Colormap = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
-    scalebar: bool = False,
-    scalebar_sampling: float = 1.0,
-    scalebar_units: str = "pixels",
-    scalebar_length: float = None,
-    scalebar_width_px: float = 1,
-    scalebar_pad_px: float = 0.5,
-    scalebar_color: str = "white",
-    scalebar_loc: str | int = "lower right",
     figax: tuple = None,
     figsize: tuple = (8, 8),
 ):
@@ -152,6 +45,7 @@ def _show_2d(
         angle = None
 
     norm_config = _resolve_normalization(norm)
+    scalebar_config = _resolve_scalebar(scalebar)
 
     norm = CustomNormalization(
         interval_type=norm_config.interval_type,
@@ -190,17 +84,17 @@ def _show_2d(
             cb_abs.set_label("abs", rotation=0, ha="center", va="bottom")
             cb_abs.ax.yaxis.set_label_coords(0.5, -0.05)
 
-    if scalebar:
+    if scalebar_config is not None:
         add_scalebar_to_ax(
             ax,
             array.shape[1],
-            scalebar_sampling,
-            scalebar_length,
-            scalebar_units,
-            scalebar_width_px,
-            scalebar_pad_px,
-            scalebar_color,
-            scalebar_loc,
+            scalebar_config.sampling,
+            scalebar_config.length,
+            scalebar_config.units,
+            scalebar_config.width_px,
+            scalebar_config.pad_px,
+            scalebar_config.color,
+            scalebar_config.loc,
         )
 
     return fig, ax
@@ -210,23 +104,17 @@ def _show_2d_combined(
     list_of_arrays,
     *,
     norm: NormalizationConfig | dict | str = None,
+    scalebar: ScalebarConfig | dict = None,
     cmap: str | mpl.colors.Colormap = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
-    scalebar: bool = False,
-    scalebar_sampling: float = 1.0,
-    scalebar_units: str = "pixels",
-    scalebar_length: float = None,
-    scalebar_width_px: float = 1,
-    scalebar_pad_px: float = 0.5,
-    scalebar_color: str = "white",
-    scalebar_loc: str | int = "lower right",
     figax: tuple = None,
     figsize: tuple = (8, 8),
 ):
     """ """
 
     norm_config = _resolve_normalization(norm)
+    scalebar_config = _resolve_scalebar(scalebar)
 
     norm = CustomNormalization(
         interval_type=norm_config.interval_type,
@@ -259,17 +147,17 @@ def _show_2d_combined(
     if cbar:
         raise NotImplementedError()
 
-    if scalebar:
+    if scalebar_config is not None:
         add_scalebar_to_ax(
             ax,
-            rgba.shape[1],
-            scalebar_sampling,
-            scalebar_length,
-            scalebar_units,
-            scalebar_width_px,
-            scalebar_pad_px,
-            scalebar_color,
-            scalebar_loc,
+            array.shape[1],
+            scalebar_config.sampling,
+            scalebar_config.length,
+            scalebar_config.units,
+            scalebar_config.width_px,
+            scalebar_config.pad_px,
+            scalebar_config.color,
+            scalebar_config.loc,
         )
 
     return fig, ax

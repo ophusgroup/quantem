@@ -1,3 +1,5 @@
+from dataclasses import dataclass
+
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
@@ -59,3 +61,130 @@ def list_of_arrays_to_rgba(
     scaled_angle = np.angle(complex_sum)
 
     return array_to_rgba(scaled_amplitude, scaled_angle, chroma_boost=chroma_boost)
+
+
+@dataclass
+class ScalebarConfig:
+    sampling: float = 1.0
+    units: str = "pixels"
+    length: float | None = None
+    width_px: float = 1
+    pad_px: float = 0.5
+    color: str = "white"
+    loc: str | int = "lower right"
+
+
+def _resolve_scalebar(cfg) -> ScalebarConfig:
+    if cfg is None:
+        return None
+    elif isinstance(cfg, dict):
+        return ScalebarConfig(**cfg)
+    elif isinstance(cfg, ScalebarConfig):
+        return cfg
+    else:
+        raise TypeError("scalebar must be None, dict, or ScalebarConfig")
+
+
+def estimate_scalebar_length(length, sampling):
+    """ """
+    d = length * sampling / 2
+    exp = np.floor(np.log10(d))
+    base = d / (10**exp)
+    if base >= 1 and base < 2.1:
+        _spacing = 0.5
+    elif base >= 2.1 and base < 4.6:
+        _spacing = 1.0
+    elif base >= 4.6 and base <= 10:
+        _spacing = 2.0
+    spacing = _spacing * 10**exp
+    return spacing, spacing / sampling
+
+
+def add_scalebar_to_ax(
+    ax,
+    array_size,
+    sampling,
+    length_units,
+    units,
+    width_px,
+    pad_px,
+    color,
+    loc,
+):
+    """ """
+    if length_units is None:
+        length_units, length_px = estimate_scalebar_length(array_size, sampling)
+    else:
+        length_px = length_units / sampling
+
+    if length_units % 1 == 0.0:
+        label = f"{length_units:.0f} {units}"
+    else:
+        label = f"{length_units:.2f} {units}"
+
+    if isinstance(loc, int):
+        loc_codes = mpl.legend.Legend.codes
+        loc_strings = {v: k for k, v in loc_codes.items()}
+        loc = loc_strings[loc]
+
+    bar = AnchoredSizeBar(
+        ax.transData,
+        length_px,
+        label,
+        loc,
+        pad=pad_px,
+        color=color,
+        frameon=False,
+        label_top=loc[:3] == "low",
+        size_vertical=width_px,
+    )
+    ax.add_artist(bar)
+
+
+def add_cbar_to_ax(
+    fig,
+    cax,
+    norm,
+    cmap,
+    eps=1e-8,
+):
+    """ """
+    tick_locator = mpl.ticker.AutoLocator()
+    ticks = tick_locator.tick_values(norm.vmin, norm.vmax)
+    ticks = ticks[(ticks >= norm.vmin - eps) & (ticks <= norm.vmax + eps)]
+
+    formatter = mpl.ticker.ScalarFormatter(useMathText=True)
+    formatter.set_scientific(True)
+    formatter.set_powerlimits((-1, 1))
+
+    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    cb = fig.colorbar(sm, cax=cax, ticks=ticks, format=formatter)
+    return cb
+
+
+def add_arg_cbar_to_ax(
+    fig,
+    cax,
+    chroma_boost=1,
+):
+    """ """
+
+    h = np.linspace(0, 360, 256, endpoint=False)
+    J = np.full_like(h, 61.5)
+    C = np.full_like(h, np.minimum(49 * chroma_boost, 110))
+    JCh = np.stack((J, C, h), axis=-1)
+    rgb_vals = cspace_convert(JCh, "JCh", "sRGB1").clip(0, 1)
+
+    angle_cmap = mpl.colors.ListedColormap(rgb_vals)
+    angle_norm = mpl.colors.Normalize(vmin=-np.pi, vmax=np.pi)
+    sm = mpl.cm.ScalarMappable(norm=angle_norm, cmap=angle_cmap)
+    cb_angle = fig.colorbar(sm, cax=cax)
+
+    cb_angle.set_label("arg", rotation=0, ha="center", va="bottom")
+    cb_angle.ax.yaxis.set_label_coords(0.5, -0.05)
+    cb_angle.set_ticks([-np.pi, -np.pi / 2, 0, np.pi / 2, np.pi])
+    cb_angle.set_ticklabels(
+        [r"$-\pi$", r"$-\dfrac{\pi}{2}$", "$0$", r"$\dfrac{\pi}{2}$", r"$\pi$"]
+    )
+
+    return cb_angle
