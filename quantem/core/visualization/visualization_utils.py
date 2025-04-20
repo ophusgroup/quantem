@@ -5,6 +5,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+from scipy.stats import binned_statistic_2d
 
 from quantem.core.visualization.custom_normalizations import CustomNormalization
 
@@ -209,3 +210,35 @@ def turbo_black(num_colors=256, fade_len=None):
 _turbo_black = turbo_black()
 mpl.colormaps.register(_turbo_black, name="turbo_black")
 mpl.colormaps.register(_turbo_black.reversed(), name="turbo_black_r")
+
+
+def bilinear_histogram_2d(
+    vector,
+    field_x="kx",  # x (vertical, rows)
+    field_y="ky",  # y (horizontal, cols)
+    field_weight="intensity",
+    shape=(40, 60),  # (Nx, Ny)
+    origin=(0.0, 0.0),  # (x0, y0)
+    sampling=(0.1, 0.1),  # (dx, dy)
+    statistic="sum",
+):
+    flat = vector.flatten()
+    x = flat[:, vector.field_names.index(field_x)]  # vertical
+    y = flat[:, vector.field_names.index(field_y)]  # horizontal
+    w = flat[:, vector.field_names.index(field_weight)]
+
+    Nx, Ny = shape
+    dx, dy = sampling
+    x0, y0 = origin
+    x1, y1 = x0 + Nx * dx, y0 + Ny * dy
+
+    hist, _, _, _ = binned_statistic_2d(
+        x,
+        y,
+        values=w,
+        statistic=statistic,
+        bins=[Nx, Ny],  # [rows, cols]
+        range=[[x0, x1], [y0, y1]],  # [[x_min, x_max], [y_min, y_max]]
+    )
+
+    return hist  # shape = (Nx, Ny), i.e., array[x, y]

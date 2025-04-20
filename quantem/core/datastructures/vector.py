@@ -121,6 +121,11 @@ class Vector(AutoSerialize):
     #     recursive_set(self.data, indices, value)
 
     def __getitem__(self, idx):
+        if isinstance(idx, str):  # field-level access
+            if idx not in self.field_names:
+                raise KeyError(f"Field '{idx}' not found.")
+            return _FieldView(self, idx)
+
         if not isinstance(idx, tuple):
             idx = (idx,)
 
@@ -189,6 +194,39 @@ class Vector(AutoSerialize):
             return vector_new
 
     def __setitem__(self, idx, value):
+        if isinstance(idx, str):  # field-level assignment
+            if idx not in self.field_names:
+                raise KeyError(f"Field '{idx}' not found.")
+            field_index = self.field_names.index(idx)
+
+            if isinstance(value, _FieldView):
+                if value.vector is not self:
+                    raise ValueError("Cannot assign from another Vector.")
+                src_index = value.field_index
+
+                def set_field(arr):
+                    if isinstance(arr, np.ndarray):
+                        arr[:, field_index] = arr[:, src_index]
+                    elif isinstance(arr, list):
+                        for sub in arr:
+                            set_field(sub)
+
+                set_field(self.data)
+                return
+
+            def set_field(arr):
+                if isinstance(arr, np.ndarray):
+                    if callable(value):
+                        arr[:, field_index] = value(arr[:, field_index])
+                    else:
+                        arr[:, field_index] = value
+                elif isinstance(arr, list):
+                    for sub in arr:
+                        set_field(sub)
+
+            set_field(self.data)
+            return
+
         if not isinstance(idx, tuple):
             idx = (idx,)
 
@@ -357,7 +395,103 @@ class Vector(AutoSerialize):
         return "\n".join(description)
 
 
+# Helper function for nexting lists
 def nested_list(shape, fill=None):
     if len(shape) == 0:
         return fill
     return [nested_list(shape[1:], fill) for _ in range(shape[0])]
+
+
+# Helper class for numerical field operations
+class _FieldView:
+    def __init__(self, vector, field_name):
+        self.vector = vector
+        self.field_name = field_name
+        self.field_index = vector.field_names.index(field_name)
+
+    def _apply_op(self, op):
+        def apply(arr):
+            if isinstance(arr, np.ndarray):
+                arr[:, self.field_index] = op(arr[:, self.field_index])
+            elif isinstance(arr, list):
+                for sub in arr:
+                    apply(sub)
+
+        apply(self.vector.data)
+
+    def __iadd__(self, other):
+        self._apply_op(lambda x: x + other)
+        return self
+
+    def __isub__(self, other):
+        self._apply_op(lambda x: x - other)
+        return self
+
+    def __imul__(self, other):
+        self._apply_op(lambda x: x * other)
+        return self
+
+    def __itruediv__(self, other):
+        self._apply_op(lambda x: x / other)
+        return self
+
+    def __ipow__(self, other):
+        self._apply_op(lambda x: x**other)
+        return self
+
+    def flatten(self):
+        def collect(arr):
+            if isinstance(arr, np.ndarray):
+                return [arr[:, self.field_index]]
+            elif isinstance(arr, list):
+                result = []
+                for sub in arr:
+                    result.extend(collect(sub))
+                return result
+            else:
+                return []
+
+        arrays = collect(self.vector.data)
+        if not arrays:
+            return np.empty((0,), dtype=float)
+        return np.concatenate(arrays, axis=0)
+
+    def set_flattened(self, values):
+        """
+        Set the field values across the entire Vector from a 1D flattened array.
+        """
+
+        def fill(arr, values, cursor):
+            if isinstance(arr, np.ndarray):
+                n = arr.shape[0]
+                arr[:, self.field_index] = values[cursor : cursor + n]
+                return cursor + n
+            elif isinstance(arr, list):
+                for sub in arr:
+                    cursor = fill(sub, values, cursor)
+                return cursor
+            return cursor
+
+        values = np.asarray(values)
+        if values.ndim != 1:
+            raise ValueError("Input to set_flattened must be a 1D array.")
+
+        expected = self.flatten().shape[0]
+        if values.shape[0] != expected:
+            raise ValueError(f"Expected {expected} values, got {values.shape[0]}")
+
+        fill(self.vector.data, values, cursor=0)
+
+    def __getitem__(self, idx):
+        # Optionally allow v['kx'][0, 1] to get subregion, or v['kx'][...] slice
+        sub = self.vector[idx]
+        if isinstance(sub, Vector):
+            return sub[self.field_name]
+        elif isinstance(sub, np.ndarray):
+            return sub[:, self.field_index]
+        return None
+
+    def __array__(self):
+        raise TypeError(
+            "Cannot convert FieldView to array directly. Use `.flatten()` if needed."
+        )
