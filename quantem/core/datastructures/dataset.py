@@ -167,7 +167,7 @@ class Dataset(AutoSerialize):
         ]
         return "\n".join(description)
 
-    def copy(self):
+    def copy(self, copy_attributes=False):
         dataset = Dataset(
             array=self.array.copy(),
             name=self.name,
@@ -177,16 +177,16 @@ class Dataset(AutoSerialize):
             signal_units=self.signal_units,
         )
 
-        for a0 in range(len(vars(self).keys())):
-            attr = list(vars(self).keys())[a0]
-            if hasattr(dataset, attr):
-                continue
-            else:
-                try:
-                    name = list(vars(dset4d))[a0]
-                    setattr(dataset, name, attr.copy())
-                except:
-                    pass
+        if copy_attributes is True:
+            for a0 in range(len(vars(self).keys())):
+                attr = list(vars(self).keys())[a0]
+                if hasattr(dataset, attr):
+                    continue
+                else:
+                    try:
+                        setattr(dataset, attr, getattr(self, attr).copy())
+                    except:
+                        pass
 
         return dataset
 
