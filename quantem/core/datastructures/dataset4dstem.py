@@ -13,7 +13,7 @@ else:
 
 
 # class for quantem 4d datasets
-class Dataset4d(Dataset):
+class Dataset4dstem(Dataset):
     def __init__(
         self,
         array: np.ndarray | cp.ndarray,
@@ -61,7 +61,7 @@ class Dataset4d(Dataset):
         if hasattr(self, "_dp_mean"):
             return self._dp_mean
         else:
-            print("Calculating dp_mean, attach with Dataset4d.get_dp_mean()")
+            print("Calculating dp_mean, attach with Dataset4dstem.get_dp_mean()")
             return self.get_dp_mean(attach=False)
 
     def get_dp_mean(self, attach: bool = True) -> Dataset:
@@ -102,7 +102,7 @@ class Dataset4d(Dataset):
         if hasattr(self, "_dp_max"):
             return self._dp_max
         else:
-            print("Calculating dp_max, attach with Dataset4d.get_dp_max()")
+            print("Calculating dp_max, attach with Dataset4dstem.get_dp_max()")
             return self.get_dp_max(attach=False)
 
     def get_dp_max(self, attach: bool = True) -> Dataset:
@@ -143,7 +143,7 @@ class Dataset4d(Dataset):
         if hasattr(self, "_dp_median"):
             return self._dp_median
         else:
-            print("Calculating dp_median, attach with Dataset4d.get_dp_median()")
+            print("Calculating dp_median, attach with Dataset4dstem.get_dp_median()")
             return self.get_dp_median(attach=False)
 
     def get_dp_median(self, attach: bool = True) -> Dataset:
