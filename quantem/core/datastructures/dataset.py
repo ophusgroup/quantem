@@ -176,6 +176,18 @@ class Dataset(AutoSerialize):
             units=self.units,
             signal_units=self.signal_units,
         )
+
+        for a0 in range(len(vars(self).keys())):
+            attr = list(vars(self).keys())[a0]
+            if hasattr(dataset, attr):
+                continue
+            else:
+                try:
+                    name = list(vars(dset4d))[a0]
+                    setattr(dataset, name, attr.copy())
+                except:
+                    pass
+
         return dataset
 
     def mean(self, axes=None):
@@ -197,6 +209,23 @@ class Dataset(AutoSerialize):
         return minimum
 
     def pad(self, pad_width, modify_in_place=False, **kwargs):
+        """
+        Pads Dataset
+
+        Parameters
+        ----------
+        pad_width: tuple
+            Number of values padded to the edges of each axis. `((before_1, after_1), ... (before_N, after_N))`
+            unique pad widths for each axis. `(before, after)` or `((before, after),)` yields same before and
+            after pad for each axis. `(pad,)` or `int` is a shortcut for before = after = pad width for all axes.
+        modify_in_place: bool
+            If True, modifies dataset
+
+        Returns
+        --------
+        Dataset (padded) only if modify_in_place is False
+
+        """
         if modify_in_place is False:
             dataset = self.copy()
             dataset.array = np.pad(dataset.array, pad_width=pad_width, **kwargs)
@@ -205,6 +234,22 @@ class Dataset(AutoSerialize):
             self.array = np.pad(self.array, pad_width=pad_width, **kwargs)
 
     def crop(self, crop_widths, axes=None, modify_in_place=False):
+        """
+        Crops Dataset
+
+        Parameters
+        ----------
+        crop_widths:tuple
+            Min and max for cropping each axis specified as a tuple
+        axes:
+            Axes over which to crop. If None specified, all are cropped.
+        modify_in_place: bool
+            If True, modifies dataset
+
+        Returns
+        --------
+        Dataset (cropped) only if modify_in_place is False
+        """
         if axes is None:
             if len(crop_widths) != self.ndim:
                 raise ValueError(
@@ -243,6 +288,22 @@ class Dataset(AutoSerialize):
         axes=None,
         modify_in_place=False,
     ):
+        """
+        Bins Dataset
+
+        Parameters
+        ----------
+        bin_factors:tuple or int
+            bin factors for each axis
+        axes:
+            Axis over which to bin. If None is specified, all axes are binned.
+        modify_in_place: bool
+            If True, modifies dataset
+
+        Returns
+        --------
+        Dataset (binned) only if modify_in_place is False
+        """
         if axes is None:
             axes = tuple(range(self.ndim))
         elif np.isscalar(axes):
