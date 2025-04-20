@@ -405,7 +405,40 @@ class HyperbolicSineStretch:
 
 
 class CustomNormalization(mpl.colors.Normalize):
-    """ """
+    """A flexible normalization class that combines interval and stretch operations.
+
+    This class extends matplotlib's Normalize class to provide more sophisticated
+    normalization options for visualization. It combines an interval operation
+    (which maps data to a [0,1] range) with a stretch operation (which applies
+    a transformation to the normalized data).
+
+    Parameters
+    ----------
+    interval_type : str, default="quantile"
+        Type of interval to use. Options are "quantile", "manual", or "centered".
+    stretch_type : str, default="linear"
+        Type of stretch to apply. Options are "linear", "power", "logarithmic", or "asinh".
+    data : ndarray, optional
+        Data array to use for setting limits if not explicitly provided.
+    lower_quantile : float, default=0.02
+        Lower quantile for "quantile" interval type.
+    upper_quantile : float, default=0.98
+        Upper quantile for "quantile" interval type.
+    vmin : float, optional
+        Minimum value for "manual" interval type.
+    vmax : float, optional
+        Maximum value for "manual" interval type.
+    vcenter : float, default=0.0
+        Center value for "centered" interval type.
+    half_range : float, optional
+        Half range for "centered" interval type.
+    power : float, default=1.0
+        Power for "power" stretch type.
+    logarithmic_index : float, default=1000.0
+        Index for "logarithmic" stretch type.
+    asinh_linear_range : float, default=0.1
+        Linear range for "asinh" stretch type.
+    """
 
     def __init__(
         self,
@@ -423,7 +456,7 @@ class CustomNormalization(mpl.colors.Normalize):
         logarithmic_index: float = 1000.0,
         asinh_linear_range: float = 0.1,
     ):
-        """ """
+        """Initialize the CustomNormalization object."""
         super().__init__(vmin=vmin, vmax=vmax, clip=False)
         if interval_type == "quantile":
             self.interval = QuantileInterval(
@@ -457,7 +490,17 @@ class CustomNormalization(mpl.colors.Normalize):
             self._set_limits(data)
 
     def _set_limits(self, data):
-        """ """
+        """Set the normalization limits based on the provided data.
+
+        Parameters
+        ----------
+        data : ndarray
+            The data array to use for setting limits.
+
+        Returns
+        -------
+        None
+        """
         self.vmin, self.vmax = self.interval.get_limits(data)
         self.interval = ManualInterval(
             self.vmin, self.vmax
@@ -465,11 +508,35 @@ class CustomNormalization(mpl.colors.Normalize):
         return None
 
     def __call__(self, values):
+        """Apply the normalization to the input values.
+
+        Parameters
+        ----------
+        values : array-like
+            The input values to normalize.
+
+        Returns
+        -------
+        ndarray
+            The normalized values, with invalid values masked.
+        """
         values = self.interval(values)
         self.stretch(values, copy=False)
         return np.ma.masked_invalid(values)
 
     def inverse(self, values):
+        """Apply the inverse normalization to the input values.
+
+        Parameters
+        ----------
+        values : array-like
+            The input values to inverse normalize.
+
+        Returns
+        -------
+        ndarray
+            The inverse normalized values.
+        """
         values = self.stretch.inverse(values)
         values = self.interval.inverse(values)
         return values
@@ -477,6 +544,37 @@ class CustomNormalization(mpl.colors.Normalize):
 
 @dataclass
 class NormalizationConfig:
+    """Configuration for CustomNormalization.
+
+    This dataclass provides a convenient way to specify normalization parameters
+    for the CustomNormalization class.
+
+    Parameters
+    ----------
+    interval_type : str, default="quantile"
+        Type of interval to use. Options are "quantile", "manual", or "centered".
+    stretch_type : str, default="linear"
+        Type of stretch to apply. Options are "linear", "power", "logarithmic", or "asinh".
+    lower_quantile : float, default=0.02
+        Lower quantile for "quantile" interval type.
+    upper_quantile : float, default=0.98
+        Upper quantile for "quantile" interval type.
+    vmin : float, optional
+        Minimum value for "manual" interval type.
+    vmax : float, optional
+        Maximum value for "manual" interval type.
+    vcenter : float, default=0.0
+        Center value for "centered" interval type.
+    half_range : float, optional
+        Half range for "centered" interval type.
+    power : float, default=1.0
+        Power for "power" stretch type.
+    logarithmic_index : float, default=1000.0
+        Index for "logarithmic" stretch type.
+    asinh_linear_range : float, default=0.1
+        Linear range for "asinh" stretch type.
+    """
+
     interval_type: str = "quantile"
     stretch_type: str = "linear"
     lower_quantile: float = 0.02
@@ -507,7 +605,28 @@ NORMALIZATION_PRESETS = {
 
 
 def _resolve_normalization(norm) -> NormalizationConfig:
-    """ """
+    """Resolve various input types to a NormalizationConfig object.
+
+    This function takes different input types and converts them to a
+    NormalizationConfig object that can be used with CustomNormalization.
+
+    Parameters
+    ----------
+    norm : None or dict or str or NormalizationConfig
+        The normalization configuration to resolve.
+
+    Returns
+    -------
+    NormalizationConfig
+        The resolved normalization configuration.
+
+    Raises
+    ------
+    ValueError
+        If norm is a string that doesn't match any preset.
+    TypeError
+        If norm is not one of the supported types.
+    """
     if norm is None:
         return NormalizationConfig()
     elif isinstance(norm, dict):

@@ -36,7 +36,40 @@ def _show_2d(
     figsize: tuple = (8, 8),
     title: str = None,
 ):
-    """ """
+    """Display a 2D array as an image with optional colorbar and scalebar.
+
+    This function visualizes a 2D array, handling both real and complex data.
+    For complex data, it displays amplitude and phase information using a
+    perceptually-uniform color representation.
+
+    Parameters
+    ----------
+    array : ndarray
+        The 2D array to visualize. Can be real or complex.
+    norm : NormalizationConfig or dict or str, optional
+        Configuration for normalizing the data before visualization.
+    scalebar : ScalebarConfig or dict or bool, optional
+        Configuration for adding a scale bar to the plot.
+    cmap : str or Colormap, default="gray"
+        Colormap to use for real data or amplitude of complex data.
+    chroma_boost : float, default=1.0
+        Factor to boost color saturation when displaying complex data.
+    cbar : bool, default=False
+        Whether to add a colorbar to the plot.
+    figax : tuple, optional
+        (fig, ax) tuple to use for plotting. If None, a new figure and axes are created.
+    figsize : tuple, default=(8, 8)
+        Figure size in inches, used only if figax is None.
+    title : str, optional
+        Title for the plot.
+
+    Returns
+    -------
+    fig : Figure
+        The matplotlib figure object.
+    ax : Axes
+        The matplotlib axes object.
+    """
     is_complex = np.iscomplexobj(array)
     if is_complex:
         amplitude = np.abs(array)
@@ -88,7 +121,7 @@ def _show_2d(
     if scalebar_config is not None:
         add_scalebar_to_ax(
             ax,
-            array.shape[1],
+            rgba.shape[1],
             scalebar_config.sampling,
             scalebar_config.length,
             scalebar_config.units,
@@ -112,8 +145,44 @@ def _show_2d_combined(
     figax: tuple = None,
     figsize: tuple = (8, 8),
 ):
-    """ """
+    """Display multiple 2D arrays as a single combined image.
 
+    This function takes a list of 2D arrays and creates a single visualization
+    where each array is assigned a unique color, and their amplitudes determine
+    the contribution to the final color. This is useful for comparing multiple
+    related datasets.
+
+    Parameters
+    ----------
+    list_of_arrays : list of ndarray
+        List of 2D arrays to combine into a single visualization.
+    norm : NormalizationConfig or dict or str, optional
+        Configuration for normalizing the data before visualization.
+    scalebar : ScalebarConfig or dict or bool, optional
+        Configuration for adding a scale bar to the plot.
+    cmap : str or Colormap, default="gray"
+        Base colormap to use (though each array will get a unique color).
+    chroma_boost : float, default=1.0
+        Factor to boost color saturation.
+    cbar : bool, default=False
+        Whether to add a colorbar to the plot (not yet implemented).
+    figax : tuple, optional
+        (fig, ax) tuple to use for plotting. If None, a new figure and axes are created.
+    figsize : tuple, default=(8, 8)
+        Figure size in inches, used only if figax is None.
+
+    Returns
+    -------
+    fig : Figure
+        The matplotlib figure object.
+    ax : Axes
+        The matplotlib axes object.
+
+    Raises
+    ------
+    NotImplementedError
+        If cbar is True (colorbar for combined visualization not yet implemented).
+    """
     norm_config = _resolve_normalization(norm)
     scalebar_config = _resolve_scalebar(scalebar)
 
@@ -151,7 +220,7 @@ def _show_2d_combined(
     if scalebar_config is not None:
         add_scalebar_to_ax(
             ax,
-            array.shape[1],
+            rgba.shape[1],
             scalebar_config.sampling,
             scalebar_config.length,
             scalebar_config.units,
@@ -165,7 +234,21 @@ def _show_2d_combined(
 
 
 def _normalize_show_input_to_grid(arrays):
-    """ """
+    """Convert various input formats to a consistent grid format for visualization.
+
+    This helper function normalizes different input formats to a consistent
+    grid format that can be used by the visualization functions.
+
+    Parameters
+    ----------
+    arrays : ndarray or list of ndarray or list of lists of ndarray
+        Input arrays in various formats.
+
+    Returns
+    -------
+    list of lists of ndarray
+        Normalized grid format where each inner list represents a row of arrays.
+    """
     if isinstance(arrays, np.ndarray):
         return [[arrays]]
     if isinstance(arrays, Sequence) and not isinstance(arrays[0], Sequence):
@@ -182,7 +265,42 @@ def show_2d(
     combine_images=False,
     **kwargs,
 ):
-    """ """
+    """Display one or more 2D arrays in a grid layout.
+
+    This is the main visualization function that can display a single array,
+    a list of arrays, or a grid of arrays. It supports both individual and
+    combined visualization modes.
+
+    Parameters
+    ----------
+    arrays : ndarray or list of ndarray or list of lists of ndarray
+        The arrays to visualize. Can be a single array, a list of arrays,
+        or a nested list representing a grid of arrays.
+    figax : tuple, optional
+        (fig, axs) tuple to use for plotting. If None, a new figure and axes are created.
+    axsize : tuple, default=(4, 4)
+        Size of each subplot in inches.
+    tight_layout : bool, default=True
+        Whether to apply tight_layout to the figure.
+    combine_images : bool, default=False
+        If True and arrays is a list, combine all arrays into a single visualization
+        using color encoding. Only works for a single row of arrays.
+    **kwargs : dict
+        Additional keyword arguments passed to _show_2d or _show_2d_combined.
+
+    Returns
+    -------
+    fig : Figure
+        The matplotlib figure object.
+    axs : ndarray of Axes
+        The matplotlib axes objects. If multiple arrays are displayed, this is a 2D array.
+
+    Raises
+    ------
+    ValueError
+        If combine_images is True but arrays contains multiple rows, or if
+        figax is provided but the axes shape doesn't match the grid shape.
+    """
     grid = _normalize_show_input_to_grid(arrays)
     nrows = len(grid)
     ncols = max(len(row) for row in grid)

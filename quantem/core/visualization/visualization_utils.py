@@ -17,7 +17,34 @@ def array_to_rgba(
     cmap: str | mpl.colors.Colormap = "gray",
     chroma_boost: float = 1,
 ):
-    """ """
+    """Convert amplitude and angle arrays to an RGBA color array.
+
+    This function creates a color representation of data using either a simple colormap
+    or a perceptually-uniform color space based on amplitude and angle information.
+
+    Parameters
+    ----------
+    scaled_amplitude : np.ndarray
+        Array of amplitude values, typically normalized to [0, 1].
+    scaled_angle : np.ndarray, optional
+        Array of angle values in radians. If provided, creates a color representation
+        using the JCh color space where amplitude controls lightness and angle controls hue.
+    cmap : str or mpl.colors.Colormap, default="gray"
+        Colormap to use when scaled_angle is None.
+    chroma_boost : float, default=1
+        Factor to boost color saturation when using angle-based coloring.
+
+    Returns
+    -------
+    np.ndarray
+        RGBA array with shape (height, width, 4) where the last dimension contains
+        (red, green, blue, alpha) values in the range [0, 1].
+
+    Raises
+    ------
+    ValueError
+        If scaled_angle is provided but has a different shape than scaled_amplitude.
+    """
     cmap = (
         cmap if isinstance(cmap, mpl.colors.Colormap) else mpl.colormaps.get_cmap(cmap)
     )
@@ -47,7 +74,28 @@ def list_of_arrays_to_rgba(
     norm: CustomNormalization = CustomNormalization(),
     chroma_boost: float = 1,
 ):
-    """Converts a list of arrays to a perceptually-uniform RGB array."""
+    """Converts a list of arrays to a perceptually-uniform RGB array.
+
+    This function takes multiple arrays and creates a color representation where each
+    array is assigned a unique hue angle, and the amplitude of each array determines
+    the contribution to the final color. The result is a perceptually-uniform color
+    representation that can effectively visualize multiple data sources simultaneously.
+
+    Parameters
+    ----------
+    list_of_arrays : list of np.ndarray
+        List of arrays to be converted to a color representation. All arrays must have
+        the same shape.
+    norm : CustomNormalization, default=CustomNormalization()
+        Normalization to apply to each array before processing.
+    chroma_boost : float, default=1
+        Factor to boost color saturation in the final output.
+
+    Returns
+    -------
+    np.ndarray
+        RGBA array with shape (height, width, 4) representing the combined data.
+    """
     list_of_arrays = [norm(array) for array in list_of_arrays]
     bins = np.asarray(list_of_arrays)
     n = bins.shape[0]
@@ -69,6 +117,28 @@ def list_of_arrays_to_rgba(
 
 @dataclass
 class ScalebarConfig:
+    """Configuration for adding a scale bar to a plot.
+
+    Attributes
+    ----------
+    sampling : float, default=1.0
+        Physical units per pixel.
+    units : str, default="pixels"
+        Units to display on the scale bar.
+    length : float, optional
+        Length of the scale bar in physical units. If None, an appropriate length
+        will be estimated.
+    width_px : float, default=1
+        Width of the scale bar in pixels.
+    pad_px : float, default=0.5
+        Padding around the scale bar in pixels.
+    color : str, default="white"
+        Color of the scale bar.
+    loc : str or int, default="lower right"
+        Location of the scale bar on the plot. Can be a string like "lower right"
+        or an integer location code.
+    """
+
     sampling: float = 1.0
     units: str = "pixels"
     length: float | None = None
@@ -79,6 +149,23 @@ class ScalebarConfig:
 
 
 def _resolve_scalebar(cfg) -> ScalebarConfig:
+    """Resolve various input types to a ScalebarConfig object.
+
+    Parameters
+    ----------
+    cfg : None, bool, dict, or ScalebarConfig
+        Configuration for the scale bar.
+
+    Returns
+    -------
+    ScalebarConfig or None
+        Resolved configuration object or None if cfg is None or False.
+
+    Raises
+    ------
+    TypeError
+        If cfg is not one of the supported types.
+    """
     if cfg is None or cfg is False:
         return None
     elif cfg is True:
@@ -92,7 +179,25 @@ def _resolve_scalebar(cfg) -> ScalebarConfig:
 
 
 def estimate_scalebar_length(length, sampling):
-    """ """
+    """Estimate an appropriate scale bar length based on data dimensions.
+
+    This function calculates a "nice" scale bar length that is a multiple of
+    0.5, 1.0, or 2.0 times a power of 10, depending on the data range.
+
+    Parameters
+    ----------
+    length : float
+        Total length of the data in physical units.
+    sampling : float
+        Physical units per pixel.
+
+    Returns
+    -------
+    tuple
+        (length_units, length_pixels) where length_units is the estimated
+        scale bar length in physical units and length_pixels is the equivalent
+        in pixels.
+    """
     d = length * sampling / 2
     exp = np.floor(np.log10(d))
     base = d / (10**exp)
@@ -117,7 +222,30 @@ def add_scalebar_to_ax(
     color,
     loc,
 ):
-    """ """
+    """Add a scale bar to a matplotlib axis.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        The axes to add the scale bar to.
+    array_size : float
+        Size of the data array in pixels.
+    sampling : float
+        Physical units per pixel.
+    length_units : float, optional
+        Length of the scale bar in physical units. If None, an appropriate length
+        will be estimated.
+    units : str
+        Units to display on the scale bar.
+    width_px : float
+        Width of the scale bar in pixels.
+    pad_px : float
+        Padding around the scale bar in pixels.
+    color : str
+        Color of the scale bar.
+    loc : str or int
+        Location of the scale bar on the plot.
+    """
     if length_units is None:
         length_units, length_px = estimate_scalebar_length(array_size, sampling)
     else:
@@ -154,7 +282,26 @@ def add_cbar_to_ax(
     cmap,
     eps=1e-8,
 ):
-    """ """
+    """Add a colorbar to a matplotlib figure.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure to add the colorbar to.
+    cax : matplotlib.axes.Axes
+        The axes to place the colorbar in.
+    norm : matplotlib.colors.Normalize
+        The normalization for the colormap.
+    cmap : matplotlib.colors.Colormap
+        The colormap to use.
+    eps : float, default=1e-8
+        Small value to avoid floating point errors when filtering ticks.
+
+    Returns
+    -------
+    matplotlib.colorbar.Colorbar
+        The created colorbar object.
+    """
     tick_locator = mpl.ticker.AutoLocator()
     ticks = tick_locator.tick_values(norm.vmin, norm.vmax)
     ticks = ticks[(ticks >= norm.vmin - eps) & (ticks <= norm.vmax + eps)]
@@ -173,8 +320,24 @@ def add_arg_cbar_to_ax(
     cax,
     chroma_boost=1,
 ):
-    """ """
+    """Add a colorbar for phase values to a matplotlib figure.
 
+    This function creates a colorbar suitable for displaying phase values.
+
+    Parameters
+    ----------
+    fig : matplotlib.figure.Figure
+        The figure to add the colorbar to.
+    cax : matplotlib.axes.Axes
+        The axes to place the colorbar in.
+    chroma_boost : float, default=1
+        Factor to boost color saturation.
+
+    Returns
+    -------
+    matplotlib.colorbar.Colorbar
+        The created colorbar object.
+    """
     h = np.linspace(0, 360, 256, endpoint=False)
     J = np.full_like(h, 61.5)
     C = np.full_like(h, np.minimum(49 * chroma_boost, 110))
@@ -197,7 +360,25 @@ def add_arg_cbar_to_ax(
 
 
 def turbo_black(num_colors=256, fade_len=None):
-    """ """
+    """Create a modified version of the 'turbo' colormap that fades to black.
+
+    This function creates a colormap based on the 'turbo' colormap but with
+    the beginning portion fading to black, which can be useful for visualizing
+    data with a clear zero point.
+
+    Parameters
+    ----------
+    num_colors : int, default=256
+        Number of colors in the colormap.
+    fade_len : int, optional
+        Number of colors to fade to black at the beginning. If None, defaults
+        to num_colors // 8.
+
+    Returns
+    -------
+    matplotlib.colors.ListedColormap
+        The modified colormap.
+    """
     if fade_len is None:
         fade_len = num_colors // 8
     turbo = mpl.colormaps.get_cmap("turbo").resampled(num_colors)
@@ -221,6 +402,34 @@ def bilinear_histogram_2d(
     sampling=(1.0, 1.0),
     statistic="sum",
 ):
+    """Create a 2D histogram with bilinear binning.
+
+    This function creates a 2D histogram where data points are distributed
+    across bins according to their position relative to bin centers, allowing
+    for smoother visualizations than standard histograms.
+
+    Parameters
+    ----------
+    shape : tuple
+        (Nx, Ny) shape of the output histogram.
+    x : array-like
+        x-coordinates of the data points.
+    y : array-like
+        y-coordinates of the data points.
+    weight : array-like
+        Weights for each data point.
+    origin : tuple, default=(0.0, 0.0)
+        (x0, y0) origin of the histogram grid.
+    sampling : tuple, default=(1.0, 1.0)
+        (dx, dy) sampling intervals.
+    statistic : str, default="sum"
+        Statistic to compute for each bin. Options include "sum", "mean", "count", etc.
+
+    Returns
+    -------
+    np.ndarray
+        2D histogram array with shape (Nx, Ny).
+    """
     Nx, Ny = shape
     dx, dy = sampling
     x0, y0 = origin
