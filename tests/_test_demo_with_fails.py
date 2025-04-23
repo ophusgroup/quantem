@@ -3,7 +3,7 @@ File demoing pytest and features we might want to use
 
 Some lines demonstrate failures, marked with ### fails
 
-Call with .../quantem/tests$pytest
+Call with .../quantem/tests$pytest _test_demo_with_fails.py
 useful flags are controlling verbosity : -q -v -vv etc.
 
 """

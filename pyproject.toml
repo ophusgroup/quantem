@@ -32,6 +32,7 @@ dependencies = [
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
   "pytest>=8.3.5",
+  "attrs>=25.3.0",
 ]
 
 [dependency-groups]

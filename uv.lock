@@ -1639,6 +1639,7 @@ name = "quantem"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "attrs" },
     { name = "cmasher" },
     { name = "colorspacious" },
     { name = "dill" },
@@ -1661,6 +1662,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "attrs", specifier = ">=25.3.0" },
     { name = "cmasher", specifier = ">=1.9.2" },
     { name = "colorspacious" },
     { name = "dill" },

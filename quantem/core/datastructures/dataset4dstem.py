@@ -1,41 +1,34 @@
 import matplotlib.pyplot as plt
 import numpy as np
+from attrs import define
 
-from quantem.core import config
 from quantem.core.datastructures.dataset import Dataset as Dataset
-from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
-if config.get("has_cupy"):
-    import cupy as cp
-else:
-    import numpy as cp
 
-
-# class for quantem 4d datasets
+@define
 class Dataset4dstem(Dataset):
-    def __init__(
-        self,
-        array: np.ndarray | cp.ndarray,
-        name: str | None = None,
-        origin: list | None = None,
-        sampling: list | None = None,
-        units: list[str] | None = None,
-        signal_units: str | None = None,
-    ):
-        super().__init__(
-            array=array,
-            name=name,
-            origin=origin,
-            sampling=sampling,
-            units=units,
-            signal_units=signal_units,
-        )
+    """A 4D-STEM dataset class that inherits from Dataset.
 
-        ## temp note: self.virtual_images is just returning a dictionary, which is probably fine.
-        ## it means it can't be type protected, but it is implicitly by only setting values
-        ## with self.get_virtual_image()
-        self._virtual_images: dict[str, Dataset] = {}
+    This class represents a 4D scanning transmission electron microscopy (STEM) dataset,
+    where the data consists of a 4D array with dimensions (scan_y, scan_x, dp_y, dp_x).
+    The first two dimensions represent real space scanning positions, while the latter
+    two dimensions represent reciprocal space diffraction patterns.
+
+    Attributes
+    ----------
+    virtual_images : dict[str, Dataset]
+        Dictionary storing virtual images generated from the 4D-STEM dataset.
+        Keys are image names and values are Dataset objects containing the images.
+    """
+
+    virtual_images: dict[str, Dataset] = {}
+
+    def __attrs_post_init__(self):
+        if self.array.ndim != 4:
+            raise ValueError(
+                f"Dataset4dstem must have 4 dimensions, got {self.array.ndim}"
+            )
 
     def __getitem__(self, index):
         """Simple indexing function to return Dataset view"""
@@ -176,13 +169,6 @@ class Dataset4dstem(Dataset):
 
         return dp_median_dataset
 
-    @property
-    def virtual_images(self) -> dict[str, Dataset]:
-        """
-        This is just a dictionary for now
-        """
-        return self._virtual_images
-
     def get_virtual_image(
         self,
         mask: np.ndarray,
@@ -225,8 +211,9 @@ class Dataset4dstem(Dataset):
 
     def show(
         self,
+        scalebar: ScalebarConfig | bool = True,
+        title: str | None = None,
         index=(0, 0),
-        scalebar=True,
         figax=None,
         axsize=(4, 4),
         **kwargs,
@@ -256,4 +243,6 @@ class Dataset4dstem(Dataset):
                 raise ValueError()
 
         for obj, ax in zip(list_of_objs, axs[0]):
-            obj.show(scalebar=scalebar, figax=(fig, ax), **kwargs)
+            obj.show(scalebar=scalebar, title=title, figax=(fig, ax), **kwargs)
+
+        return fig, axs

@@ -1,6 +1,8 @@
 from collections.abc import Iterable
+from typing import Any
 
 import numpy as np
+from attrs import Attribute, Converter, Factory, define, field
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
@@ -13,116 +15,102 @@ else:
     import numpy as cp
 
 
-# base class for quantem datasets
+# because converters run before validators, some validation has to be done here too
+# not sure how we want to handle dtypes, currently enforcing the initially set dtype, easily changed
+def _convert_array_dtype(
+    value: np.ndarray | cp.ndarray, self_: Any, field: Attribute
+) -> np.ndarray | cp.ndarray:
+    if not isinstance(value, (np.ndarray, cp.ndarray)):
+        raise ValueError(f"{field.name} must be a np.ndarray or cp.ndarray")
+    if hasattr(self_, "array"):
+        return value.astype(self_.dtype)
+    else:
+        return value
+
+
+def _validate_array(
+    instance: Any, attribute: Attribute, value: np.ndarray | cp.ndarray
+) -> None:
+    if not hasattr(instance, "array"):
+        return
+    current_ndim = getattr(instance, "ndim")
+    if value.ndim != current_ndim:
+        raise ValueError(
+            f"ndim of array, {value.ndim}, must equal current: {current_ndim}"
+        )
+
+
+def _convert_ndinfo(
+    value: np.ndarray | tuple | list, self_: Any, field: Attribute
+) -> np.ndarray:
+    if not isinstance(value, Iterable):
+        raise TypeError(
+            f"{field.name} should a ndarray/list/tuple. Got type {type(value)}"
+        )
+    return np.array(value)
+
+
+def _convert_listinfo(value: list | tuple, self_: Any, field: Attribute) -> list[str]:
+    if not isinstance(value, Iterable):
+        raise TypeError(
+            f"{field.name} should a ndarray/list/tuple. Got type {type(value)}"
+        )
+    return [str(v) for v in value]
+
+
+def _validate_ndinfo(instance: Any, attribute: Attribute, value: np.ndarray) -> None:
+    """Confirm dimension of origin, sampling, units"""
+    # could do if len(value) != instance.ndim here cuz array has been set, but fails with autoserialize
+    if not hasattr(instance, "array"):
+        return
+    current_ndim = getattr(instance, "ndim")
+    if len(value) != current_ndim:
+        raise ValueError(
+            f"Setting {attribute.name} of length {len(value)} which does not match array dimension {current_ndim}"
+        )
+
+
+@define
 class Dataset(AutoSerialize):
-    def __init__(
-        self,
-        array: np.ndarray | cp.ndarray,
-        name: str | None = None,
-        origin: np.ndarray | list | None = None,
-        sampling: np.ndarray | list | None = None,
-        units: list[str] | None = None,
-        signal_units: str | None = None,
-    ):
-        self.array = array
-        self.name = f"{array.ndim}d arrayset" if name is None else name
-        self.origin = np.zeros(array.ndim) if origin is None else origin
-        self.sampling = np.zeros(array.ndim) if sampling is None else sampling
-        self.units = ["pixels"] * array.ndim if units is None else units
-        self.signal_units = "arb. units" if signal_units is None else signal_units
+    """
+    A class representing a multi-dimensional dataset with metadata.
 
-    # Properties
-    @property
-    def array(self) -> np.ndarray | cp.ndarray:
-        return self._array
+    The Dataset class wraps an n-dimensional array (either numpy or cupy) and provides
+    metadata about the array's dimensions, units, and sampling. It supports automatic
+    serialization through inheritance from AutoSerialize.
 
-    @array.setter
-    def array(self, arr):
-        if isinstance(arr, np.ndarray):
-            pass
-        elif config.get("has_cupy"):
-            if isinstance(arr, cp.ndarray):
-                pass
-        elif isinstance(arr, (list, tuple)):
-            arr = np.array(arr)
-        else:
-            raise TypeError(f"bad type{type(arr)}")
+    Attributes:
+        array (np.ndarray | cp.ndarray): The underlying n-dimensional array data
+        name (str): A descriptive name for the dataset
+        origin (np.ndarray): The origin coordinates for each dimension
+        sampling (np.ndarray): The sampling rate/spacing for each dimension
+        units (list[str]): Units for each dimension (e.g. "nm", "eV", etc.)
+        signal_units (str): Units for the array values
+    """
 
-        if hasattr(self, "_array"):
-            if arr.ndim != self.ndim:
-                raise ValueError(
-                    f"Dimension of new array, {arr.ndim}, must equal current ndim: {self.ndim}"
-                )
-            self._array = arr.astype(self.dtype)
-        else:
-            self._array = arr
-
-    @property
-    def name(self) -> str:
-        return self._name
-
-    @name.setter
-    def name(self, val: str):
-        self._name = str(val)
-
-    @property
-    def origin(self) -> np.ndarray:
-        return self._origin
-
-    @origin.setter
-    def origin(self, val: np.ndarray | list | tuple):
-        if not isinstance(val, Iterable):
-            raise TypeError(
-                f"origin should be set with a ndarray/list/tuple. Got type {type(val)}"
-            )
-        origin = np.array(val)
-        if len(origin) != self.ndim:
-            raise ValueError(
-                f"Got origin length {len(origin)} which does not match array dimension {self.ndim}"
-            )
-        self._origin = origin
-
-    @property
-    def sampling(self) -> np.ndarray:
-        return self._sampling
-
-    @sampling.setter
-    def sampling(self, val: np.ndarray | list | tuple):
-        if not isinstance(val, Iterable):
-            raise TypeError(
-                f"sampling should be set with a ndarray/list/tuple. Got type {type(val)}"
-            )
-        sampling = np.array(val)
-        if len(sampling) != self.ndim:
-            raise ValueError(
-                f"Got sampling length {len(sampling)} which does not match array dimension {self.ndim}"
-            )
-        self._sampling = sampling
-
-    @property
-    def units(self) -> list[str]:
-        return self._units
-
-    @units.setter
-    def units(self, val: list | tuple):
-        if not isinstance(val, Iterable):
-            raise TypeError(
-                f"units should be set with a ndarray/list/tuple. Got type {type(val)}"
-            )
-        units = [str(v) for v in val]
-        if len(units) != self.ndim:
-            raise ValueError(
-                f"Got units length {len(units)} which does not match array dimension {self.ndim}"
-            )
-        self._units = units
-
-    @property
-    def signal_units(self) -> str:
-        return self._signal_units
-
-    @signal_units.setter
-    def signal_units(self, val: str):
-        self._signal_units = str(val)
+    array: np.ndarray | cp.ndarray = field(
+        converter=Converter(_convert_array_dtype, takes_self=True, takes_field=True),
+        validator=_validate_array,
+    )
+    name: str = field(
+        default=Factory(lambda self: f"{self.array.ndim}d dataset", takes_self=True)
+    )
+    origin: np.ndarray = field(
+        default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
+        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
+        validator=_validate_ndinfo,
+    )
+    sampling: np.ndarray = field(
+        default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
+        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
+        validator=_validate_ndinfo,
+    )
+    units: list[str] = field(
+        default=Factory(lambda self: ["pixels"] * self.array.ndim, takes_self=True),
+        converter=Converter(_convert_listinfo, takes_self=True, takes_field=True),
+        validator=_validate_ndinfo,
+    )
+    signal_units: str = field(default="arb. units", converter=str)
 
     @property
     def shape(self) -> tuple:
@@ -167,7 +155,15 @@ class Dataset(AutoSerialize):
         ]
         return "\n".join(description)
 
-    def copy(self, copy_attributes=False):
+    def copy(self, copy_attributes=False):  # TODO
+        """
+        Copies Dataset
+
+        Parameters
+        ----------
+        copy_attributes: bool
+            If True, copies attributes
+        """
         dataset = Dataset(
             array=self.array.copy(),
             name=self.name,
@@ -177,38 +173,67 @@ class Dataset(AutoSerialize):
             signal_units=self.signal_units,
         )
 
-        if copy_attributes is True:
-            for a0 in range(len(vars(self).keys())):
-                attr = list(vars(self).keys())[a0]
-                if hasattr(dataset, attr):
-                    continue
-                else:
+        if copy_attributes:
+            for attr in vars(self):
+                if not hasattr(dataset, attr):
                     try:
                         setattr(dataset, attr, getattr(self, attr).copy())
-                    except:
+                    except AttributeError:
                         pass
-
         return dataset
 
-    def mean(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
+    def mean(self, axes: tuple | None = None):
+        """
+        Computes and returns mean of Dataset
+
+        Parameters
+        ----------
+        axes: tuple
+            Axes over which to compute mean. If None specified, all axes are used.
+
+        Returns
+        --------
+        mean: Dataset
+            Mean of Dataset
+        """
         mean = self.array.mean(axis=axes)
         return mean
 
-    def max(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
+    def max(self, axes: tuple | None = None):
+        """
+        Computes and returns max of Dataset
+
+        Parameters
+        ----------
+        axes: tuple
+            Axes over which to compute max. If None specified, all axes are used.
+
+        Returns
+        --------
+        maximum: Dataset
+            Maximum of Dataset
+        """
         maximum = self.array.max(axis=axes)
         return maximum
 
-    def min(self, axes=None):
-        if axes is None:
-            axes = tuple(np.arange(self.ndim))
-        minimum = self.array.max(axis=axes)
+    def min(self, axes: tuple | None = None):
+        """
+        Computes and returns min of Dataset
+
+        Parameters
+        ----------
+        axes: tuple
+            Axes over which to compute min. If None specified, all axes are used.
+
+        Returns
+        --------
+        minimum: Dataset
+            Minimum of Dataset
+        """
+        minimum = self.array.min(axis=axes)
         return minimum
 
-    def pad(self, pad_width, modify_in_place=False, **kwargs):
+    def pad(self, pad_width: tuple, modify_in_place: bool = False, **kwargs):
         """
         Pads Dataset
 
@@ -359,11 +384,22 @@ class Dataset(AutoSerialize):
 
     def show(
         self,
-        scalebar=True,
-        title=None,
+        scalebar: ScalebarConfig | bool = True,
+        title: str | None = None,
         **kwargs,
     ):
-        """ """
+        """
+        Displays Dataset as a 2D image
+
+        Parameters
+        ----------
+        scalebar: ScalebarConfig or bool
+            If True, displays scalebar
+        title: str
+            Title of Dataset
+        kwargs: dict
+            Keyword arguments for show_2d
+        """
         if self.ndim != 2:
             raise NotImplementedError()  # base class only provides 2D. subclasses can override.
 
