@@ -1,4 +1,3 @@
-from collections.abc import Iterable
 from typing import Any
 
 import numpy as np
@@ -43,19 +42,11 @@ def _validate_array(
 def _convert_ndinfo(
     value: np.ndarray | tuple | list, self_: Any, field: Attribute
 ) -> np.ndarray:
-    if not isinstance(value, Iterable):
+    if not isinstance(value, (np.ndarray, tuple, list)):
         raise TypeError(
             f"{field.name} should a ndarray/list/tuple. Got type {type(value)}"
         )
     return np.array(value)
-
-
-def _convert_listinfo(value: list | tuple, self_: Any, field: Attribute) -> list[str]:
-    if not isinstance(value, Iterable):
-        raise TypeError(
-            f"{field.name} should a ndarray/list/tuple. Got type {type(value)}"
-        )
-    return [str(v) for v in value]
 
 
 def _validate_ndinfo(instance: Any, attribute: Attribute, value: np.ndarray) -> None:
@@ -102,12 +93,12 @@ class Dataset(AutoSerialize):
     )
     sampling: np.ndarray = field(
         default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
-        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
+        converter=np.ndarray,
         validator=_validate_ndinfo,
     )
     units: list[str] = field(
         default=Factory(lambda self: ["pixels"] * self.array.ndim, takes_self=True),
-        converter=Converter(_convert_listinfo, takes_self=True, takes_field=True),
+        converter=list[str],
         validator=_validate_ndinfo,
     )
     signal_units: str = field(default="arb. units", converter=str)
