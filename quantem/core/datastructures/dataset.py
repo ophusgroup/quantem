@@ -93,7 +93,7 @@ class Dataset(AutoSerialize):
     )
     sampling: np.ndarray = field(
         default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
-        converter=np.ndarray,
+        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
         validator=_validate_ndinfo,
     )
     units: list[str] = field(
