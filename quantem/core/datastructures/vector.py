@@ -16,35 +16,31 @@ class Vector(AutoSerialize):
         shape,
         num_fields=None,
         name=None,
-        field_names=None,
-        origin=None,
-        sampling=None,
+        fields=None,
         units=None,
     ):
         self.shape = shape
-        if field_names is not None:
-            self.num_fields = len(field_names)
+        if fields is not None:
+            self.num_fields = len(fields)
             if num_fields is not None and num_fields != self.num_fields:
                 raise ValueError(
-                    f"Specified num_fields ({num_fields}) does not match length of field_names ({self.num_fields})."
+                    f"Specified num_fields ({num_fields}) does not match length of fields ({self.num_fields})."
                 )
+            if len(set(fields)) != len(fields):
+                raise ValueError("Duplicate field names are not allowed.")
         elif num_fields is not None:
             self.num_fields = num_fields
         else:
-            raise ValueError("Must specify either num_fields or field_names.")
+            raise ValueError("Must specify either num_fields or fields.")
         self.ndim = len(shape) + 2
 
         self.name = name or f"{self.ndim}d ragged array"
-        self.field_names = (
-            list(field_names)
-            if field_names is not None
+        self.fields = (
+            list(fields)
+            if fields is not None
             else [f"field_{i}" for i in range(num_fields)]
         )
-        self.origin = np.array(origin) if origin is not None else np.zeros(num_fields)
-        self.sampling = (
-            np.array(sampling) if sampling is not None else np.ones(num_fields)
-        )
-        self.units = units if units is not None else ["pixels"] * num_fields
+        self.units = units if units is not None else ["none"] * num_fields
 
         # initialize empty set of lists
         self.data = nested_list(self.shape, fill=None)
@@ -122,7 +118,7 @@ class Vector(AutoSerialize):
 
     def __getitem__(self, idx):
         if isinstance(idx, str):  # field-level access
-            if idx not in self.field_names:
+            if idx not in self.fields:
                 raise KeyError(f"Field '{idx}' not found.")
             return _FieldView(self, idx)
 
@@ -185,9 +181,7 @@ class Vector(AutoSerialize):
                 shape=tuple(new_shape),
                 num_fields=self.num_fields,
                 name=self.name + "[view]",
-                field_names=self.field_names,
-                origin=self.origin,
-                sampling=self.sampling,
+                fields=self.fields,
                 units=self.units,
             )
             vector_new.data = sliced_data
@@ -195,9 +189,9 @@ class Vector(AutoSerialize):
 
     def __setitem__(self, idx, value):
         if isinstance(idx, str):  # field-level assignment
-            if idx not in self.field_names:
+            if idx not in self.fields:
                 raise KeyError(f"Field '{idx}' not found.")
-            field_index = self.field_names.index(idx)
+            field_index = self.fields.index(idx)
 
             if isinstance(value, _FieldView):
                 if value.vector is not self:
@@ -270,28 +264,29 @@ class Vector(AutoSerialize):
             value = value.data
         recursive_assign(self.data, list(idx), value)
 
-    def add_fields(self, new_field_names):
-        if isinstance(new_field_names, str):
-            new_field_names = [new_field_names]
+    def add_fields(self, new_fields):
+        if isinstance(new_fields, str):
+            new_fields = [new_fields]
         else:
-            new_field_names = list(new_field_names)
+            new_fields = list(new_fields)
 
-        if any(name in self.field_names for name in new_field_names):
+        if any(name in self.fields for name in new_fields):
             raise ValueError("One or more new field names already exist.")
 
-        self.field_names = list(self.field_names) + list(new_field_names)
-        self.num_fields += len(new_field_names)
-        self.origin = np.append(self.origin, np.zeros(len(new_field_names)))
-        self.sampling = np.append(self.sampling, np.ones(len(new_field_names)))
-        self.units = list(self.units) + ["pixels"] * len(new_field_names)
+        if len(set(new_fields)) != len(new_fields):
+            raise ValueError("Duplicate field names in input are not allowed.")
+
+        self.fields = list(self.fields) + list(new_fields)
+        self.num_fields += len(new_fields)
+        self.units = list(self.units) + ["none"] * len(new_fields)
 
         def expand_array(arr):
             if isinstance(arr, np.ndarray):
-                if arr.shape[1] != self.num_fields - len(new_field_names):
+                if arr.shape[1] != self.num_fields - len(new_fields):
                     raise ValueError(
-                        f"Expected arrays with {self.num_fields - len(new_field_names)} fields, got {arr.shape[1]}"
+                        f"Expected arrays with {self.num_fields - len(new_fields)} fields, got {arr.shape[1]}"
                     )
-                pad = np.zeros((arr.shape[0], len(new_field_names)))
+                pad = np.zeros((arr.shape[0], len(new_fields)))
                 return np.hstack([arr, pad])
             elif isinstance(arr, list):
                 return [expand_array(sub) for sub in arr]
@@ -306,7 +301,7 @@ class Vector(AutoSerialize):
         else:
             fields_to_remove = list(fields_to_remove)
 
-        field_to_index = {name: i for i, name in enumerate(self.field_names)}
+        field_to_index = {name: i for i, name in enumerate(self.fields)}
         indices_to_remove = []
         for field in fields_to_remove:
             if field not in field_to_index:
@@ -321,11 +316,9 @@ class Vector(AutoSerialize):
         keep_indices = [i for i in range(self.num_fields) if i not in indices_to_remove]
 
         # Update metadata
-        self.field_names = [self.field_names[i] for i in keep_indices]
-        self.origin = self.origin[keep_indices]
-        self.sampling = self.sampling[keep_indices]
+        self.fields = [self.fields[i] for i in keep_indices]
         self.units = [self.units[i] for i in keep_indices]
-        self.num_fields = len(self.field_names)
+        self.num_fields = len(self.fields)
 
         def prune_array(arr):
             if isinstance(arr, np.ndarray):
@@ -348,9 +341,7 @@ class Vector(AutoSerialize):
             shape=self.shape,
             num_fields=self.num_fields,
             name=self.name,
-            field_names=list(self.field_names),
-            origin=np.copy(self.origin),
-            sampling=np.copy(self.sampling),
+            fields=list(self.fields),
             units=list(self.units),
         )
         vector_copy.data = copy.deepcopy(self.data)
@@ -379,18 +370,17 @@ class Vector(AutoSerialize):
 
     def __repr__(self):
         description = [
-            f"quantem Vector, shape={self.shape}, name={self.name}",
-            f"  fields = {self.field_names}",
+            f"quantem.Vector, shape={self.shape}, name={self.name}",
+            f"  fields = {self.fields}",
+            f"  units: {self.units}",
         ]
         return "\n".join(description)
 
     def __str__(self):
         description = [
-            f"quantem Vector, shape={self.shape}, name={self.name}",
-            f"  fields = {self.field_names}",
+            f"quantem.Vector, shape={self.shape}, name={self.name}",
+            f"  fields = {self.fields}",
             f"  units: {self.units}",
-            f"  origin: {self.origin}",
-            f"  sampling: {self.sampling}",
         ]
         return "\n".join(description)
 
@@ -407,7 +397,7 @@ class _FieldView:
     def __init__(self, vector, field_name):
         self.vector = vector
         self.field_name = field_name
-        self.field_index = vector.field_names.index(field_name)
+        self.field_index = vector.fields.index(field_name)
 
     def _apply_op(self, op):
         def apply(arr):
