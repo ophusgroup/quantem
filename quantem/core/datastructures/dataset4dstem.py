@@ -47,9 +47,9 @@ class Dataset4dstem(Dataset):
             A new Dataset4dstem instance loaded from the file
         """
         # Import here to avoid circular imports
-        from quantem.core.io.file_readers import read_4D
+        from quantem.core.io.file_readers import read_4d
 
-        return read_4D(file_path, file_type)
+        return read_4d(file_path, file_type)
 
     @classmethod
     def from_array(
