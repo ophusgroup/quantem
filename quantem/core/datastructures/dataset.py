@@ -43,15 +43,49 @@ class Dataset(AutoSerialize):
 
     _token = object()
 
-    def __init__(self, _token=None):
+    def __init__(
+        self,
+        array: np.ndarray | cp.ndarray,
+        name: str,
+        origin: np.ndarray,
+        sampling: np.ndarray,
+        units: list[str],
+        signal_units: str = "arb. units",
+        _token: object | None = None,
+    ):
+        """Initialize a Dataset.
+
+        Parameters
+        ----------
+        array : np.ndarray | cp.ndarray
+            The underlying n-dimensional array data
+        name : str
+            A descriptive name for the dataset
+        origin : np.ndarray
+            The origin coordinates for each dimension
+        sampling : np.ndarray
+            The sampling rate/spacing for each dimension
+        units : list[str]
+            Units for each dimension (e.g. "nm", "eV", etc.)
+        signal_units : str, optional
+            Units for the array values, by default "arb. units"
+        _token : object | None, optional
+            Token to prevent direct instantiation, by default None
+
+        Raises
+        ------
+        RuntimeError
+            If instantiated directly without using from_array()
+        """
         if _token is not self._token:
             raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
-        self._array = None
-        self._name = None
-        self._origin = None
-        self._sampling = None
-        self._units = None
-        self._signal_units = "arb. units"
+
+        self.array = array
+        self.name = name
+        self.origin = origin
+        self.sampling = sampling
+        self.units = units
+        self.signal_units = signal_units
 
     @classmethod
     def from_array(
@@ -75,7 +109,7 @@ class Dataset(AutoSerialize):
         origin : np.ndarray | tuple | list | None, optional
             The origin coordinates for each dimension. If None, defaults to zeros
         sampling : np.ndarray | tuple | list | None, optional
-            The sampling rate/spacing for each dimension. If None, defaults to zeros
+            The sampling rate/spacing for each dimension. If None, defaults to ones
         units : list[str] | None, optional
             Units for each dimension. If None, defaults to ["pixels"] * array.ndim
         signal_units : str, optional
@@ -86,14 +120,15 @@ class Dataset(AutoSerialize):
         Dataset
             A new Dataset instance
         """
-        dataset = cls(_token=cls._token)
-        dataset.array = array
-        dataset.name = name if name is not None else f"{array.ndim}d dataset"
-        dataset.origin = origin if origin is not None else np.zeros(array.ndim)
-        dataset.sampling = sampling if sampling is not None else np.zeros(array.ndim)
-        dataset.units = units if units is not None else ["pixels"] * array.ndim
-        dataset.signal_units = signal_units
-        return dataset
+        return cls(
+            array=array,
+            name=name if name is not None else f"{array.ndim}d dataset",
+            origin=origin if origin is not None else np.zeros(array.ndim),
+            sampling=sampling if sampling is not None else np.ones(array.ndim),
+            units=units if units is not None else ["pixels"] * array.ndim,
+            signal_units=signal_units,
+            _token=cls._token,
+        )
 
     @validated(
         lambda self: pipe(

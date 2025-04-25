@@ -1,8 +1,14 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
+from quantem.core import config
 from quantem.core.datastructures.dataset import Dataset
 from quantem.core.visualization.visualization_utils import ScalebarConfig
+
+if config.get("has_cupy"):
+    import cupy as cp
+else:
+    import numpy as cp
 
 
 class Dataset4dstem(Dataset):
@@ -20,12 +26,44 @@ class Dataset4dstem(Dataset):
         Keys are image names and values are Dataset objects containing the images.
     """
 
-    def __init__(self, _token=None):
-        if _token is not self._token:
-            raise RuntimeError(
-                "Use Dataset4dstem.from_array() to instantiate this class."
-            )
-        super().__init__(_token=Dataset._token)
+    def __init__(
+        self,
+        array: np.ndarray | cp.ndarray,
+        name: str,
+        origin: np.ndarray,
+        sampling: np.ndarray,
+        units: list[str],
+        signal_units: str = "arb. units",
+        _token: object | None = None,
+    ):
+        """Initialize a 4D-STEM dataset.
+
+        Parameters
+        ----------
+        array : np.ndarray | cp.ndarray
+            The underlying 4D array data
+        name : str
+            A descriptive name for the dataset
+        origin : np.ndarray
+            The origin coordinates for each dimension
+        sampling : np.ndarray
+            The sampling rate/spacing for each dimension
+        units : list[str]
+            Units for each dimension
+        signal_units : str, optional
+            Units for the array values, by default "arb. units"
+        _token : object | None, optional
+            Token to prevent direct instantiation, by default None
+        """
+        super().__init__(
+            array=array,
+            name=name,
+            origin=origin,
+            sampling=sampling,
+            units=units,
+            signal_units=signal_units,
+            _token=_token,
+        )
         self._virtual_images = {}
 
     @classmethod
@@ -54,7 +92,7 @@ class Dataset4dstem(Dataset):
     @classmethod
     def from_array(
         cls,
-        array: np.ndarray,
+        array: np.ndarray | cp.ndarray,
         name: str | None = None,
         origin: np.ndarray | tuple | list | None = None,
         sampling: np.ndarray | tuple | list | None = None,
@@ -66,14 +104,14 @@ class Dataset4dstem(Dataset):
 
         Parameters
         ----------
-        array : np.ndarray
+        array : np.ndarray | cp.ndarray
             The underlying 4D array data
         name : str | None, optional
             A descriptive name for the dataset. If None, defaults to "4D-STEM dataset"
         origin : np.ndarray | tuple | list | None, optional
             The origin coordinates for each dimension. If None, defaults to zeros
         sampling : np.ndarray | tuple | list | None, optional
-            The sampling rate/spacing for each dimension. If None, defaults to zeros
+            The sampling rate/spacing for each dimension. If None, defaults to ones
         units : list[str] | None, optional
             Units for each dimension. If None, defaults to ["pixels"] * 4
         signal_units : str, optional
@@ -84,21 +122,15 @@ class Dataset4dstem(Dataset):
         Dataset4dstem
             A new Dataset4dstem instance
         """
-        dataset = cls(_token=cls._token)
-        dataset.array = array
-        dataset.name = name if name is not None else "4D-STEM dataset"
-        dataset.origin = origin if origin is not None else np.zeros(4)
-        dataset.sampling = sampling if sampling is not None else np.zeros(4)
-        dataset.units = units if units is not None else ["pixels"] * 4
-        dataset.signal_units = signal_units
-
-        # Validate that the array has 4 dimensions
-        if dataset.array.ndim != 4:
-            raise ValueError(
-                f"Dataset4dstem must have 4 dimensions, got {dataset.array.ndim}"
-            )
-
-        return dataset
+        return cls(
+            array=array,
+            name=name if name is not None else "4D-STEM dataset",
+            origin=origin if origin is not None else np.zeros(4),
+            sampling=sampling if sampling is not None else np.ones(4),
+            units=units if units is not None else ["pixels"] * 4,
+            signal_units=signal_units,
+            _token=cls._token,
+        )
 
     @property
     def virtual_images(self) -> dict[str, Dataset]:
