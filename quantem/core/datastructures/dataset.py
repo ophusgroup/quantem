@@ -1,19 +1,18 @@
-from typing import Any, Callable
+from typing import Any, List, Optional, Tuple, Union
 
 import numpy as np
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import (
-    ensure_array,
-    ensure_array_dtype,
-    ensure_ndinfo,
-    ensure_str,
-    ensure_units,
-    pipe,
-    validate_array_dimensions,
-    validate_ndinfo_length,
-    validated,
+    EnsureArray,
+    EnsureArrayDtype,
+    EnsureNdinfo,
+    EnsureStr,
+    EnsureUnits,
+    ValidateArrayDimensions,
+    ValidatedProperty,
+    ValidateNdinfoLength,
 )
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
@@ -42,6 +41,32 @@ class Dataset(AutoSerialize):
     """
 
     _token = object()
+
+    # Define validated properties using the new approach
+    array = ValidatedProperty(
+        EnsureArray(),
+        EnsureArrayDtype(),
+        ValidateArrayDimensions(),
+    )
+
+    name = ValidatedProperty(EnsureStr())
+
+    origin = ValidatedProperty(
+        EnsureNdinfo(),
+        ValidateNdinfoLength(),
+    )
+
+    sampling = ValidatedProperty(
+        EnsureNdinfo(),
+        ValidateNdinfoLength(),
+    )
+
+    units = ValidatedProperty(
+        EnsureUnits(),
+        ValidateNdinfoLength(),
+    )
+
+    signal_units = ValidatedProperty(EnsureStr())
 
     def __init__(
         self,
@@ -129,57 +154,6 @@ class Dataset(AutoSerialize):
             signal_units=signal_units,
             _token=cls._token,
         )
-
-    @validated(
-        lambda self: pipe(
-            ensure_array,
-            lambda x: ensure_array_dtype(x, getattr(self, "dtype", None)),
-            lambda x: validate_array_dimensions(x, getattr(self, "ndim", None)),
-        )
-    )
-    def array(self) -> np.ndarray | cp.ndarray:
-        """The underlying n-dimensional array data."""
-        pass
-
-    @validated(lambda self: ensure_str)
-    def name(self) -> str:
-        """A descriptive name for the dataset."""
-        pass
-
-    @validated(
-        lambda self: pipe(
-            ensure_ndinfo,
-            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
-        )
-    )
-    def origin(self) -> np.ndarray:
-        """The origin coordinates for each dimension."""
-        pass
-
-    @validated(
-        lambda self: pipe(
-            ensure_ndinfo,
-            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
-        )
-    )
-    def sampling(self) -> np.ndarray:
-        """The sampling rate/spacing for each dimension."""
-        pass
-
-    @validated(
-        lambda self: pipe(
-            ensure_units,
-            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
-        )
-    )
-    def units(self) -> list[str]:
-        """Units for each dimension (e.g. "nm", "eV", etc.)."""
-        pass
-
-    @validated(lambda self: ensure_str)
-    def signal_units(self) -> str:
-        """Units for the array values."""
-        pass
 
     @property
     def shape(self) -> tuple:

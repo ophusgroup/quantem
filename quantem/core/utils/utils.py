@@ -1,5 +1,5 @@
-from functools import wraps
-from typing import Any, Callable
+from dataclasses import dataclass
+from typing import Any, List, Optional, Type, Union
 
 import numpy as np
 
@@ -11,96 +11,151 @@ else:
     import numpy as cp
 
 
-# --- Validation Decorator ---
-def validated(validator_factory: Callable) -> Callable:
+# --- Validator Base Class ---
+@dataclass
+class Validator:
+    """Base class for all validators."""
+
+    def __call__(self, value: Any, instance: Any = None) -> Any:
+        """Apply the validation logic to the value."""
+        raise NotImplementedError("Subclasses must implement __call__")
+
+
+# --- Validator Descriptor ---
+class ValidatedProperty:
     """
-    Decorator for property-style validated fields.
+    A descriptor that applies a chain of validators to a property.
 
     Example:
-        @validated(lambda self: pipe(ensure_int, is_positive))
-        def my_attr(self): ...
+        class Example:
+            level = ValidatedProperty(
+                EnsureInt(),
+                IsPositive(),
+                InsideRange(low=0, high=10),
+            )
+
+            def __init__(self, level):
+                self.level = level
     """
 
-    def decorator(func):
-        attr_name = func.__name__
-        private_name = f"_{attr_name}"
+    def __init__(self, *validators: Validator):
+        self.validators = validators
+        self.private_name = None
 
-        @property
-        def prop(self):
-            return getattr(self, private_name)
+    def __set_name__(self, owner: Type, name: str) -> None:
+        """Set the private name for the property."""
+        self.private_name = f"_{name}"
 
-        @prop.setter
-        def prop(self, value):
-            validator = validator_factory(self)
-            validated_value = validator(value)
-            setattr(self, private_name, validated_value)
+    def __get__(self, obj: Any, objtype: Optional[Type] = None) -> Any:
+        """Get the property value."""
+        if obj is None:
+            return self
+        return getattr(obj, self.private_name)
 
-        return prop
+    def __set__(self, obj: Any, value: Any) -> None:
+        """Set the property value after applying validators."""
+        if obj is None:
+            return
 
-    return decorator
+        # Apply each validator in sequence
+        validated_value = value
+        for validator in self.validators:
+            validated_value = validator(validated_value, obj)
 
-
-# --- Validator composition ---
-def pipe(*funcs: Callable) -> Callable:
-    """Compose multiple validator/converter functions into one."""
-
-    def composed(val):
-        for f in funcs:
-            val = f(val)
-        return val
-
-    return composed
+        # Store the validated value
+        setattr(obj, self.private_name, validated_value)
 
 
-# --- Dataset-specific validators and converters ---
-def ensure_array(value: Any) -> np.ndarray | cp.ndarray:
+# --- Dataset-specific validators ---
+@dataclass
+class EnsureArray(Validator):
     """Convert value to numpy or cupy array."""
-    if isinstance(value, (np.ndarray, cp.ndarray)):
-        return value
-    return np.array(value)
+
+    def __call__(
+        self, value: Any, instance: Any = None
+    ) -> Union[np.ndarray, cp.ndarray]:
+        if isinstance(value, (np.ndarray, cp.ndarray)):
+            return value
+        return np.array(value)
 
 
-def ensure_array_dtype(
-    value: np.ndarray | cp.ndarray, dtype: np.dtype | None = None
-) -> np.ndarray | cp.ndarray:
+@dataclass
+class EnsureArrayDtype(Validator):
     """Ensure array has the correct dtype."""
-    if dtype is not None:
-        return value.astype(dtype)
-    return value
 
+    dtype: Optional[np.dtype] = None
 
-def ensure_ndinfo(value: Any) -> np.ndarray:
-    """Convert value to numpy array for ndinfo fields (origin, sampling)."""
-    if isinstance(value, np.ndarray):
+    def __call__(
+        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
+    ) -> Union[np.ndarray, cp.ndarray]:
+        if self.dtype is not None:
+            return value.astype(self.dtype)
         return value
-    return np.array(value)
 
 
-def ensure_units(value: Any) -> list[str]:
+@dataclass
+class EnsureNdinfo(Validator):
+    """Convert value to numpy array for ndinfo fields (origin, sampling)."""
+
+    def __call__(self, value: Any, instance: Any = None) -> np.ndarray:
+        if isinstance(value, np.ndarray):
+            return value
+        return np.array(value)
+
+
+@dataclass
+class EnsureUnits(Validator):
     """Convert value to list of strings for units."""
-    if isinstance(value, (list, tuple)):
-        return [str(unit) for unit in value]
-    return [str(value)]
+
+    def __call__(self, value: Any, instance: Any = None) -> List[str]:
+        if isinstance(value, (list, tuple)):
+            return [str(unit) for unit in value]
+        return [str(value)]
 
 
-def ensure_str(value: Any) -> str:
+@dataclass
+class EnsureStr(Validator):
     """Convert value to string."""
-    return str(value)
+
+    def __call__(self, value: Any, instance: Any = None) -> str:
+        return str(value)
 
 
-def validate_array_dimensions(
-    value: np.ndarray | cp.ndarray, ndim: int | None = None
-) -> np.ndarray | cp.ndarray:
+@dataclass
+class ValidateArrayDimensions(Validator):
     """Validate array dimensions match expected ndim."""
-    if ndim is not None and value.ndim != ndim:
-        raise ValueError(
-            f"Array dimension {value.ndim} must equal expected dimension {ndim}"
-        )
-    return value
+
+    ndim: Optional[int] = None
+
+    def __call__(
+        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
+    ) -> Union[np.ndarray, cp.ndarray]:
+        if instance is not None and hasattr(instance, "ndim"):
+            expected_ndim = instance.ndim
+        else:
+            expected_ndim = self.ndim
+
+        if expected_ndim is not None and value.ndim != expected_ndim:
+            raise ValueError(
+                f"Array dimension {value.ndim} must equal expected dimension {expected_ndim}"
+            )
+        return value
 
 
-def validate_ndinfo_length(value: np.ndarray, ndim: int | None = None) -> np.ndarray:
+@dataclass
+class ValidateNdinfoLength(Validator):
     """Validate ndinfo array length matches expected ndim."""
-    if ndim is not None and len(value) != ndim:
-        raise ValueError(f"Length {len(value)} must match dimension {ndim}")
-    return value
+
+    ndim: Optional[int] = None
+
+    def __call__(self, value: np.ndarray, instance: Any = None) -> np.ndarray:
+        if instance is not None and hasattr(instance, "ndim"):
+            expected_ndim = instance.ndim
+        else:
+            expected_ndim = self.ndim
+
+        if expected_ndim is not None and len(value) != expected_ndim:
+            raise ValueError(
+                f"Length {len(value)} must match dimension {expected_ndim}"
+            )
+        return value

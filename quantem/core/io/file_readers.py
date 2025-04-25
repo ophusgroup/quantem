@@ -4,7 +4,7 @@ from quantem.core.datastructures import Dataset as Dataset
 from quantem.core.datastructures import Dataset4dstem as Dataset4dstem
 
 
-def read_4d(
+def read_4dstem(
     file_path: str,
     file_type: str,
 ):
