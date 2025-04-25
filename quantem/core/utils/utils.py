@@ -16,7 +16,7 @@ else:
 class Validator:
     """Base class for all validators."""
 
-    def __call__(self, value: Any) -> Any:
+    def __call__(self, value: Any, instance: Any = None) -> Any:
         """Apply the validation logic to the value."""
         raise NotImplementedError("Subclasses must implement __call__")
 
@@ -60,7 +60,7 @@ class ValidatedProperty:
         # Apply each validator in sequence
         validated_value = value
         for validator in self.validators:
-            validated_value = validator(validated_value)
+            validated_value = validator(validated_value, obj)
 
         # Store the validated value
         setattr(obj, self.private_name, validated_value)
@@ -71,7 +71,9 @@ class ValidatedProperty:
 class EnsureArray(Validator):
     """Convert value to numpy or cupy array."""
 
-    def __call__(self, value: Any) -> Union[np.ndarray, cp.ndarray]:
+    def __call__(
+        self, value: Any, instance: Any = None
+    ) -> Union[np.ndarray, cp.ndarray]:
         if isinstance(value, (np.ndarray, cp.ndarray)):
             return value
         return np.array(value)
@@ -84,7 +86,7 @@ class EnsureArrayDtype(Validator):
     dtype: Optional[np.dtype] = None
 
     def __call__(
-        self, value: Union[np.ndarray, cp.ndarray]
+        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
     ) -> Union[np.ndarray, cp.ndarray]:
         if self.dtype is not None:
             return value.astype(self.dtype)
@@ -95,7 +97,7 @@ class EnsureArrayDtype(Validator):
 class EnsureNdinfo(Validator):
     """Convert value to numpy array for ndinfo fields (origin, sampling)."""
 
-    def __call__(self, value: Any) -> np.ndarray:
+    def __call__(self, value: Any, instance: Any = None) -> np.ndarray:
         if isinstance(value, np.ndarray):
             return value
         return np.array(value)
@@ -105,7 +107,7 @@ class EnsureNdinfo(Validator):
 class EnsureUnits(Validator):
     """Convert value to list of strings for units."""
 
-    def __call__(self, value: Any) -> List[str]:
+    def __call__(self, value: Any, instance: Any = None) -> List[str]:
         if isinstance(value, (list, tuple)):
             return [str(unit) for unit in value]
         return [str(value)]
@@ -115,7 +117,7 @@ class EnsureUnits(Validator):
 class EnsureStr(Validator):
     """Convert value to string."""
 
-    def __call__(self, value: Any) -> str:
+    def __call__(self, value: Any, instance: Any = None) -> str:
         return str(value)
 
 
@@ -126,11 +128,16 @@ class ValidateArrayDimensions(Validator):
     ndim: Optional[int] = None
 
     def __call__(
-        self, value: Union[np.ndarray, cp.ndarray]
+        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
     ) -> Union[np.ndarray, cp.ndarray]:
-        if self.ndim is not None and value.ndim != self.ndim:
+        if instance is not None and hasattr(instance, "ndim"):
+            expected_ndim = instance.ndim
+        else:
+            expected_ndim = self.ndim
+
+        if expected_ndim is not None and value.ndim != expected_ndim:
             raise ValueError(
-                f"Array dimension {value.ndim} must equal expected dimension {self.ndim}"
+                f"Array dimension {value.ndim} must equal expected dimension {expected_ndim}"
             )
         return value
 
@@ -141,7 +148,14 @@ class ValidateNdinfoLength(Validator):
 
     ndim: Optional[int] = None
 
-    def __call__(self, value: np.ndarray) -> np.ndarray:
-        if self.ndim is not None and len(value) != self.ndim:
-            raise ValueError(f"Length {len(value)} must match dimension {self.ndim}")
+    def __call__(self, value: np.ndarray, instance: Any = None) -> np.ndarray:
+        if instance is not None and hasattr(instance, "ndim"):
+            expected_ndim = instance.ndim
+        else:
+            expected_ndim = self.ndim
+
+        if expected_ndim is not None and len(value) != expected_ndim:
+            raise ValueError(
+                f"Length {len(value)} must match dimension {expected_ndim}"
+            )
         return value
