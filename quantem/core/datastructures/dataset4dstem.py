@@ -1,12 +1,10 @@
 import matplotlib.pyplot as plt
 import numpy as np
-from attrs import define
 
-from quantem.core.datastructures.dataset import Dataset as Dataset
+from quantem.core.datastructures.dataset import Dataset
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
-@define
 class Dataset4dstem(Dataset):
     """A 4D-STEM dataset class that inherits from Dataset.
 
@@ -22,13 +20,90 @@ class Dataset4dstem(Dataset):
         Keys are image names and values are Dataset objects containing the images.
     """
 
-    virtual_images: dict[str, Dataset] = {}
-
-    def __attrs_post_init__(self):
-        if self.array.ndim != 4:
-            raise ValueError(
-                f"Dataset4dstem must have 4 dimensions, got {self.array.ndim}"
+    def __init__(self, _token=None):
+        if _token is not self._token:
+            raise RuntimeError(
+                "Use Dataset4dstem.from_array() to instantiate this class."
             )
+        super().__init__(_token=Dataset._token)
+        self._virtual_images = {}
+
+    @classmethod
+    def from_file(cls, file_path: str, file_type: str) -> "Dataset4dstem":
+        """
+        Create a new Dataset4dstem from a file.
+
+        Parameters
+        ----------
+        file_path : str
+            Path to the data file
+        file_type : str
+            The type of file reader needed. See rosettasciio for supported formats
+            https://hyperspy.org/rosettasciio/supported_formats/index.html
+
+        Returns
+        -------
+        Dataset4dstem
+            A new Dataset4dstem instance loaded from the file
+        """
+        # Import here to avoid circular imports
+        from quantem.core.io.file_readers import read_4D
+
+        return read_4D(file_path, file_type)
+
+    @classmethod
+    def from_array(
+        cls,
+        array: np.ndarray,
+        name: str | None = None,
+        origin: np.ndarray | tuple | list | None = None,
+        sampling: np.ndarray | tuple | list | None = None,
+        units: list[str] | None = None,
+        signal_units: str = "arb. units",
+    ) -> "Dataset4dstem":
+        """
+        Create a new Dataset4dstem from an array.
+
+        Parameters
+        ----------
+        array : np.ndarray
+            The underlying 4D array data
+        name : str | None, optional
+            A descriptive name for the dataset. If None, defaults to "4D-STEM dataset"
+        origin : np.ndarray | tuple | list | None, optional
+            The origin coordinates for each dimension. If None, defaults to zeros
+        sampling : np.ndarray | tuple | list | None, optional
+            The sampling rate/spacing for each dimension. If None, defaults to zeros
+        units : list[str] | None, optional
+            Units for each dimension. If None, defaults to ["pixels"] * 4
+        signal_units : str, optional
+            Units for the array values, by default "arb. units"
+
+        Returns
+        -------
+        Dataset4dstem
+            A new Dataset4dstem instance
+        """
+        dataset = cls(_token=cls._token)
+        dataset.array = array
+        dataset.name = name if name is not None else "4D-STEM dataset"
+        dataset.origin = origin if origin is not None else np.zeros(4)
+        dataset.sampling = sampling if sampling is not None else np.zeros(4)
+        dataset.units = units if units is not None else ["pixels"] * 4
+        dataset.signal_units = signal_units
+
+        # Validate that the array has 4 dimensions
+        if dataset.array.ndim != 4:
+            raise ValueError(
+                f"Dataset4dstem must have 4 dimensions, got {dataset.array.ndim}"
+            )
+
+        return dataset
+
+    @property
+    def virtual_images(self) -> dict[str, Dataset]:
+        """Dictionary storing virtual images generated from the 4D-STEM dataset."""
+        return self._virtual_images
 
     def __getitem__(self, index):
         """Simple indexing function to return Dataset view"""
@@ -37,7 +112,7 @@ class Dataset4dstem(Dataset):
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
 
-        return Dataset(
+        return Dataset.from_array(
             array=array_view,
             name=self.name + str(index),
             origin=self.origin[index] if calibrated_origin else self.origin[-ndim:],
@@ -73,7 +148,7 @@ class Dataset4dstem(Dataset):
         """
         dp_mean = self.mean((0, 1))
 
-        dp_mean_dataset = Dataset(
+        dp_mean_dataset = Dataset.from_array(
             array=dp_mean,
             name=self.name + "_dp_mean",
             origin=self.origin[-2:],
@@ -114,7 +189,7 @@ class Dataset4dstem(Dataset):
         """
         dp_max = self.max((0, 1))
 
-        dp_max_dataset = Dataset(
+        dp_max_dataset = Dataset.from_array(
             array=dp_max,
             name=self.name + "_dp_max",
             origin=self.origin[-2:],
@@ -155,7 +230,7 @@ class Dataset4dstem(Dataset):
         """
         dp_median = np.median(self.array, axis=(0, 1))
 
-        dp_median_dataset = Dataset(
+        dp_median_dataset = Dataset.from_array(
             array=dp_median,
             name=self.name + "_dp_median",
             origin=self.origin[-2:],
@@ -195,7 +270,7 @@ class Dataset4dstem(Dataset):
 
         virtual_image = np.sum(self.array * mask, axis=(-1, -2))
 
-        virtual_image_dataset = Dataset(
+        virtual_image_dataset = Dataset.from_array(
             array=virtual_image,
             name=name,
             origin=self.origin[0:2],
@@ -205,7 +280,7 @@ class Dataset4dstem(Dataset):
         )
 
         if attach is True:
-            self.virtual_images[name] = virtual_image_dataset
+            self._virtual_images[name] = virtual_image_dataset
 
         return virtual_image_dataset
 
