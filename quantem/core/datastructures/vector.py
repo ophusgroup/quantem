@@ -5,10 +5,92 @@ from quantem.core.io.serialize import AutoSerialize
 
 class Vector(AutoSerialize):
     """
-    base class for holding vector data, with ragged array lengths.
-    This class has any number of fixed dimensions (which are indexed first)
-    followed by a ragged numpy array, which can have any number of entries (rows)
-    and columns (fields).
+    A class for holding vector data with ragged array lengths. This class supports any number of fixed dimensions
+    (indexed first) followed by a ragged numpy array that can have any number of entries (rows) and columns (fields).
+    Inherits from AutoSerialize for serialization support.
+
+    Basic Usage:
+    -----------
+    # Create a 2D vector with 3 fields
+    v = Vector(shape=(4, 3), fields=['field0', 'field1', 'field2'])
+
+    # Alternative creation with num_fields instead of fields
+    v = Vector(shape=(4, 3), num_fields=3)  # Fields will be named field_0, field_1, field_2
+
+    # Create with custom name and units
+    v = Vector(
+        shape=(4, 3),
+        fields=['field0', 'field1', 'field2'],
+        name='my_vector',
+        units=['unit0', 'unit1', 'unit2'],
+    )
+
+    # Access data at specific indices
+    data = v[0, 1]  # Returns numpy array at position (0,1)
+
+    # Set data at specific indices
+    v[0, 1] = np.array([[1.0, 2.0, 3.0]])  # Must match num_fields
+
+    # Create a deep copy
+    v_copy = v.copy()
+
+    Field Operations:
+    ----------------
+    # Access a specific field
+    field_data = v['field0']  # Returns a FieldView object
+
+    # Perform operations on a field
+    v['field0'] += 16  # Add 16 to all field0 values
+
+    # Apply a function to a field
+    v['field2'] = lambda x: x * 2  # Double all field2 values
+
+    # Get flattened field data
+    field_flat = v['field0'].flatten()  # Returns 1D numpy array
+
+    # Set field data from flattened array
+    v['field2'].set_flattened(new_values)  # Must match total length
+
+    Advanced Operations:
+    -------------------
+    # Complex field calculations
+    scale = v['field0'].flatten() / (v['field0'].flatten()**2 + v['field1'].flatten()**2)
+    v['field2'].set_flattened(v['field2'].flatten() * scale)
+
+    # Slicing and assignment
+    v[2:4, 1] = v[1:3, 1]  # Copy data from one region to another
+
+    # Boolean indexing
+    mask = v['field0'].flatten() > 0
+    v['field2'].set_flattened(v['field2'].flatten() * mask)
+
+    # Field management
+    v.add_fields(('field3', 'field4', 'field5'))  # Add new fields
+    v.remove_fields(('field3', 'field4', 'field5'))  # Remove fields
+
+    Direct Data Access:
+    ------------------
+    # Get data with integer indexing
+    data = v.get_data(0, 1)  # Returns numpy array at (0,1)
+
+    # Get data with slice indexing
+    data = v.get_data(slice(0, 2), 1)  # Returns list of arrays for rows 0-1 at column 1
+
+    # Set data with integer indexing
+    v.set_data(np.array([[1.0, 2.0, 3.0]]), 0, 1)  # Set data at (0,1)
+
+    # Set data with slice indexing
+    v.set_data([np.array([[1.0, 2.0, 3.0]]), np.array([[4.0, 5.0, 6.0]])],
+               slice(0, 2), 1)  # Set data for rows 0-1 at column 1
+
+    Notes:
+    -----
+    - All numpy arrays stored in the vector must have the same number of columns (fields)
+    - Field names must be unique
+    - Slicing operations return new Vector instances
+    - Field operations are performed in-place
+    - Units are stored for each field and can be accessed via the units attribute
+    - The name attribute can be used to identify the vector in a larger context
     """
 
     def __init__(
@@ -46,75 +128,151 @@ class Vector(AutoSerialize):
         self.data = nested_list(self.shape, fill=None)
 
     def get_data(self, *indices):
+        """
+        Get data at specified indices, supporting numpy-style fancy indexing.
+
+        Parameters:
+        -----------
+        *indices : int, slice, or numpy.ndarray
+            Indices to access. Can be integers, slices, or boolean/integer arrays.
+            Must match the number of dimensions in the vector.
+
+        Returns:
+        --------
+        numpy.ndarray or list
+            The data at the specified indices. Returns a numpy array for integer
+            indexing, or a list of arrays for slice/boolean/integer array indexing.
+        """
         if len(indices) != len(self.shape):
             raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
 
-        ref = self.data
-        for idx in indices:
-            ref = ref[idx]
-        return ref
+        def recursive_get(ref, idx_list):
+            if not idx_list:
+                return ref
+            idx, *rest = idx_list
+            if isinstance(idx, slice):
+                return [
+                    recursive_get(ref[i], rest) for i in range(*idx.indices(len(ref)))
+                ]
+            elif isinstance(idx, np.ndarray):
+                if idx.dtype == bool:
+                    return [recursive_get(ref[i], rest) for i in np.where(idx)[0]]
+                else:  # integer array indexing
+                    return [recursive_get(ref[i], rest) for i in idx]
+            else:
+                return recursive_get(ref[idx], rest)
+
+        return recursive_get(self.data, indices)
 
     def set_data(self, *indices_and_value):
+        """
+        Set data at specified indices, supporting numpy-style fancy indexing.
+
+        Parameters:
+        -----------
+        *indices_and_value : tuple
+            The last element is the value to set, preceding elements are indices.
+            Indices can be integers, slices, or boolean/integer arrays.
+            Must match the number of dimensions in the vector.
+
+        Raises:
+        -------
+        ValueError
+            If the number of indices doesn't match the vector dimensions,
+            or if the value shape doesn't match the expected shape.
+        """
         value, *indices = indices_and_value
         if len(indices) != len(self.shape):
             raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
 
-        ref = self.data
-        for idx in indices[:-1]:
-            ref = ref[idx]
-        if not isinstance(value, np.ndarray) or value.shape[1] != self.num_fields:
-            raise ValueError(
-                f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape if isinstance(value, np.ndarray) else type(value)}"
-            )
-        ref[indices[-1]] = value
+        def recursive_set(ref, idx_list, val):
+            idx, *rest = idx_list
+            if not rest:
+                if isinstance(idx, slice):
+                    expected_length = len(range(*idx.indices(len(ref))))
+                    if len(val) != expected_length:
+                        raise ValueError(
+                            f"Mismatch: expected {expected_length} items, got {len(val)}"
+                        )
+                    for i, v in zip(range(*idx.indices(len(ref))), val):
+                        if (
+                            not isinstance(v, np.ndarray)
+                            or v.shape[1] != self.num_fields
+                        ):
+                            raise ValueError(
+                                f"Expected shape (_, {self.num_fields}), got {v.shape}"
+                            )
+                        ref[i] = v
+                elif isinstance(idx, np.ndarray):
+                    if idx.dtype == bool:
+                        expected_length = np.sum(idx)
+                        if len(val) != expected_length:
+                            raise ValueError(
+                                f"Mismatch: expected {expected_length} items, got {len(val)}"
+                            )
+                        for i, v in zip(np.where(idx)[0], val):
+                            if (
+                                not isinstance(v, np.ndarray)
+                                or v.shape[1] != self.num_fields
+                            ):
+                                raise ValueError(
+                                    f"Expected shape (_, {self.num_fields}), got {v.shape}"
+                                )
+                            ref[i] = v
+                    else:  # integer array indexing
+                        expected_length = len(idx)
+                        if len(val) != expected_length:
+                            raise ValueError(
+                                f"Mismatch: expected {expected_length} items, got {len(val)}"
+                            )
+                        for i, v in zip(idx, val):
+                            if (
+                                not isinstance(v, np.ndarray)
+                                or v.shape[1] != self.num_fields
+                            ):
+                                raise ValueError(
+                                    f"Expected shape (_, {self.num_fields}), got {v.shape}"
+                                )
+                            ref[i] = v
+                else:
+                    if (
+                        not isinstance(val, np.ndarray)
+                        or val.shape[1] != self.num_fields
+                    ):
+                        raise ValueError(
+                            f"Expected shape (_, {self.num_fields}), got {val.shape}"
+                        )
+                    ref[idx] = val
+            else:
+                if isinstance(idx, slice):
+                    expected_length = len(range(*idx.indices(len(ref))))
+                    if len(val) != expected_length:
+                        raise ValueError(
+                            f"Mismatch: expected {expected_length} items, got {len(val)}"
+                        )
+                    for i, v in zip(range(*idx.indices(len(ref))), val):
+                        recursive_set(ref[i], rest, v)
+                elif isinstance(idx, np.ndarray):
+                    if idx.dtype == bool:
+                        expected_length = np.sum(idx)
+                        if len(val) != expected_length:
+                            raise ValueError(
+                                f"Mismatch: expected {expected_length} items, got {len(val)}"
+                            )
+                        for i, v in zip(np.where(idx)[0], val):
+                            recursive_set(ref[i], rest, v)
+                    else:  # integer array indexing
+                        expected_length = len(idx)
+                        if len(val) != expected_length:
+                            raise ValueError(
+                                f"Mismatch: expected {expected_length} items, got {len(val)}"
+                            )
+                        for i, v in zip(idx, val):
+                            recursive_set(ref[i], rest, v)
+                else:
+                    recursive_set(ref[idx], rest, val)
 
-    # get_data and set_data allowing slices:
-    # def get_data(self, *indices):
-    #     if len(indices) != len(self.shape):
-    #         raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
-
-    #     def recursive_get(ref, idx_list):
-    #         if not idx_list:
-    #             return ref
-    #         idx, *rest = idx_list
-    #         if isinstance(idx, slice):
-    #             return [recursive_get(ref[i], rest) for i in range(*idx.indices(len(ref)))]
-    #         else:
-    #             return recursive_get(ref[idx], rest)
-
-    #     return recursive_get(self.data, indices)
-
-    # def set_data(self, *indices_and_value):
-    #     value, *indices = indices_and_value
-    #     if len(indices) != len(self.shape):
-    #         raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
-
-    #     def recursive_set(ref, idx_list, val):
-    #         idx, *rest = idx_list
-    #         if not rest:
-    #             if isinstance(idx, slice):
-    #                 expected_length = len(range(*idx.indices(len(ref))))
-    #                 if len(val) != expected_length:
-    #                     raise ValueError(f"Mismatch: expected {expected_length} items, got {len(val)}")
-    #                 for i, v in zip(range(*idx.indices(len(ref))), val):
-    #                     if not isinstance(v, np.ndarray) or v.shape[1] != self.num_fields:
-    #                         raise ValueError(f"Expected shape (_, {self.num_fields}), got {v.shape}")
-    #                     ref[i] = v
-    #             else:
-    #                 if not isinstance(val, np.ndarray) or val.shape[1] != self.num_fields:
-    #                     raise ValueError(f"Expected shape (_, {self.num_fields}), got {val.shape}")
-    #                 ref[idx] = val
-    #         else:
-    #             if isinstance(idx, slice):
-    #                 expected_length = len(range(*idx.indices(len(ref))))
-    #                 if len(val) != expected_length:
-    #                     raise ValueError(f"Mismatch: expected {expected_length} items, got {len(val)}")
-    #                 for i, v in zip(range(*idx.indices(len(ref))), val):
-    #                     recursive_set(ref[i], rest, v)
-    #             else:
-    #                 recursive_set(ref[idx], rest, val)
-
-    #     recursive_set(self.data, indices, value)
+        recursive_set(self.data, indices, value)
 
     def __getitem__(self, idx):
         if isinstance(idx, str):  # field-level access
@@ -473,7 +631,7 @@ class _FieldView:
         fill(self.vector.data, values, cursor=0)
 
     def __getitem__(self, idx):
-        # Optionally allow v['kx'][0, 1] to get subregion, or v['kx'][...] slice
+        # Optionally allow v['field0'][0, 1] to get subregion, or v['field0'][...] slice
         sub = self.vector[idx]
         if isinstance(sub, Vector):
             return sub[self.field_name]
