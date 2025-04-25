@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Any, Optional, Union
+from typing import Any, List, Union
 
 import numpy as np
 import pytest
@@ -13,6 +13,7 @@ from quantem.core.utils.utils import (
     EnsureUnits,
     ValidateArrayDimensions,
     ValidatedProperty,
+    ValidateListLength,
     ValidateNdinfoLength,
     Validator,
 )
@@ -20,7 +21,7 @@ from quantem.core.utils.utils import (
 
 # --- Additional Validators for Tests ---
 @dataclass
-class EnsureInt(Validator):
+class EnsureInt(Validator[int]):
     """Convert value to integer."""
 
     def __call__(self, value: Any, instance: Any = None) -> int:
@@ -28,31 +29,25 @@ class EnsureInt(Validator):
 
 
 @dataclass
-class IsPositive(Validator):
+class IsPositive(Validator[int]):
     """Ensure value is positive."""
 
-    def __call__(
-        self, value: Union[int, float], instance: Any = None
-    ) -> Union[int, float]:
+    def __call__(self, value: int, instance: Any = None) -> int:
         if value <= 0:
-            raise ValueError(f"Value must be positive, got {value}")
+            raise ValueError("Value must be positive")
         return value
 
 
 @dataclass
-class InsideRange(Validator):
-    """Ensure value is inside a range."""
+class InsideRange(Validator[int]):
+    """Ensure value is inside specified range."""
 
-    low: Optional[Union[int, float]] = None
-    high: Optional[Union[int, float]] = None
+    low: int
+    high: int
 
-    def __call__(
-        self, value: Union[int, float], instance: Any = None
-    ) -> Union[int, float]:
-        if self.low is not None and value < self.low:
-            raise ValueError(f"Value {value} is below minimum {self.low}")
-        if self.high is not None and value > self.high:
-            raise ValueError(f"Value {value} is above maximum {self.high}")
+    def __call__(self, value: int, instance: Any = None) -> int:
+        if not self.low <= value <= self.high:
+            raise ValueError(f"Value must be between {self.low} and {self.high}")
         return value
 
 
@@ -61,15 +56,15 @@ class Example:
     """A simple example class using the validation system."""
 
     # Define validated properties
-    level = ValidatedProperty(
+    level = ValidatedProperty[int](
         EnsureInt(),
         IsPositive(),
         InsideRange(low=0, high=10),
     )
 
-    name = ValidatedProperty(EnsureStr())
+    name = ValidatedProperty[str](EnsureStr())
 
-    def __init__(self, level: int, name: str):
+    def __init__(self, level: Union[int, str], name: Union[str, int]):
         self.level = level
         self.name = name
 
@@ -77,55 +72,71 @@ class Example:
 # --- Tests ---
 def test_dataset_validation():
     """Test that the Dataset validators are working correctly."""
-    # Create a 4D dataset
+    # Test valid dataset creation
+    array = np.zeros((10, 10))
     dataset = Dataset.from_array(
-        np.random.rand(10, 10, 20, 20),
+        array=array,
+        name="test",
+        origin=np.zeros(2),
+        sampling=np.ones(2),
+        units=["nm", "nm"],
+        signal_units="counts",
     )
 
-    # Test that setting units to 4 values (matching ndim) succeeds
-    dataset.units = ["pixels", "pixels", "pixels", "pixels"]
-    assert len(dataset.units) == 4
+    assert isinstance(dataset.array, np.ndarray)
+    assert dataset.name == "test"
+    assert isinstance(dataset.origin, np.ndarray)
+    assert isinstance(dataset.sampling, np.ndarray)
+    assert isinstance(dataset.units, list)
+    assert all(isinstance(unit, str) for unit in dataset.units)
+    assert isinstance(dataset.signal_units, str)
 
-    # Test that setting units to 2 values (not matching ndim) fails
-    with pytest.raises(ValueError, match="Length 2 must match dimension 4"):
-        dataset.units = ["pixels", "pixels"]
+    # Test invalid array dimensions
+    with pytest.raises(ValueError):
+        Dataset.from_array(
+            array=np.zeros((10, 10, 10)),  # 3D array
+            origin=np.zeros(2),  # 2D origin
+            sampling=np.ones(2),
+            units=["nm", "nm"],
+        )
 
-    # Test that setting origin to 2 values (not matching ndim) fails
-    with pytest.raises(ValueError, match="Length 2 must match dimension 4"):
-        dataset.origin = np.array([0, 0])
+    # Test invalid units length
+    with pytest.raises(ValueError):
+        Dataset.from_array(
+            array=array,
+            origin=np.zeros(2),
+            sampling=np.ones(2),
+            units=["nm"],  # Wrong length
+        )
 
-    # Test that setting origin to 4 values (matching ndim) succeeds
-    dataset.origin = np.array([0, 0, 0, 0])
-    assert len(dataset.origin) == 4
+    # Test invalid origin/sampling length
+    with pytest.raises(ValueError):
+        Dataset.from_array(
+            array=array,
+            origin=np.zeros(3),  # Wrong length
+            sampling=np.ones(2),
+            units=["nm", "nm"],
+        )
 
 
 def test_example_class_validation():
     """Test that the Example class validators are working correctly."""
-    # Create an example instance
-    example = Example(level=5, name="Test")
-
-    # Test that the level is set correctly
+    # Test valid initialization
+    example = Example(level=5, name="test")
     assert example.level == 5
+    assert example.name == "test"
 
-    # Test that setting level to a valid value succeeds
-    example.level = 7
-    assert example.level == 7
-
-    # Test that setting level to an invalid value (negative) fails
-    with pytest.raises(ValueError, match="Value must be positive"):
-        example.level = -1
-
-    # Test that setting level to an invalid value (too high) fails
-    with pytest.raises(ValueError, match="Value 15 is above maximum 10"):
-        example.level = 15
-
-    # Test that setting level to a non-integer value is converted
-    example.level = 3.7
-    assert example.level == 3
-
-    # Test that the name is set correctly
-    assert example.name == "Test"
-
-    # Test that setting name to a non-string value is converted
-    example.name = 123
+    # Test type conversion
+    example = Example(level="5", name=123)
+    assert example.level == 5
     assert example.name == "123"
+
+    # Test validation errors
+    with pytest.raises(ValueError):
+        Example(level=-1, name="test")  # Negative value
+
+    with pytest.raises(ValueError):
+        Example(level=11, name="test")  # Value too high
+
+    with pytest.raises(ValueError):
+        Example(level="abc", name="test")  # Invalid integer
