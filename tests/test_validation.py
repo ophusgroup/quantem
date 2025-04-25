@@ -8,12 +8,9 @@ from quantem.core.datastructures.dataset import Dataset
 from quantem.core.utils.utils import (
     EnsureArray,
     EnsureArrayDtype,
-    EnsureInt,
     EnsureNdinfo,
     EnsureStr,
     EnsureUnits,
-    InsideRange,
-    IsPositive,
     ValidateArrayDimensions,
     ValidatedProperty,
     ValidateNdinfoLength,
