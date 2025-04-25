@@ -21,7 +21,7 @@ from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 if config.get("has_cupy"):
-    import cupy as cp
+    import cupy as cp  # type: ignore
 else:
     import numpy as cp
 

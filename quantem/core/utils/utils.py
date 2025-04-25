@@ -6,7 +6,7 @@ import numpy as np
 from quantem.core import config
 
 if config.get("has_cupy"):
-    import cupy as cp
+    import cupy as cp  # type: ignore
 else:
     import numpy as cp
 
