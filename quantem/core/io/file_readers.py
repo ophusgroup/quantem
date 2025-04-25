@@ -21,11 +21,11 @@ def read_4D(
 
     Returns
     --------
-    Dataset
+    Dataset4dstem
     """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset4dstem(
+    dataset = Dataset4dstem.from_array(
         array=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],
@@ -71,7 +71,7 @@ def read_2D(
     """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset(
+    dataset = Dataset.from_array(
         array=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],
