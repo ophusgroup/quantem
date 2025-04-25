@@ -133,8 +133,8 @@ class Dataset(AutoSerialize):
     @validated(
         lambda self: pipe(
             ensure_array,
-            lambda x: ensure_array_dtype(x, getattr(self, "_dtype", None)),
-            lambda x: validate_array_dimensions(x, getattr(self, "_ndim", None)),
+            lambda x: ensure_array_dtype(x, getattr(self, "dtype", None)),
+            lambda x: validate_array_dimensions(x, getattr(self, "ndim", None)),
         )
     )
     def array(self) -> np.ndarray | cp.ndarray:
@@ -149,7 +149,7 @@ class Dataset(AutoSerialize):
     @validated(
         lambda self: pipe(
             ensure_ndinfo,
-            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
         )
     )
     def origin(self) -> np.ndarray:
@@ -159,7 +159,7 @@ class Dataset(AutoSerialize):
     @validated(
         lambda self: pipe(
             ensure_ndinfo,
-            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
         )
     )
     def sampling(self) -> np.ndarray:
@@ -169,7 +169,7 @@ class Dataset(AutoSerialize):
     @validated(
         lambda self: pipe(
             ensure_units,
-            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+            lambda x: validate_ndinfo_length(x, getattr(self, "ndim", None)),
         )
     )
     def units(self) -> list[str]:

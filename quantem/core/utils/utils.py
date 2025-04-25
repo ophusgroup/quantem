@@ -55,9 +55,9 @@ def pipe(*funcs: Callable) -> Callable:
 # --- Dataset-specific validators and converters ---
 def ensure_array(value: Any) -> np.ndarray | cp.ndarray:
     """Convert value to numpy or cupy array."""
-    if not isinstance(value, (np.ndarray, cp.ndarray)):
-        raise ValueError("Value must be a numpy or cupy array")
-    return value
+    if isinstance(value, (np.ndarray, cp.ndarray)):
+        return value
+    return np.array(value)
 
 
 def ensure_array_dtype(
@@ -71,16 +71,16 @@ def ensure_array_dtype(
 
 def ensure_ndinfo(value: Any) -> np.ndarray:
     """Convert value to numpy array for ndinfo fields (origin, sampling)."""
-    if not isinstance(value, (np.ndarray, tuple, list)):
-        raise TypeError(f"Value should be a ndarray/list/tuple. Got type {type(value)}")
+    if isinstance(value, np.ndarray):
+        return value
     return np.array(value)
 
 
 def ensure_units(value: Any) -> list[str]:
     """Convert value to list of strings for units."""
-    if not isinstance(value, (list, tuple)):
-        raise TypeError(f"Units must be a list or tuple. Got type {type(value)}")
-    return [str(unit) for unit in value]
+    if isinstance(value, (list, tuple)):
+        return [str(unit) for unit in value]
+    return [str(value)]
 
 
 def ensure_str(value: Any) -> str:
