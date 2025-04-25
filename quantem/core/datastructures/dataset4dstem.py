@@ -1,3 +1,5 @@
+from typing import cast
+
 import matplotlib.pyplot as plt
 import numpy as np
 
@@ -125,8 +127,8 @@ class Dataset4dstem(Dataset):
         return cls(
             array=array,
             name=name if name is not None else "4D-STEM dataset",
-            origin=origin if origin is not None else np.zeros(4),
-            sampling=sampling if sampling is not None else np.ones(4),
+            origin=cast(np.ndarray, origin if origin is not None else np.zeros(4)),
+            sampling=cast(np.ndarray, sampling if sampling is not None else np.ones(4)),
             units=units if units is not None else ["pixels"] * 4,
             signal_units=signal_units,
             _token=cls._token,
@@ -134,12 +136,30 @@ class Dataset4dstem(Dataset):
 
     @property
     def virtual_images(self) -> dict[str, Dataset]:
-        """Dictionary storing virtual images generated from the 4D-STEM dataset."""
+        """
+        Dictionary storing virtual images generated from the 4D-STEM dataset.
+
+        Returns
+        -------
+        dict[str, Dataset]
+            Dictionary with image names as keys and Dataset objects as values
+        """
         return self._virtual_images
 
     def __getitem__(self, index):
-        """Simple indexing function to return Dataset view"""
+        """
+        Simple indexing function to return Dataset view.
 
+        Parameters
+        ----------
+        index : tuple
+            Index to access a subset of the dataset
+
+        Returns
+        -------
+        Dataset
+            A new Dataset instance containing the indexed data
+        """
         array_view = self.array[index]
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
@@ -156,7 +176,12 @@ class Dataset4dstem(Dataset):
     @property
     def dp_mean(self) -> Dataset:
         """
-        Dataset containing the mean diffraction pattern
+        Dataset containing the mean diffraction pattern.
+
+        Returns
+        -------
+        Dataset
+            A Dataset containing the mean diffraction pattern
         """
         if hasattr(self, "_dp_mean"):
             return self._dp_mean
@@ -166,17 +191,17 @@ class Dataset4dstem(Dataset):
 
     def get_dp_mean(self, attach: bool = True) -> Dataset:
         """
-        Get mean diffraction pattern
+        Get mean diffraction pattern.
 
         Parameters
         ----------
-        attach: bool
-            If True attachs mean diffraction pattern to self, callable with dataset.dp_mean
+        attach : bool, optional
+            If True, attaches mean diffraction pattern to self, by default True
 
         Returns
-        --------
-        dp_mean: Dataset
-            new Dataset with the mean diffraction pattern
+        -------
+        Dataset
+            A new Dataset with the mean diffraction pattern
         """
         dp_mean = self.mean((0, 1))
 
@@ -197,7 +222,12 @@ class Dataset4dstem(Dataset):
     @property
     def dp_max(self) -> Dataset:
         """
-        Dataset containing the max diffraction pattern
+        Dataset containing the max diffraction pattern.
+
+        Returns
+        -------
+        Dataset
+            A Dataset containing the max diffraction pattern
         """
         if hasattr(self, "_dp_max"):
             return self._dp_max
@@ -207,17 +237,17 @@ class Dataset4dstem(Dataset):
 
     def get_dp_max(self, attach: bool = True) -> Dataset:
         """
-        Get max diffraction pattern
+        Get max diffraction pattern.
 
         Parameters
         ----------
-        attach: bool
-            If True attachs max diffraction pattern to dataset, callable with dataset.dp_max
+        attach : bool, optional
+            If True, attaches max diffraction pattern to dataset, by default True
 
         Returns
-        --------
-        dp_max: Dataset
-            new Dataset with the max diffraction pattern
+        -------
+        Dataset
+            A new Dataset with the max diffraction pattern
         """
         dp_max = self.max((0, 1))
 
@@ -238,7 +268,12 @@ class Dataset4dstem(Dataset):
     @property
     def dp_median(self) -> Dataset:
         """
-        Dataset containing the median diffraction pattern
+        Dataset containing the median diffraction pattern.
+
+        Returns
+        -------
+        Dataset
+            A Dataset containing the median diffraction pattern
         """
         if hasattr(self, "_dp_median"):
             return self._dp_median
@@ -248,17 +283,17 @@ class Dataset4dstem(Dataset):
 
     def get_dp_median(self, attach: bool = True) -> Dataset:
         """
-        Get median diffraction pattern
+        Get median diffraction pattern.
 
         Parameters
         ----------
-        attach: bool
-            If True attachs median diffraction pattern to dataset
+        attach : bool, optional
+            If True, attaches median diffraction pattern to dataset, by default True
 
         Returns
-        --------
-        dp_median: Dataset
-            new Dataset with the median diffraction pattern
+        -------
+        Dataset
+            A new Dataset with the median diffraction pattern
         """
         dp_median = np.median(self.array, axis=(0, 1))
 
@@ -283,23 +318,23 @@ class Dataset4dstem(Dataset):
         attach: bool = True,
     ) -> Dataset:
         """
-        Get virtual image
+        Get virtual image.
 
         Parameters
         ----------
-        mask: np.ndarray
+        mask : np.ndarray
             Mask for forming virtual images from 4D-STEM data. The mask should be the same
             shape as the datacube Kx and Ky
-        attach: bool
-            If True attachs median diffraction pattern to dataset
-        name: string
-            Name of virtual image. If None name is "virtual_image"
+        name : str, optional
+            Name of virtual image, by default "virtual_image"
+        attach : bool, optional
+            If True, attaches virtual image to dataset, by default True
 
         Returns
-        --------
-        virtual image (if attach is True)
+        -------
+        Dataset
+            A new Dataset with the virtual image
         """
-
         virtual_image = np.sum(self.array * mask, axis=(-1, -2))
 
         virtual_image_dataset = Dataset.from_array(
@@ -325,8 +360,29 @@ class Dataset4dstem(Dataset):
         axsize=(4, 4),
         **kwargs,
     ):
-        """ """
+        """
+        Display the dataset and associated diffraction patterns.
 
+        Parameters
+        ----------
+        scalebar : ScalebarConfig | bool, optional
+            Scalebar configuration, by default True
+        title : str | None, optional
+            Title for the plot, by default None
+        index : tuple, optional
+            Index for the dataset view, by default (0, 0)
+        figax : tuple, optional
+            Figure and axes for the plot, by default None
+        axsize : tuple, optional
+            Size of the axes, by default (4, 4)
+        **kwargs : dict
+            Additional keyword arguments for the plot
+
+        Returns
+        -------
+        tuple
+            Figure and axes objects
+        """
         list_of_objs = [self[index]]
         if hasattr(self, "_dp_mean"):
             list_of_objs.append(self.dp_mean)

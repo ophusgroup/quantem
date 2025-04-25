@@ -1,6 +1,7 @@
-from typing import Any, List, Optional, Tuple, Union
+from typing import Any, List, Optional, Tuple, Union, cast
 
 import numpy as np
+from numpy import ndarray
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
@@ -12,7 +13,9 @@ from quantem.core.utils.utils import (
     EnsureUnits,
     ValidateArrayDimensions,
     ValidatedProperty,
+    ValidateListLength,
     ValidateNdinfoLength,
+    Validator,
 )
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
@@ -31,42 +34,49 @@ class Dataset(AutoSerialize):
     metadata about the array's dimensions, units, and sampling. It supports automatic
     serialization through inheritance from AutoSerialize.
 
-    Attributes:
-        array (np.ndarray | cp.ndarray): The underlying n-dimensional array data
-        name (str): A descriptive name for the dataset
-        origin (np.ndarray): The origin coordinates for each dimension
-        sampling (np.ndarray): The sampling rate/spacing for each dimension
-        units (list[str]): Units for each dimension (e.g. "nm", "eV", etc.)
-        signal_units (str): Units for the array values
+    Attributes
+    ----------
+    array : np.ndarray | cp.ndarray
+        The underlying n-dimensional array data
+    name : str
+        A descriptive name for the dataset
+    origin : np.ndarray
+        The origin coordinates for each dimension
+    sampling : np.ndarray
+        The sampling rate/spacing for each dimension
+    units : list[str]
+        Units for each dimension (e.g. "nm", "eV", etc.)
+    signal_units : str
+        Units for the array values
     """
 
     _token = object()
 
-    # Define validated properties using the new approach
-    array = ValidatedProperty(
+    # Define validated properties using type hints
+    array = ValidatedProperty[Union[np.ndarray, cp.ndarray]](
         EnsureArray(),
         EnsureArrayDtype(),
         ValidateArrayDimensions(),
     )
 
-    name = ValidatedProperty(EnsureStr())
+    name = ValidatedProperty[str](EnsureStr())
 
-    origin = ValidatedProperty(
+    origin = ValidatedProperty[np.ndarray](
         EnsureNdinfo(),
         ValidateNdinfoLength(),
     )
 
-    sampling = ValidatedProperty(
+    sampling = ValidatedProperty[np.ndarray](
         EnsureNdinfo(),
         ValidateNdinfoLength(),
     )
 
-    units = ValidatedProperty(
+    units = ValidatedProperty[List[str]](
         EnsureUnits(),
-        ValidateNdinfoLength(),
+        ValidateListLength(),
     )
 
-    signal_units = ValidatedProperty(EnsureStr())
+    signal_units = ValidatedProperty[str](EnsureStr())
 
     def __init__(
         self,
@@ -148,8 +158,12 @@ class Dataset(AutoSerialize):
         return cls(
             array=array,
             name=name if name is not None else f"{array.ndim}d dataset",
-            origin=origin if origin is not None else np.zeros(array.ndim),
-            sampling=sampling if sampling is not None else np.ones(array.ndim),
+            origin=cast(
+                np.ndarray, origin if origin is not None else np.zeros(array.ndim)
+            ),
+            sampling=cast(
+                np.ndarray, sampling if sampling is not None else np.ones(array.ndim)
+            ),
             units=units if units is not None else ["pixels"] * array.ndim,
             signal_units=signal_units,
             _token=cls._token,
