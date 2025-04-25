@@ -1,7 +1,7 @@
-from typing import Any
+from functools import wraps
+from typing import Any, Callable, TypeVar, cast
 
 import numpy as np
-from attrs import Attribute, Converter, Factory, define, field
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
@@ -13,55 +13,104 @@ if config.get("has_cupy"):
 else:
     import numpy as cp
 
+T = TypeVar("T")
 
-# because converters run before validators, some validation has to be done here too
-# not sure how we want to handle dtypes, currently enforcing the initially set dtype, easily changed
-def _convert_array_dtype(
-    value: np.ndarray | cp.ndarray, self_: Any, field: Attribute
-) -> np.ndarray | cp.ndarray:
+
+# --- Validation Decorator ---
+def validated(validator_factory: Callable) -> Callable:
+    """
+    Decorator for property-style validated fields.
+
+    Example:
+        @validated(lambda self: pipe(ensure_int, is_positive))
+        def my_attr(self): ...
+    """
+
+    def decorator(func):
+        attr_name = func.__name__
+        private_name = f"_{attr_name}"
+
+        @property
+        def prop(self):
+            return getattr(self, private_name)
+
+        @prop.setter
+        def prop(self, value):
+            validator = validator_factory(self)
+            validated_value = validator(value)
+            setattr(self, private_name, validated_value)
+
+        return prop
+
+    return decorator
+
+
+# --- Validator composition ---
+def pipe(*funcs: Callable) -> Callable:
+    """Compose multiple validator/converter functions into one."""
+
+    def composed(val):
+        for f in funcs:
+            val = f(val)
+        return val
+
+    return composed
+
+
+# --- Dataset-specific validators and converters ---
+def ensure_array(value: Any) -> np.ndarray | cp.ndarray:
+    """Convert value to numpy or cupy array."""
     if not isinstance(value, (np.ndarray, cp.ndarray)):
-        raise ValueError(f"{field.name} must be a np.ndarray or cp.ndarray")
-    if hasattr(self_, "array"):
-        return value.astype(self_.dtype)
-    else:
-        return value
+        raise ValueError("Value must be a numpy or cupy array")
+    return value
 
 
-def _validate_array(
-    instance: Any, attribute: Attribute, value: np.ndarray | cp.ndarray
-) -> None:
-    if not hasattr(instance, "array"):
-        return
-    current_ndim = getattr(instance, "ndim")
-    if value.ndim != current_ndim:
-        raise ValueError(
-            f"ndim of array, {value.ndim}, must equal current: {current_ndim}"
-        )
+def ensure_array_dtype(
+    value: np.ndarray | cp.ndarray, dtype: np.dtype | None = None
+) -> np.ndarray | cp.ndarray:
+    """Ensure array has the correct dtype."""
+    if dtype is not None:
+        return value.astype(dtype)
+    return value
 
 
-def _convert_ndinfo(
-    value: np.ndarray | tuple | list, self_: Any, field: Attribute
-) -> np.ndarray:
+def ensure_ndinfo(value: Any) -> np.ndarray:
+    """Convert value to numpy array for ndinfo fields (origin, sampling)."""
     if not isinstance(value, (np.ndarray, tuple, list)):
-        raise TypeError(
-            f"{field.name} should a ndarray/list/tuple. Got type {type(value)}"
-        )
+        raise TypeError(f"Value should be a ndarray/list/tuple. Got type {type(value)}")
     return np.array(value)
 
 
-def _validate_ndinfo(instance: Any, attribute: Attribute, value: np.ndarray) -> None:
-    """Confirm dimension of origin, sampling, units"""
-    # could do if len(value) != instance.ndim here cuz array has been set, but fails with autoserialize
-    if not hasattr(instance, "array"):
-        return
-    current_ndim = getattr(instance, "ndim")
-    if len(value) != current_ndim:
+def ensure_units(value: Any) -> list[str]:
+    """Convert value to list of strings for units."""
+    if not isinstance(value, (list, tuple)):
+        raise TypeError(f"Units must be a list or tuple. Got type {type(value)}")
+    return [str(unit) for unit in value]
+
+
+def ensure_str(value: Any) -> str:
+    """Convert value to string."""
+    return str(value)
+
+
+def validate_array_dimensions(
+    value: np.ndarray | cp.ndarray, ndim: int | None = None
+) -> np.ndarray | cp.ndarray:
+    """Validate array dimensions match expected ndim."""
+    if ndim is not None and value.ndim != ndim:
         raise ValueError(
-            f"Setting {attribute.name} of length {len(value)} which does not match array dimension {current_ndim}"
+            f"Array dimension {value.ndim} must equal expected dimension {ndim}"
         )
+    return value
 
 
-@define
+def validate_ndinfo_length(value: np.ndarray, ndim: int | None = None) -> np.ndarray:
+    """Validate ndinfo array length matches expected ndim."""
+    if ndim is not None and len(value) != ndim:
+        raise ValueError(f"Length {len(value)} must match dimension {ndim}")
+    return value
+
+
 class Dataset(AutoSerialize):
     """
     A class representing a multi-dimensional dataset with metadata.
@@ -79,29 +128,110 @@ class Dataset(AutoSerialize):
         signal_units (str): Units for the array values
     """
 
-    array: np.ndarray | cp.ndarray = field(
-        converter=Converter(_convert_array_dtype, takes_self=True, takes_field=True),
-        validator=_validate_array,
+    _token = object()
+
+    def __init__(self, _token=None):
+        if _token is not self._token:
+            raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+        self._array = None
+        self._name = None
+        self._origin = None
+        self._sampling = None
+        self._units = None
+        self._signal_units = "arb. units"
+
+    @classmethod
+    def from_array(
+        cls,
+        array: np.ndarray | cp.ndarray,
+        name: str | None = None,
+        origin: np.ndarray | tuple | list | None = None,
+        sampling: np.ndarray | tuple | list | None = None,
+        units: list[str] | None = None,
+        signal_units: str = "arb. units",
+    ) -> "Dataset":
+        """
+        Create a new Dataset from an array.
+
+        Parameters
+        ----------
+        array : np.ndarray | cp.ndarray
+            The underlying n-dimensional array data
+        name : str | None, optional
+            A descriptive name for the dataset. If None, defaults to "{array.ndim}d dataset"
+        origin : np.ndarray | tuple | list | None, optional
+            The origin coordinates for each dimension. If None, defaults to zeros
+        sampling : np.ndarray | tuple | list | None, optional
+            The sampling rate/spacing for each dimension. If None, defaults to zeros
+        units : list[str] | None, optional
+            Units for each dimension. If None, defaults to ["pixels"] * array.ndim
+        signal_units : str, optional
+            Units for the array values, by default "arb. units"
+
+        Returns
+        -------
+        Dataset
+            A new Dataset instance
+        """
+        dataset = cls(_token=cls._token)
+        dataset.array = array
+        dataset.name = name if name is not None else f"{array.ndim}d dataset"
+        dataset.origin = origin if origin is not None else np.zeros(array.ndim)
+        dataset.sampling = sampling if sampling is not None else np.zeros(array.ndim)
+        dataset.units = units if units is not None else ["pixels"] * array.ndim
+        dataset.signal_units = signal_units
+        return dataset
+
+    @validated(
+        lambda self: pipe(
+            ensure_array,
+            lambda x: ensure_array_dtype(x, getattr(self, "_dtype", None)),
+            lambda x: validate_array_dimensions(x, getattr(self, "_ndim", None)),
+        )
     )
-    name: str = field(
-        default=Factory(lambda self: f"{self.array.ndim}d dataset", takes_self=True)
+    def array(self) -> np.ndarray | cp.ndarray:
+        """The underlying n-dimensional array data."""
+        pass
+
+    @validated(lambda self: ensure_str)
+    def name(self) -> str:
+        """A descriptive name for the dataset."""
+        pass
+
+    @validated(
+        lambda self: pipe(
+            ensure_ndinfo,
+            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+        )
     )
-    origin: np.ndarray = field(
-        default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
-        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
-        validator=_validate_ndinfo,
+    def origin(self) -> np.ndarray:
+        """The origin coordinates for each dimension."""
+        pass
+
+    @validated(
+        lambda self: pipe(
+            ensure_ndinfo,
+            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+        )
     )
-    sampling: np.ndarray = field(
-        default=Factory(lambda self: np.zeros(self.array.ndim), takes_self=True),
-        converter=Converter(_convert_ndinfo, takes_self=True, takes_field=True),
-        validator=_validate_ndinfo,
+    def sampling(self) -> np.ndarray:
+        """The sampling rate/spacing for each dimension."""
+        pass
+
+    @validated(
+        lambda self: pipe(
+            ensure_units,
+            lambda x: validate_ndinfo_length(x, getattr(self, "_ndim", None)),
+        )
     )
-    units: list[str] = field(
-        default=Factory(lambda self: ["pixels"] * self.array.ndim, takes_self=True),
-        converter=list[str],
-        validator=_validate_ndinfo,
-    )
-    signal_units: str = field(default="arb. units", converter=str)
+    def units(self) -> list[str]:
+        """Units for each dimension (e.g. "nm", "eV", etc.)."""
+        pass
+
+    @validated(lambda self: ensure_str)
+    def signal_units(self) -> str:
+        """Units for the array values."""
+        pass
 
     @property
     def shape(self) -> tuple:
@@ -155,14 +285,12 @@ class Dataset(AutoSerialize):
         copy_attributes: bool
             If True, copies attributes
         """
-        dataset = Dataset(
-            array=self.array.copy(),
-            name=self.name,
-            origin=self.origin.copy(),
-            sampling=self.sampling.copy(),
-            units=self.units,
-            signal_units=self.signal_units,
-        )
+        dataset = Dataset.from_array(self.array.copy())
+        dataset.name = self.name
+        dataset.origin = self.origin.copy()
+        dataset.sampling = self.sampling.copy()
+        dataset.units = self.units
+        dataset.signal_units = self.signal_units
 
         if copy_attributes:
             for attr in vars(self):
