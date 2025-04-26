@@ -1,4 +1,15 @@
-from typing import Any, List, Optional, Sequence, Tuple, TypeVar, Union, cast, overload
+from typing import (
+    Any,
+    Callable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    TypeVar,
+    Union,
+    cast,
+    overload,
+)
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -352,15 +363,13 @@ class Vector(AutoSerialize):
     @overload
     def __getitem__(
         self,
-        idx: Union[
-            Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
-        ],
+        idx: Union[Tuple[Union[int, slice, List[int]], ...], int, slice, List[int]],
     ) -> Union[NDArray, "Vector"]: ...
 
     def __getitem__(
         self,
         idx: Union[
-            str, Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
+            str, Tuple[Union[int, slice, List[int]], ...], int, slice, List[int]
         ],
     ) -> Union["_FieldView", NDArray, "Vector"]:
         """Get data or a view of the vector at specified indices."""
@@ -373,22 +382,24 @@ class Vector(AutoSerialize):
             idx = (idx,)
 
         # Convert sequences to numpy arrays for fancy indexing
-        idx = tuple(
-            np.array(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+        idx_converted: Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]]], ...] = (
+            tuple(
+                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+            )
         )
 
         # Check if we should return a numpy array (all indices are integers)
         return_np = all(
-            isinstance(i, (int, np.integer)) for i in idx[: len(self._shape)]
+            isinstance(i, (int, np.integer)) for i in idx_converted[: len(self.shape)]
         )
-        if len(idx) < len(self._shape):
+        if len(idx_converted) < len(self.shape):
             return_np = False
 
         if return_np:
             view = self._data
-            for i in idx:
+            for i in idx_converted:
                 view = view[i]
-            return cast(NDArray, view)
+            return cast(NDArray[Any], view)
 
         # Handle fancy indexing and slicing
         def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
@@ -401,8 +412,10 @@ class Vector(AutoSerialize):
             return np.arange(dim_size)
 
         # Get indices for each dimension
-        full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
-        indices = [get_indices(i, s) for i, s in zip(full_idx, self._shape)]
+        full_idx = list(idx_converted) + [slice(None)] * (
+            len(self.shape) - len(idx_converted)
+        )
+        indices = [get_indices(i, s) for i, s in zip(full_idx, self.shape)]
 
         # Create new shape and data
         new_shape = [len(i) for i in indices]
@@ -417,9 +430,9 @@ class Vector(AutoSerialize):
         vector_new = Vector.from_shape(
             shape=tuple(new_shape),
             num_fields=self.num_fields,
-            name=self._name + "[view]",
-            fields=self._fields,
-            units=self._units,
+            name=self.name + "[view]",
+            fields=self.fields,
+            units=self.units,
         )
         vector_new._data = new_data
         return vector_new
@@ -427,9 +440,20 @@ class Vector(AutoSerialize):
     def __setitem__(
         self,
         idx: Union[
-            str, Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
+            str,
+            Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]], List[int]], ...],
+            int,
+            slice,
+            np.ndarray[Any, np.dtype[Any]],
+            List[int],
         ],
-        value: Union[NDArray, "_FieldView", "Vector", List[NDArray]],
+        value: Union[
+            NDArray[Any],
+            "_FieldView",
+            "Vector",
+            List[NDArray[Any]],
+            Callable[[NDArray[Any]], NDArray[Any]],
+        ],
     ) -> None:
         """Set data at specified indices or field."""
         if isinstance(idx, str):
@@ -478,10 +502,13 @@ class Vector(AutoSerialize):
                 )
 
         # Convert sequences to numpy arrays for fancy indexing
-        idx = tuple(
-            np.array(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+        idx_converted: Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]]], ...] = (
+            tuple(
+                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+            )
         )
 
+        # Handle fancy indexing and slicing
         def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
             if isinstance(dim_idx, slice):
                 return np.arange(*dim_idx.indices(dim_size))
@@ -492,7 +519,9 @@ class Vector(AutoSerialize):
             return np.arange(dim_size)
 
         # Get indices for each dimension
-        full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
+        full_idx = list(idx_converted) + [slice(None)] * (
+            len(self._shape) - len(idx_converted)
+        )
         indices = [get_indices(i, s) for i, s in zip(full_idx, self._shape)]
 
         if isinstance(value, Vector):
