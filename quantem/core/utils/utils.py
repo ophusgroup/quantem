@@ -309,7 +309,33 @@ def validate_vector_data(
     TypeError
         If data is not a list or contains invalid data types
     """
-    # This is a placeholder - actual implementation would need to recursively
-    # validate the nested structure matches the shape and contains arrays with
-    # the correct number of fields
-    return data
+    # Check if data is a list
+    if not isinstance(data, list):
+        raise TypeError("Data must be a list")
+
+    # Check if the length of data matches the expected shape
+    if len(data) != shape[0]:
+        raise ValueError(f"Expected {shape[0]} items in data, got {len(data)}")
+
+    validated_data = []
+
+    for idx, item in enumerate(data):
+        # Convert item to numpy array if it's a list
+        if isinstance(item, list):
+            item = np.array(item)
+
+        # Check if the item is a numpy array
+        if not isinstance(item, np.ndarray):
+            raise TypeError(
+                f"Data element at index {idx} must be a numpy array or convertible to one"
+            )
+
+        # Check if the number of fields matches
+        if item.shape[1] != num_fields:
+            raise ValueError(
+                f"Data element at index {idx} must have {num_fields} fields, got {item.shape[1]}"
+            )
+
+        validated_data.append(item)
+
+    return validated_data
