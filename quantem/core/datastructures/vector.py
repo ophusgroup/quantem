@@ -351,40 +351,20 @@ class Vector(AutoSerialize):
     def __getitem__(self, idx: str) -> "_FieldView": ...
     @overload
     def __getitem__(
-        self, idx: Tuple[Union[int, slice], ...]
+        self,
+        idx: Union[
+            Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
+        ],
     ) -> Union[NDArray, "Vector"]: ...
-    @overload
-    def __getitem__(self, idx: Union[int, slice]) -> Union[NDArray, "Vector"]: ...
 
     def __getitem__(
-        self, idx: Union[str, Tuple[Union[int, slice], ...], int, slice]
+        self,
+        idx: Union[
+            str, Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
+        ],
     ) -> Union["_FieldView", NDArray, "Vector"]:
-        """
-        Get data or a view of the vector at specified indices.
-
-        Parameters
-        ----------
-        idx : Union[str, Tuple[Union[int, slice], ...], int, slice]
-            If str: field name to access
-            If tuple: indices for each dimension
-            If int/slice: single index or slice
-
-        Returns
-        -------
-        Union[_FieldView, NDArray, Vector]
-            If str: FieldView object for the specified field
-            If tuple/int/slice: numpy array or Vector view of the data
-
-        Raises
-        ------
-        KeyError
-            If field name doesn't exist
-        IndexError
-            If indices are out of bounds
-        ValueError
-            If the number of indices doesn't match dimensions
-        """
-        if isinstance(idx, str):  # field-level access
+        """Get data or a view of the vector at specified indices."""
+        if isinstance(idx, str):
             if idx not in self._fields:
                 raise KeyError(f"Field '{idx}' not found.")
             return _FieldView(self, idx)
@@ -392,105 +372,67 @@ class Vector(AutoSerialize):
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        return_np = True
-        for ind in range(min(len(self._shape), len(idx))):
-            if not isinstance(idx[ind], int):
-                return_np = False
+        # Convert sequences to numpy arrays for fancy indexing
+        idx = tuple(
+            np.array(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+        )
+
+        # Check if we should return a numpy array (all indices are integers)
+        return_np = all(
+            isinstance(i, (int, np.integer)) for i in idx[: len(self._shape)]
+        )
         if len(idx) < len(self._shape):
             return_np = False
 
         if return_np:
-            # Return a view into the numpy array at the user-specified index
-            view: Any = self._data
-            for i in range(len(idx)):
-                view = view[idx[i]]
+            view = self._data
+            for i in idx:
+                view = view[i]
             return cast(NDArray, view)
 
-        else:
-            # Return a view as a new Vector class
-            full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
+        # Handle fancy indexing and slicing
+        def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
+            if isinstance(dim_idx, slice):
+                return np.arange(*dim_idx.indices(dim_size))
+            elif isinstance(dim_idx, (np.ndarray, list)):
+                return np.asarray(dim_idx)
+            elif isinstance(dim_idx, (int, np.integer)):
+                return np.array([dim_idx])
+            return np.arange(dim_size)
 
-            def resolve_index(
-                dim_idx: Union[int, slice, NDArray[np.bool_], Sequence[int]],
-                dim_size: int,
-            ) -> List[int]:
-                """Convert various index types to a list of integers."""
-                if isinstance(dim_idx, slice):
-                    return list(range(*dim_idx.indices(dim_size)))  # type: ignore
-                elif isinstance(dim_idx, np.ndarray) and dim_idx.dtype == bool:
-                    # Convert boolean array to indices
-                    return np.flatnonzero(dim_idx).tolist()  # type: ignore
-                elif isinstance(dim_idx, (list, np.ndarray)):
-                    # Convert sequence to list of integers
-                    indices = np.asarray(dim_idx, dtype=np.int64).ravel()
-                    return indices.tolist()  # type: ignore
-                elif isinstance(dim_idx, int):
-                    return [dim_idx]  # type: ignore
-                else:
-                    # Convert any other sequence to list
-                    return [int(i) for i in dim_idx]  # type: ignore
+        # Get indices for each dimension
+        full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
+        indices = [get_indices(i, s) for i, s in zip(full_idx, self._shape)]
 
-            def recursive_index(
-                data: Any,
-                dims: Sequence[Union[int, slice, NDArray[np.bool_], Sequence[int]]],
-                shape: Tuple[int, ...],
-            ) -> Any:
-                if len(dims) == 0 or not isinstance(data, list):
-                    return data
-                i, *rest = dims
-                size = shape[0] if shape else len(data)
-                idx_list = resolve_index(i, size)
-                return [recursive_index(data[j], rest, shape[1:]) for j in idx_list]
+        # Create new shape and data
+        new_shape = [len(i) for i in indices]
+        new_data = [[None] * new_shape[-1] for _ in range(new_shape[0])]
 
-            sliced_data = recursive_index(self._data, full_idx, self._shape)
+        # Fill the new data structure
+        for out_idx in np.ndindex(*new_shape):
+            src_idx = tuple(ind[i] for ind, i in zip(indices, out_idx))
+            new_data[out_idx[0]][out_idx[1]] = self._data[src_idx[0]][src_idx[1]]
 
-            new_shape: List[int] = []
-            for i, s in enumerate(full_idx):
-                if i >= len(self._shape):
-                    continue
-                resolved = resolve_index(s, self._shape[i])
-                new_shape.append(len(resolved))
-
-            vector_new = Vector.from_shape(
-                shape=tuple(new_shape),
-                num_fields=self.num_fields,
-                name=self._name + "[view]",
-                fields=self._fields,
-                units=self._units,
-            )
-            vector_new._data = sliced_data
-            return vector_new
+        # Create new Vector
+        vector_new = Vector.from_shape(
+            shape=tuple(new_shape),
+            num_fields=self.num_fields,
+            name=self._name + "[view]",
+            fields=self._fields,
+            units=self._units,
+        )
+        vector_new._data = new_data
+        return vector_new
 
     def __setitem__(
         self,
-        idx: Union[str, Tuple[Union[int, slice], ...], int, slice],
+        idx: Union[
+            str, Tuple[Union[int, slice, Sequence[int]], ...], int, slice, Sequence[int]
+        ],
         value: Union[NDArray, "_FieldView", "Vector", List[NDArray]],
     ) -> None:
-        """
-        Set data at specified indices or field.
-
-        Parameters
-        ----------
-        idx : Union[str, Tuple[Union[int, slice], ...], int, slice]
-            If str: field name to set
-            If tuple: indices for each dimension
-            If int/slice: single index or slice
-        value : Union[NDArray, _FieldView, Vector, List[NDArray]]
-            The value to set. Must match the expected shape and number of fields.
-
-        Raises
-        ------
-        KeyError
-            If field name doesn't exist
-        IndexError
-            If indices are out of bounds
-        ValueError
-            If the number of indices doesn't match dimensions,
-            or if the value shape doesn't match expectations
-        TypeError
-            If the value type is not supported
-        """
-        if isinstance(idx, str):  # field-level assignment
+        """Set data at specified indices or field."""
+        if isinstance(idx, str):
             if idx not in self._fields:
                 raise KeyError(f"Field '{idx}' not found.")
             field_index = self._fields.index(idx)
@@ -526,42 +468,55 @@ class Vector(AutoSerialize):
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        def recursive_assign(ref: Any, dims: List[Union[int, slice]], val: Any) -> Any:
-            if len(dims) == 0:
-                return val
-            i, *rest = dims
-            if isinstance(i, slice):
-                if not isinstance(val, list):
-                    raise ValueError(
-                        "Slice assignment value must be a list for slice indexing."
-                    )
-                val_len = len(val)
-                ref_len = len(range(*i.indices(len(ref))))
-                if val_len != ref_len:
-                    raise ValueError(
-                        f"Slice assignment mismatch: got {val_len} items, expected {ref_len}."
-                    )
-                for sub_ref, sub_val in zip(range(*i.indices(len(ref))), val):
-                    if (
-                        isinstance(sub_val, np.ndarray)
-                        and sub_val.shape[1] != self.num_fields
-                    ):
-                        raise ValueError(
-                            f"Expected a numpy array with shape (_, {self.num_fields}), got {sub_val.shape}"
-                        )
-                    ref[sub_ref] = recursive_assign(ref[sub_ref], rest, sub_val)
-                return ref
-            else:
-                if isinstance(val, np.ndarray) and val.shape[1] != self.num_fields:
-                    raise ValueError(
-                        f"Expected a numpy array with shape (_, {self.num_fields}), got {val.shape}"
-                    )
-                ref[i] = recursive_assign(ref[i], rest, val)
-                return ref
+        # Validate value shape and number of fields first
+        if isinstance(value, np.ndarray):
+            if value.ndim != 2:
+                raise ValueError(f"Expected 2D array, got {value.ndim}D array")
+            if value.shape[1] != self.num_fields:
+                raise ValueError(
+                    f"Expected array with {self.num_fields} fields, got {value.shape[1]} fields"
+                )
+
+        # Convert sequences to numpy arrays for fancy indexing
+        idx = tuple(
+            np.array(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
+        )
+
+        def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
+            if isinstance(dim_idx, slice):
+                return np.arange(*dim_idx.indices(dim_size))
+            elif isinstance(dim_idx, (np.ndarray, list)):
+                return np.asarray(dim_idx)
+            elif isinstance(dim_idx, (int, np.integer)):
+                return np.array([dim_idx])
+            return np.arange(dim_size)
+
+        # Get indices for each dimension
+        full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
+        indices = [get_indices(i, s) for i, s in zip(full_idx, self._shape)]
 
         if isinstance(value, Vector):
+            if value.num_fields != self.num_fields:
+                raise ValueError(
+                    f"Expected Vector with {self.num_fields} fields, got {value.num_fields} fields"
+                )
             value = value._data
-        recursive_assign(self._data, list(idx), value)
+
+        # Handle assignment
+        for out_idx in np.ndindex(*[len(i) for i in indices]):
+            dst_idx = tuple(ind[i] for ind, i in zip(indices, out_idx))
+            if isinstance(value, list):
+                if not isinstance(value[out_idx[0]][out_idx[1]], np.ndarray):
+                    raise TypeError(
+                        f"Expected numpy array, got {type(value[out_idx[0]][out_idx[1]]).__name__}"
+                    )
+                if value[out_idx[0]][out_idx[1]].shape[1] != self.num_fields:
+                    raise ValueError(
+                        f"Expected array with {self.num_fields} fields, got {value[out_idx[0]][out_idx[1]].shape[1]} fields"
+                    )
+                self._data[dst_idx[0]][dst_idx[1]] = value[out_idx[0]][out_idx[1]]
+            else:
+                self._data[dst_idx[0]][dst_idx[1]] = value
 
     def add_fields(self, new_fields: Union[str, List[str]]) -> None:
         """
