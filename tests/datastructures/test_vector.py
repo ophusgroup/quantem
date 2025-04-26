@@ -223,8 +223,8 @@ class TestVector:
         )
         np.testing.assert_array_equal(flattened, expected)  # type: ignore
 
-    def test_from_ragged_lists(self):
-        """Test creating a Vector from ragged lists."""
+    def test_from_data(self):
+        """Test creating a Vector from ragged lists or numpy arrays."""
         # Create test data
         data = [
             np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
