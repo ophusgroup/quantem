@@ -44,6 +44,31 @@ class Vector(AutoSerialize):
     # Create a deep copy
     v_copy = v.copy()
 
+    Example usage of from_data:
+    -----------------------------------
+    data = [
+        np.array([[1, 2], [3, 4]]),
+        np.array([[5, 6], [7, 8], [9, 10]])
+    ]
+    v = Vector.from_data(
+        data,
+        fields=['x', 'y'],
+        name='my_ragged_vector',
+        units=['m', 'm']
+    )
+
+    # Or using lists instead of numpy arrays:
+    data = [
+        [[1, 2], [3, 4]],
+        [[5, 6], [7, 8], [9, 10]],
+    ]
+    v = Vector.from_data(
+        data,
+        fields=['x', 'y'],
+        name='my_ragged_vector',
+        units=['m', 'm']
+    )
+
     Field Operations:
     ----------------
     # Access a specific field
@@ -210,7 +235,7 @@ class Vector(AutoSerialize):
         )
 
     @classmethod
-    def from_ragged_lists(
+    def from_data(
         cls,
         data: List[Any],
         num_fields: Optional[int] = None,
@@ -219,7 +244,8 @@ class Vector(AutoSerialize):
         units: Optional[List[str]] = None,
     ) -> "Vector":
         """
-        Factory method to create a Vector from a list of ragged lists.
+        Factory method to create a Vector from a list of
+        ragged lists or ragged numpy arrays.
 
         Parameters
         ----------
@@ -251,34 +277,39 @@ class Vector(AutoSerialize):
         if not isinstance(data, list):
             raise TypeError("Data must be a list")
 
-        # Infer shape from data if shape is not provided
-        shape = (len(data),)  # The first dimension is the number of rows
+        # Validate and determine num_fields
+        first_item = data[0]
+        if isinstance(first_item, list):
+            first_item = np.array(first_item)
+        elif not isinstance(first_item, np.ndarray):
+            raise TypeError(
+                f"Data elements must be numpy arrays or lists, got {type(first_item).__name__}"
+            )
 
-        # Validate the first item to determine the number of fields
-        if num_fields is None:
-            if len(data) == 0 or not isinstance(data[0], np.ndarray):
-                raise ValueError("Data must contain at least one numpy array.")
-            num_fields = data[0].shape[
-                1
-            ]  # Assuming all arrays have the same number of fields
+        inferred_num_fields = first_item.shape[1]
 
-        # Create the vector using from_shape
+        # Validate all elements and convert lists to numpy arrays if needed
+        for idx, item in enumerate(data):
+            if isinstance(item, list):
+                data[idx] = np.array(item)
+            elif not isinstance(item, np.ndarray):
+                raise TypeError(
+                    f"Data elements must be numpy arrays or lists, got {type(item).__name__}"
+                )
+
+            if data[idx].shape[1] != inferred_num_fields:
+                raise ValueError("All arrays must have the same number of fields.")
+
+        num_fields = num_fields or inferred_num_fields
+
+        shape = (len(data),)
         vector = cls.from_shape(
-            shape=shape,
+            shape,
             num_fields=num_fields,
             name=name,
             fields=fields,
             units=units,
         )
-
-        # Validate the data matches the expected shape and number of fields
-        for item in data:
-            if not isinstance(item, np.ndarray):
-                raise TypeError("Each item in data must be a numpy array.")
-            if item.shape[1] != num_fields:
-                raise ValueError(f"Each item in data must have {num_fields} fields.")
-
-        # Attach the data
         vector.data = data
 
         return vector
