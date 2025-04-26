@@ -1,6 +1,11 @@
+from typing import Any, List, Optional, Sequence, Tuple, TypeVar, Union, cast, overload
+
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
 
 from quantem.core.io.serialize import AutoSerialize
+
+T = TypeVar("T", bound=np.generic)
 
 
 class Vector(AutoSerialize):
@@ -95,12 +100,12 @@ class Vector(AutoSerialize):
 
     def __init__(
         self,
-        shape,
-        num_fields=None,
-        name=None,
-        fields=None,
-        units=None,
-    ):
+        shape: Tuple[int, ...],
+        num_fields: Optional[int] = None,
+        name: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+        units: Optional[List[str]] = None,
+    ) -> None:
         self.shape = shape
         if fields is not None:
             self.num_fields = len(fields)
@@ -120,14 +125,14 @@ class Vector(AutoSerialize):
         self.fields = (
             list(fields)
             if fields is not None
-            else [f"field_{i}" for i in range(num_fields)]
+            else [f"field_{i}" for i in range(self.num_fields)]
         )
-        self.units = units if units is not None else ["none"] * num_fields
+        self.units = units if units is not None else ["none"] * self.num_fields
 
         # initialize empty set of lists
-        self.data = nested_list(self.shape, fill=None)
+        self.data: List[Any] = nested_list(self.shape, fill=None)
 
-    def get_data(self, *indices):
+    def get_data(self, *indices: Union[int, slice]) -> Union[NDArray, List[NDArray]]:
         """
         Get data at specified indices.
 
@@ -151,16 +156,16 @@ class Vector(AutoSerialize):
         if len(indices) != len(self.shape):
             raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
 
-        ref = self.data
+        ref: Any = self.data
         for dim, idx in enumerate(indices):
             if isinstance(idx, int) and (idx < 0 or idx >= self.shape[dim]):
                 raise IndexError(
                     f"Index {idx} out of bounds for axis {dim} with size {self.shape[dim]}"
                 )
             ref = ref[idx]
-        return ref
+        return cast(Union[NDArray, List[NDArray]], ref)
 
-    def set_data(self, value, *indices):
+    def set_data(self, value: NDArray, *indices: Union[int, slice]) -> None:
         """
         Set data at specified indices.
 
@@ -185,7 +190,7 @@ class Vector(AutoSerialize):
         if len(indices) != len(self.shape):
             raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
 
-        ref = self.data
+        ref: Any = self.data
         for dim, idx in enumerate(indices[:-1]):
             if isinstance(idx, int) and (idx < 0 or idx >= self.shape[dim]):
                 raise IndexError(
@@ -209,7 +214,18 @@ class Vector(AutoSerialize):
 
         ref[last_idx] = value
 
-    def __getitem__(self, idx):
+    @overload
+    def __getitem__(self, idx: str) -> "_FieldView": ...
+    @overload
+    def __getitem__(
+        self, idx: Tuple[Union[int, slice], ...]
+    ) -> Union[NDArray, "Vector"]: ...
+    @overload
+    def __getitem__(self, idx: Union[int, slice]) -> Union[NDArray, "Vector"]: ...
+
+    def __getitem__(
+        self, idx: Union[str, Tuple[Union[int, slice], ...], int, slice]
+    ) -> Union["_FieldView", NDArray, "Vector"]:
         if isinstance(idx, str):  # field-level access
             if idx not in self.fields:
                 raise KeyError(f"Field '{idx}' not found.")
@@ -220,40 +236,47 @@ class Vector(AutoSerialize):
 
         return_np = True
         for ind in range(min(len(self.shape), len(idx))):
-            if type(idx[ind]) is not int:
+            if not isinstance(idx[ind], int):
                 return_np = False
         if len(idx) < len(self.shape):
             return_np = False
 
         if return_np:
             # Return a view into the numpy array at the user-specified index
-            view = self.data
+            view: Any = self.data
             for i in range(len(idx)):
                 view = view[idx[i]]
-            return view
-
-        if return_np:
-            # Return a view into the numpy array at the user-specified index
-            view = self.data
-            for i in range(len(idx)):
-                view = view[idx[i]]
-            return view
+            return cast(NDArray, view)
 
         else:
             # Return a view as a new Vector class
             full_idx = list(idx) + [slice(None)] * (len(self.shape) - len(idx))
 
-            def resolve_index(dim_idx, dim_size):
+            def resolve_index(
+                dim_idx: Union[int, slice, NDArray[np.bool_], Sequence[int]],
+                dim_size: int,
+            ) -> List[int]:
+                """Convert various index types to a list of integers."""
                 if isinstance(dim_idx, slice):
-                    return list(range(*dim_idx.indices(dim_size)))
+                    return list(range(*dim_idx.indices(dim_size)))  # type: ignore
                 elif isinstance(dim_idx, np.ndarray) and dim_idx.dtype == bool:
-                    return np.where(dim_idx)[0].tolist()
+                    # Convert boolean array to indices
+                    return np.flatnonzero(dim_idx).tolist()  # type: ignore
                 elif isinstance(dim_idx, (list, np.ndarray)):
-                    return list(dim_idx)
+                    # Convert sequence to list of integers
+                    indices = np.asarray(dim_idx, dtype=np.int64).ravel()
+                    return indices.tolist()  # type: ignore
+                elif isinstance(dim_idx, int):
+                    return [dim_idx]  # type: ignore
                 else:
-                    return [dim_idx]
+                    # Convert any other sequence to list
+                    return [int(i) for i in dim_idx]  # type: ignore
 
-            def recursive_index(data, dims, shape):
+            def recursive_index(
+                data: Any,
+                dims: Sequence[Union[int, slice, NDArray[np.bool_], Sequence[int]]],
+                shape: Tuple[int, ...],
+            ) -> Any:
                 if len(dims) == 0 or not isinstance(data, list):
                     return data
                 i, *rest = dims
@@ -263,7 +286,7 @@ class Vector(AutoSerialize):
 
             sliced_data = recursive_index(self.data, full_idx, self.shape)
 
-            new_shape = []
+            new_shape: List[int] = []
             for i, s in enumerate(full_idx):
                 if i >= len(self.shape):
                     continue
@@ -280,7 +303,11 @@ class Vector(AutoSerialize):
             vector_new.data = sliced_data
             return vector_new
 
-    def __setitem__(self, idx, value):
+    def __setitem__(
+        self,
+        idx: Union[str, Tuple[Union[int, slice], ...], int, slice],
+        value: Union[NDArray, "_FieldView", "Vector", List[NDArray]],
+    ) -> None:
         if isinstance(idx, str):  # field-level assignment
             if idx not in self.fields:
                 raise KeyError(f"Field '{idx}' not found.")
@@ -291,7 +318,7 @@ class Vector(AutoSerialize):
                     raise ValueError("Cannot assign from another Vector.")
                 src_index = value.field_index
 
-                def set_field(arr):
+                def set_field(arr: Any) -> None:
                     if isinstance(arr, np.ndarray):
                         arr[:, field_index] = arr[:, src_index]
                     elif isinstance(arr, list):
@@ -301,7 +328,7 @@ class Vector(AutoSerialize):
                 set_field(self.data)
                 return
 
-            def set_field(arr):
+            def set_field(arr: Any) -> None:
                 if isinstance(arr, np.ndarray):
                     if callable(value):
                         arr[:, field_index] = value(arr[:, field_index])
@@ -317,7 +344,7 @@ class Vector(AutoSerialize):
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        def recursive_assign(ref, dims, val):
+        def recursive_assign(ref: Any, dims: List[Union[int, slice]], val: Any) -> Any:
             if len(dims) == 0:
                 return val
             i, *rest = dims
@@ -342,9 +369,6 @@ class Vector(AutoSerialize):
                         )
                     ref[sub_ref] = recursive_assign(ref[sub_ref], rest, sub_val)
                 return ref
-            # else:
-            #     ref[i] = recursive_assign(ref[i], rest, val)
-            #     return ref
             else:
                 if isinstance(val, np.ndarray) and val.shape[1] != self.num_fields:
                     raise ValueError(
@@ -357,7 +381,7 @@ class Vector(AutoSerialize):
             value = value.data
         recursive_assign(self.data, list(idx), value)
 
-    def add_fields(self, new_fields):
+    def add_fields(self, new_fields: Union[str, List[str]]) -> None:
         if isinstance(new_fields, str):
             new_fields = [new_fields]
         else:
@@ -373,7 +397,7 @@ class Vector(AutoSerialize):
         self.num_fields += len(new_fields)
         self.units = list(self.units) + ["none"] * len(new_fields)
 
-        def expand_array(arr):
+        def expand_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
                 if arr.shape[1] != self.num_fields - len(new_fields):
                     raise ValueError(
@@ -388,7 +412,7 @@ class Vector(AutoSerialize):
 
         self.data = expand_array(self.data)
 
-    def remove_fields(self, fields_to_remove):
+    def remove_fields(self, fields_to_remove: Union[str, List[str]]) -> None:
         if isinstance(fields_to_remove, str):
             fields_to_remove = [fields_to_remove]
         else:
@@ -413,7 +437,7 @@ class Vector(AutoSerialize):
         self.units = [self.units[i] for i in keep_indices]
         self.num_fields = len(self.fields)
 
-        def prune_array(arr):
+        def prune_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
                 if arr.shape[1] < max(indices_to_remove) + 1:
                     raise ValueError(
@@ -427,7 +451,7 @@ class Vector(AutoSerialize):
 
         self.data = prune_array(self.data)
 
-    def copy(self):
+    def copy(self) -> "Vector":
         import copy
 
         vector_copy = Vector(
@@ -440,12 +464,12 @@ class Vector(AutoSerialize):
         vector_copy.data = copy.deepcopy(self.data)
         return vector_copy
 
-    def flatten(self):
+    def flatten(self) -> NDArray:
         """
         Flatten and stack all non-None numpy arrays along axis 0.
         """
 
-        def collect_arrays(data):
+        def collect_arrays(data: Any) -> List[NDArray]:
             if isinstance(data, np.ndarray):
                 return [data]
             elif isinstance(data, list):
@@ -461,7 +485,7 @@ class Vector(AutoSerialize):
             return np.empty((0, self.num_fields))
         return np.vstack(arrays)
 
-    def __repr__(self):
+    def __repr__(self) -> str:
         description = [
             f"quantem.Vector, shape={self.shape}, name={self.name}",
             f"  fields = {self.fields}",
@@ -469,7 +493,7 @@ class Vector(AutoSerialize):
         ]
         return "\n".join(description)
 
-    def __str__(self):
+    def __str__(self) -> str:
         description = [
             f"quantem.Vector, shape={self.shape}, name={self.name}",
             f"  fields = {self.fields}",
@@ -479,7 +503,7 @@ class Vector(AutoSerialize):
 
 
 # Helper function for nexting lists
-def nested_list(shape, fill=None):
+def nested_list(shape: Tuple[int, ...], fill: Any = None) -> Any:
     if len(shape) == 0:
         return fill
     return [nested_list(shape[1:], fill) for _ in range(shape[0])]
@@ -487,13 +511,13 @@ def nested_list(shape, fill=None):
 
 # Helper class for numerical field operations
 class _FieldView:
-    def __init__(self, vector, field_name):
+    def __init__(self, vector: Vector, field_name: str) -> None:
         self.vector = vector
         self.field_name = field_name
         self.field_index = vector.fields.index(field_name)
 
-    def _apply_op(self, op):
-        def apply(arr):
+    def _apply_op(self, op: Any) -> None:
+        def apply(arr: Any) -> None:
             if isinstance(arr, np.ndarray):
                 arr[:, self.field_index] = op(arr[:, self.field_index])
             elif isinstance(arr, list):
@@ -502,28 +526,28 @@ class _FieldView:
 
         apply(self.vector.data)
 
-    def __iadd__(self, other):
+    def __iadd__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x + other)
         return self
 
-    def __isub__(self, other):
+    def __isub__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x - other)
         return self
 
-    def __imul__(self, other):
+    def __imul__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x * other)
         return self
 
-    def __itruediv__(self, other):
+    def __itruediv__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x / other)
         return self
 
-    def __ipow__(self, other):
+    def __ipow__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x**other)
         return self
 
-    def flatten(self):
-        def collect(arr):
+    def flatten(self) -> NDArray:
+        def collect(arr: Any) -> List[NDArray]:
             if isinstance(arr, np.ndarray):
                 return [arr[:, self.field_index]]
             elif isinstance(arr, list):
@@ -539,12 +563,12 @@ class _FieldView:
             return np.empty((0,), dtype=float)
         return np.concatenate(arrays, axis=0)
 
-    def set_flattened(self, values):
+    def set_flattened(self, values: ArrayLike) -> None:
         """
         Set the field values across the entire Vector from a 1D flattened array.
         """
 
-        def fill(arr, values, cursor):
+        def fill(arr: Any, values: NDArray, cursor: int) -> int:
             if isinstance(arr, np.ndarray):
                 n = arr.shape[0]
                 arr[:, self.field_index] = values[cursor : cursor + n]
@@ -565,16 +589,18 @@ class _FieldView:
 
         fill(self.vector.data, values, cursor=0)
 
-    def __getitem__(self, idx):
+    def __getitem__(
+        self, idx: Union[Tuple[Union[int, slice], ...], int, slice]
+    ) -> Union[NDArray, "_FieldView"]:
         # Optionally allow v['field0'][0, 1] to get subregion, or v['field0'][...] slice
         sub = self.vector[idx]
         if isinstance(sub, Vector):
             return sub[self.field_name]
         elif isinstance(sub, np.ndarray):
             return sub[:, self.field_index]
-        return None
+        return cast(NDArray, None)
 
-    def __array__(self):
+    def __array__(self) -> None:
         raise TypeError(
             "Cannot convert FieldView to array directly. Use `.flatten()` if needed."
         )
