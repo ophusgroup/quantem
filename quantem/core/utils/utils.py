@@ -1,7 +1,7 @@
-from dataclasses import dataclass
-from typing import Any, Generic, List, Optional, Type, TypeVar, Union, cast
+from typing import Any, List, Union
 
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
 
@@ -11,210 +11,70 @@ else:
     import numpy as cp
 
 
-# Define a type variable for the property value
-T = TypeVar("T")
-
-
-# --- Validator Base Class ---
-@dataclass
-class Validator(Generic[T]):
-    """Base class for all validators with generic type parameter."""
-
-    def __call__(self, value: Any, instance: Any = None) -> T:
-        """Apply the validation logic to the value."""
-        raise NotImplementedError("Subclasses must implement __call__")
-
-
-# --- Validator Descriptor ---
-class ValidatedProperty(Generic[T]):
-    """
-    A descriptor that applies a chain of validators to a property.
-
-    Example:
-        class Example:
-            level = ValidatedProperty[int](
-                EnsureInt(),
-                IsPositive(),
-                InsideRange(low=0, high=10),
-            )
-
-            def __init__(self, level):
-                self.level = level
-    """
-
-    def __init__(self, *validators: Validator[T]):
-        self.validators = validators
-        self.private_name = None
-
-    def __set_name__(self, owner: Type, name: str) -> None:
-        """Set the private name for the property."""
-        self.private_name = f"_{name}"
-
-    def __get__(self, obj: Any, objtype: Optional[Type] = None) -> Any:
-        """Get the property value."""
-        if obj is None:
-            return self
-        if self.private_name is None:
-            raise AttributeError("Property name not set")
-        return getattr(obj, self.private_name)
-
-    def __set__(self, obj: Any, value: Any) -> None:
-        """Set the property value after applying validators."""
-        if obj is None:
-            return
-
-        # Apply each validator in sequence
-        validated_value = value
-        for validator in self.validators:
-            validated_value = validator(validated_value, obj)
-
-        # Store the validated value
-        if self.private_name is None:
-            raise AttributeError("Property name not set")
-        setattr(obj, self.private_name, validated_value)
-
-
-# --- Dataset-specific validators ---
-@dataclass
-class EnsureArray(Validator[Union[np.ndarray, cp.ndarray]]):
-    """Convert value to numpy or cupy array.
-
-    This validator converts the input value to a numpy or cupy array if it isn't already one.
-    If the value is already a numpy or cupy array, it is returned as is.
-    """
-
-    def __call__(
-        self, value: Any, instance: Any = None
-    ) -> Union[np.ndarray, cp.ndarray]:
-        if isinstance(value, (np.ndarray, cp.ndarray)):
-            return value
-        return np.array(value)
-
-
-@dataclass
-class EnsureArrayDtype(Validator[Union[np.ndarray, cp.ndarray]]):
-    """Ensure array has the correct dtype.
-
-    This validator ensures that the array has the specified dtype by converting it if necessary.
-    If no dtype is specified, the array is returned as is.
-    """
-
-    dtype: Optional[np.dtype] = None
-
-    def __call__(
-        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
-    ) -> Union[np.ndarray, cp.ndarray]:
-        if self.dtype is not None:
-            return value.astype(self.dtype)
-        return value
-
-
-@dataclass
-class EnsureNdinfo(Validator[np.ndarray]):
-    """Convert value to numpy array for ndinfo fields (origin, sampling).
-
-    This validator converts the input value to a numpy array if it isn't already one.
-    If the value is already a numpy array, it is returned as is.
-    """
-
-    def __call__(self, value: Any, instance: Any = None) -> np.ndarray:
-        if isinstance(value, np.ndarray):
-            return value
-        return np.array(value)
-
-
-@dataclass
-class EnsureUnits(Validator[List[str]]):
-    """Convert value to list of strings for units.
-
-    This validator converts the input value to a list of strings.
-    If the value is already a list or tuple, each element is converted to a string.
-    If the value is a single item, it is converted to a string and wrapped in a list.
-    """
-
-    def __call__(self, value: Any, instance: Any = None) -> List[str]:
-        if isinstance(value, (list, tuple)):
-            return [str(unit) for unit in value]
-        return [str(value)]
-
-
-@dataclass
-class EnsureStr(Validator[str]):
-    """Convert value to string.
-
-    This validator converts the input value to a string.
-    """
-
-    def __call__(self, value: Any, instance: Any = None) -> str:
-        return str(value)
-
-
-@dataclass
-class ValidateArrayDimensions(Validator[Union[np.ndarray, cp.ndarray]]):
-    """Validate array dimensions match expected ndim.
-
-    This validator checks if the array dimensions match the expected number of dimensions.
-    If the dimensions don't match, a ValueError is raised.
-    """
-
-    ndim: Optional[int] = None
-
-    def __call__(
-        self, value: Union[np.ndarray, cp.ndarray], instance: Any = None
-    ) -> Union[np.ndarray, cp.ndarray]:
-        if instance is not None and hasattr(instance, "ndim"):
-            expected_ndim = instance.ndim
+# --- Dataset Validation Functions ---
+def ensure_valid_array(
+    array: Union[NDArray, Any], dtype: DTypeLike = None, ndim: int | None = None
+) -> Union[NDArray, Any]:
+    """Ensure input is a numpy array or cupy array (if available), converting if necessary."""
+    if isinstance(array, (np.ndarray, cp.ndarray)):
+        if dtype is not None:
+            validated_array = array.astype(dtype)
         else:
-            expected_ndim = self.ndim
-
-        if expected_ndim is not None and value.ndim != expected_ndim:
-            raise ValueError(
-                f"Array dimension {value.ndim} must equal expected dimension {expected_ndim}"
-            )
-        return value
-
-
-@dataclass
-class ValidateNdinfoLength(Validator[np.ndarray]):
-    """Validate ndinfo array length matches expected ndim.
-
-    This validator checks if the ndinfo array length matches the expected number of dimensions.
-    If the length doesn't match, a ValueError is raised.
-    """
-
-    ndim: Optional[int] = None
-
-    def __call__(self, value: np.ndarray, instance: Any = None) -> np.ndarray:
-        if instance is not None and hasattr(instance, "ndim"):
-            expected_ndim = instance.ndim
-        else:
-            expected_ndim = self.ndim
-
-        if expected_ndim is not None and len(value) != expected_ndim:
-            raise ValueError(
-                f"Length {len(value)} must match dimension {expected_ndim}"
-            )
-        return value
+            validated_array = array
+    else:
+        try:
+            validated_array = np.array(array, dtype=dtype)
+            if validated_array.ndim < 1:
+                raise ValueError("Array must be at least 1D")
+            elif not np.issubdtype(validated_array.dtype, np.number):
+                raise ValueError("Array must contain numeric values")
+        except Exception as e:
+            raise TypeError(f"Input could not be converted to a NumPy array: {e}")
+        if ndim is not None:
+            if validated_array.ndim != ndim:
+                raise ValueError(
+                    f"Array ndim {validated_array.ndim} does not match expected ndim {ndim}"
+                )
+    return validated_array
 
 
-@dataclass
-class ValidateListLength(Validator[List[str]]):
-    """Validate list length matches expected ndim.
+def validate_ndinfo(
+    value: Union[NDArray, tuple, list, float, int], ndim: int, name: str, dtype=None
+) -> NDArray:
+    """Validate and convert origin/sampling to a 1D numpy array of type dtype and correct length."""
+    if np.isscalar(value):
+        arr = np.full(ndim, value, dtype=dtype)
+        if not np.issubdtype(arr.dtype, np.number):
+            raise ValueError(f"{name} must contain numeric values")
+        return arr
+    elif not isinstance(value, (np.ndarray, tuple, list)):
+        raise TypeError(
+            f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}"
+        )
 
-    This validator checks if the list length matches the expected number of dimensions.
-    If the length doesn't match, a ValueError is raised.
-    """
+    try:
+        arr = np.array(value, dtype=dtype).flatten()
+    except (ValueError, TypeError) as e:
+        raise TypeError(f"Could not convert {name} to a 1D numeric NumPy array: {e}")
 
-    ndim: Optional[int] = None
+    if len(arr) != ndim:
+        raise ValueError(f"Length of {name} ({len(arr)}) must match data ndim ({ndim})")
 
-    def __call__(self, value: List[str], instance: Any = None) -> List[str]:
-        if instance is not None and hasattr(instance, "ndim"):
-            expected_ndim = instance.ndim
-        else:
-            expected_ndim = self.ndim
+    if not np.issubdtype(arr.dtype, np.number):
+        raise ValueError(f"{name} must contain numeric values")
 
-        if expected_ndim is not None and len(value) != expected_ndim:
-            raise ValueError(
-                f"Length {len(value)} must match dimension {expected_ndim}"
-            )
-        return value
+    return arr
+
+
+def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List[str]:
+    """Validate and convert units to a list of strings of correct length."""
+    if isinstance(value, str):
+        return [value] * ndim
+    elif not isinstance(value, (list, tuple)):
+        raise TypeError(f"Units must be a list, tuple, or string, got {type(value)}")
+    elif len(value) != ndim:
+        raise ValueError(
+            f"Length of units ({len(value)}) must match data ndim ({ndim})"
+        )
+
+    return [str(unit) for unit in value]

@@ -1,7 +1,8 @@
-from typing import cast
+from typing import Any, cast
 
 import matplotlib.pyplot as plt
 import numpy as np
+from numpy.typing import NDArray
 
 from quantem.core import config
 from quantem.core.datastructures.dataset import Dataset
@@ -30,11 +31,11 @@ class Dataset4dstem(Dataset):
 
     def __init__(
         self,
-        array: np.ndarray | cp.ndarray,
+        array: NDArray | Any,
         name: str,
-        origin: np.ndarray,
-        sampling: np.ndarray,
-        units: list[str],
+        origin: NDArray | tuple | list | float | int,
+        sampling: NDArray | tuple | list | float | int,
+        units: list[str] | tuple | list,
         signal_units: str = "arb. units",
         _token: object | None = None,
     ):
@@ -42,15 +43,15 @@ class Dataset4dstem(Dataset):
 
         Parameters
         ----------
-        array : np.ndarray | cp.ndarray
+        array : NDArray | Any
             The underlying 4D array data
         name : str
             A descriptive name for the dataset
-        origin : np.ndarray
+        origin : NDArray | tuple | list | float | int
             The origin coordinates for each dimension
-        sampling : np.ndarray
+        sampling : NDArray | tuple | list | float | int
             The sampling rate/spacing for each dimension
-        units : list[str]
+        units : list[str] | tuple | list
             Units for each dimension
         signal_units : str, optional
             Units for the array values, by default "arb. units"
@@ -94,11 +95,11 @@ class Dataset4dstem(Dataset):
     @classmethod
     def from_array(
         cls,
-        array: np.ndarray | cp.ndarray,
+        array: NDArray | Any,
         name: str | None = None,
-        origin: np.ndarray | tuple | list | None = None,
-        sampling: np.ndarray | tuple | list | None = None,
-        units: list[str] | None = None,
+        origin: NDArray | tuple | list | float | int | None = None,
+        sampling: NDArray | tuple | list | float | int | None = None,
+        units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> "Dataset4dstem":
         """
@@ -106,15 +107,15 @@ class Dataset4dstem(Dataset):
 
         Parameters
         ----------
-        array : np.ndarray | cp.ndarray
+        array : NDArray | Any
             The underlying 4D array data
         name : str | None, optional
             A descriptive name for the dataset. If None, defaults to "4D-STEM dataset"
-        origin : np.ndarray | tuple | list | None, optional
+        origin : NDArray | tuple | list | float | int | None, optional
             The origin coordinates for each dimension. If None, defaults to zeros
-        sampling : np.ndarray | tuple | list | None, optional
+        sampling : NDArray | tuple | list | float | int | None, optional
             The sampling rate/spacing for each dimension. If None, defaults to ones
-        units : list[str] | None, optional
+        units : list[str] | tuple | list | None, optional
             Units for each dimension. If None, defaults to ["pixels"] * 4
         signal_units : str, optional
             Units for the array values, by default "arb. units"
@@ -127,8 +128,8 @@ class Dataset4dstem(Dataset):
         return cls(
             array=array,
             name=name if name is not None else "4D-STEM dataset",
-            origin=cast(np.ndarray, origin if origin is not None else np.zeros(4)),
-            sampling=cast(np.ndarray, sampling if sampling is not None else np.ones(4)),
+            origin=origin if origin is not None else np.zeros(4),
+            sampling=sampling if sampling is not None else np.ones(4),
             units=units if units is not None else ["pixels"] * 4,
             signal_units=signal_units,
             _token=cls._token,
