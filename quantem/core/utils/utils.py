@@ -15,7 +15,31 @@ else:
 def ensure_valid_array(
     array: Union[NDArray, Any], dtype: DTypeLike = None, ndim: int | None = None
 ) -> Union[NDArray, Any]:
-    """Ensure input is a numpy array or cupy array (if available), converting if necessary."""
+    """
+    Ensure input is a numpy array or cupy array (if available), converting if necessary.
+
+    Parameters
+    ----------
+    array : Union[NDArray, Any]
+        The input array to validate and convert
+    dtype : DTypeLike, optional
+        The desired data type for the array
+    ndim : int, optional
+        The expected number of dimensions for the array
+
+    Returns
+    -------
+    Union[NDArray, Any]
+        The validated array with the specified dtype and ndim
+
+    Raises
+    ------
+    ValueError
+        If the array is not at least 1D, doesn't contain numeric values,
+        or has a different number of dimensions than expected
+    TypeError
+        If the input could not be converted to a NumPy array
+    """
     if isinstance(array, (np.ndarray, cp.ndarray)):
         if dtype is not None:
             validated_array = array.astype(dtype)
@@ -41,7 +65,33 @@ def ensure_valid_array(
 def validate_ndinfo(
     value: Union[NDArray, tuple, list, float, int], ndim: int, name: str, dtype=None
 ) -> NDArray:
-    """Validate and convert origin/sampling to a 1D numpy array of type dtype and correct length."""
+    """
+    Validate and convert origin/sampling to a 1D numpy array of type dtype and correct length.
+
+    Parameters
+    ----------
+    value : Union[NDArray, tuple, list, float, int]
+        The value to validate and convert
+    ndim : int
+        The expected number of dimensions
+    name : str
+        The name of the parameter being validated (for error messages)
+    dtype : type, optional
+        The desired data type for the array
+
+    Returns
+    -------
+    NDArray
+        A 1D numpy array with the specified dtype and length
+
+    Raises
+    ------
+    ValueError
+        If the array doesn't contain numeric values or has the wrong length
+    TypeError
+        If the value is not a numpy array, tuple, list, or scalar,
+        or if it could not be converted to a 1D numeric NumPy array
+    """
     if np.isscalar(value):
         arr = np.full(ndim, value, dtype=dtype)
         if not np.issubdtype(arr.dtype, np.number):
@@ -67,7 +117,28 @@ def validate_ndinfo(
 
 
 def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List[str]:
-    """Validate and convert units to a list of strings of correct length."""
+    """
+    Validate and convert units to a list of strings of correct length.
+
+    Parameters
+    ----------
+    value : Union[List[str], tuple, list, str]
+        The units to validate and convert
+    ndim : int
+        The expected number of dimensions
+
+    Returns
+    -------
+    List[str]
+        A list of strings representing the units
+
+    Raises
+    ------
+    ValueError
+        If the length of units doesn't match the expected number of dimensions
+    TypeError
+        If units is not a list, tuple, or string
+    """
     if isinstance(value, str):
         return [value] * ndim
     elif not isinstance(value, (list, tuple)):
@@ -214,26 +285,29 @@ def validate_vector_data(
     data: List[Any], shape: Tuple[int, ...], num_fields: int
 ) -> List[Any]:
     """
-    Validate data structure.
+    Validate that the data structure matches the expected shape and number of fields.
 
     Parameters
     ----------
     data : List[Any]
-        The data to validate
+        The nested list structure containing the vector's data
     shape : Tuple[int, ...]
-        Expected shape
+        The expected shape of the vector
     num_fields : int
-        Expected number of fields
+        The expected number of fields
 
     Returns
     -------
     List[Any]
-        The validated data
+        The validated data structure
 
     Raises
     ------
     ValueError
-        If data structure doesn't match shape or fields
+        If the data structure doesn't match the expected shape,
+        or if any array doesn't have the correct number of fields
+    TypeError
+        If data is not a list or contains invalid data types
     """
     # This is a placeholder - actual implementation would need to recursively
     # validate the nested structure matches the shape and contains arrays with
