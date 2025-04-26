@@ -1,6 +1,7 @@
-from typing import Any, Optional, Union
+from typing import Any, Optional, Union, cast
 
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
@@ -14,7 +15,7 @@ from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 # Re-add conditional import for cp alias within this file's scope
 if config.get("has_cupy"):
-    import cupy as cp
+    import cupy as cp  # type: ignore
 else:
     import numpy as cp  # Alias numpy as cp
 
@@ -25,10 +26,10 @@ class Dataset(AutoSerialize):
     Uses standard properties and validation within __init__ for type safety.
 
     Attributes (Properties):
-        array (np.ndarray | Any): The underlying n-dimensional array data (Any for CuPy).
+        array (NDArray | Any): The underlying n-dimensional array data (Any for CuPy).
         name (str): A descriptive name for the dataset.
-        origin (np.ndarray): The origin coordinates for each dimension (1D float array).
-        sampling (np.ndarray): The sampling rate/spacing for each dimension (1D float array).
+        origin (NDArray): The origin coordinates for each dimension (1D array).
+        sampling (NDArray): The sampling rate/spacing for each dimension (1D array).
         units (list[str]): Units for each dimension.
         signal_units (str): Units for the array values.
     """
@@ -39,8 +40,8 @@ class Dataset(AutoSerialize):
         self,
         array: Any,  # Input can be array-like
         name: str,
-        origin: Union[np.ndarray, tuple, list],
-        sampling: Union[np.ndarray, tuple, list],
+        origin: Union[NDArray, tuple, list],
+        sampling: Union[NDArray, tuple, list],
         units: Union[list[str], tuple, list],
         signal_units: str = "arb. units",
         _token: object | None = None,
@@ -60,8 +61,8 @@ class Dataset(AutoSerialize):
         cls,
         array: Any,  # Input can be array-like
         name: str | None = None,
-        origin: Union[np.ndarray, tuple, list] | None = None,
-        sampling: Union[np.ndarray, tuple, list] | None = None,
+        origin: Union[NDArray, tuple, list] | None = None,
+        sampling: Union[NDArray, tuple, list] | None = None,
         units: Union[list[str], tuple, list] | None = None,
         signal_units: str = "arb. units",
     ) -> "Dataset":
@@ -74,9 +75,9 @@ class Dataset(AutoSerialize):
             The array to validate and create a Dataset from.
         name: str | None
             The name of the Dataset.
-        origin: Union[np.ndarray, tuple, list] | None
+        origin: Union[NDArray, tuple, list] | None
             The origin of the Dataset.
-        sampling: Union[np.ndarray, tuple, list] | None
+        sampling: Union[NDArray, tuple, list] | None
             The sampling of the Dataset.
         units: Union[list[str], tuple, list] | None
             The units of the Dataset.
@@ -109,11 +110,11 @@ class Dataset(AutoSerialize):
 
     # --- Properties ---
     @property
-    def array(self) -> Union[np.ndarray, cp.ndarray]:
+    def array(self) -> Union[NDArray, Any]:
         return self._array
 
     @array.setter
-    def array(self, value: Union[np.ndarray, cp.ndarray]) -> None:
+    def array(self, value: Union[NDArray, Any]) -> None:
         self._array = ensure_valid_array(value, dtype=self.dtype, ndim=self.ndim)
 
     @property
@@ -125,19 +126,19 @@ class Dataset(AutoSerialize):
         self._name = str(value)
 
     @property
-    def origin(self) -> np.ndarray:
+    def origin(self) -> NDArray:
         return self._origin
 
     @origin.setter
-    def origin(self, value: Union[np.ndarray, tuple, list]) -> None:
+    def origin(self, value: Union[NDArray, tuple, list]) -> None:
         self._origin = validate_ndinfo(value, self.ndim, "origin")
 
     @property
-    def sampling(self) -> np.ndarray:
+    def sampling(self) -> NDArray:
         return self._sampling
 
     @sampling.setter
-    def sampling(self, value: Union[np.ndarray, tuple, list]) -> None:
+    def sampling(self, value: Union[NDArray, tuple, list]) -> None:
         self._sampling = validate_ndinfo(value, self.ndim, "sampling")
 
     @property
@@ -166,7 +167,7 @@ class Dataset(AutoSerialize):
         return self.array.ndim
 
     @property
-    def dtype(self) -> Any:
+    def dtype(self) -> DTypeLike:
         return self.array.dtype
 
     @property

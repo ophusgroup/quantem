@@ -1,19 +1,20 @@
 from typing import Any, List, Union
 
 import numpy as np
+from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
 
 if config.get("has_cupy"):
-    import cupy as cp
+    import cupy as cp  # type: ignore
 else:
     import numpy as cp
 
 
 # --- Dataset Validation Functions ---
 def ensure_valid_array(
-    array: np.ndarray | cp.ndarray, dtype: Any = None, ndim: int | None = None
-) -> Union[np.ndarray, Any]:
+    array: Union[NDArray, Any], dtype: DTypeLike = None, ndim: int | None = None
+) -> Union[NDArray, Any]:
     """Ensure input is a numpy array or cupy array (if available), converting if necessary."""
     if isinstance(array, (np.ndarray, cp.ndarray)):
         validated_array = array.astype(dtype)
@@ -35,8 +36,8 @@ def ensure_valid_array(
 
 
 def validate_ndinfo(
-    value: np.ndarray | tuple | list, ndim: int, name: str, dtype=float
-) -> np.ndarray:
+    value: Union[NDArray, tuple, list], ndim: int, name: str, dtype=None
+) -> NDArray:
     """Validate and convert origin/sampling to a 1D numpy array of type dtype and correct length."""
     if not isinstance(value, (np.ndarray, tuple, list)):
         raise TypeError(
