@@ -1,4 +1,5 @@
 import importlib
+from typing import Any, Dict, Union
 
 import h5py
 
@@ -92,7 +93,7 @@ def read_2d(
     return dataset
 
 
-def read_emdfile_to_4dstem(file_path):
+def read_emdfile_to_4dstem(file_path: str) -> Dataset4dstem:
     """
     File reader for legacy `emdFile` / `py4DSTEM` files.
 
@@ -106,36 +107,20 @@ def read_emdfile_to_4dstem(file_path):
     Dataset4dstem
     """
     with h5py.File(file_path, "r") as file:
+        # Access the data directly
+        data = file["datacube_root"]["datacube"]["data"]  # type: ignore
+
+        # Access calibration values directly
+        calibration = file["datacube_root"]["metadatabundle"]["calibration"]  # type: ignore
+        r_pixel_size = calibration["R_pixel_size"][()]  # type: ignore
+        q_pixel_size = calibration["Q_pixel_size"][()]  # type: ignore
+        r_pixel_units = calibration["R_pixel_units"][()]  # type: ignore
+        q_pixel_units = calibration["Q_pixel_units"][()]  # type: ignore
+
         dataset = Dataset4dstem.from_array(
-            array=file["datacube_root"]["datacube"]["data"],
-            sampling=[
-                file["datacube_root"]["metadatabundle"]["calibration"]["R_pixel_size"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["R_pixel_size"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["Q_pixel_size"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["Q_pixel_size"][
-                    ()
-                ],
-            ],
-            units=[
-                file["datacube_root"]["metadatabundle"]["calibration"]["R_pixel_units"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["R_pixel_units"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["Q_pixel_units"][
-                    ()
-                ],
-                file["datacube_root"]["metadatabundle"]["calibration"]["Q_pixel_units"][
-                    ()
-                ],
-            ],
+            array=data,
+            sampling=[r_pixel_size, r_pixel_size, q_pixel_size, q_pixel_size],
+            units=[r_pixel_units, r_pixel_units, q_pixel_units, q_pixel_units],
         )
 
     return dataset
