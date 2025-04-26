@@ -233,7 +233,7 @@ class TestVector:
         ]
 
         # Test with explicit fields
-        v1 = Vector.from_ragged_lists(
+        v1 = Vector.from_data(
             data=data,
             fields=["field0", "field1", "field2"],
             name="test_vector",
@@ -253,7 +253,7 @@ class TestVector:
         np.testing.assert_array_equal(v1.get_data(2), data[2])  # type: ignore
 
         # Test with inferred fields
-        v2 = Vector.from_ragged_lists(data=data, num_fields=3)
+        v2 = Vector.from_data(data=data, num_fields=3)
 
         # Check properties
         assert v2.shape == (3,)
@@ -268,16 +268,16 @@ class TestVector:
 
         # Test error cases
         with pytest.raises(TypeError, match="Data must be a list"):
-            Vector.from_ragged_lists(data=np.array([1, 2, 3]))  # type: ignore
+            Vector.from_data(data=np.array([1, 2, 3]))  # type: ignore
 
         with pytest.raises(ValueError, match="Specified num_fields"):
-            Vector.from_ragged_lists(
+            Vector.from_data(
                 data=data,
                 fields=["field0", "field1"],  # Wrong number of fields
             )
 
         with pytest.raises(ValueError, match="Duplicate field names"):
-            Vector.from_ragged_lists(
+            Vector.from_data(
                 data=data,
                 fields=["field0", "field0", "field2"],  # Duplicate field names
             )
