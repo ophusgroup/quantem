@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 from matplotlib import colors
 from matplotlib.axes import Axes
+from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, Normalize
 from matplotlib.figure import Figure
 
@@ -188,39 +189,27 @@ class TestAddScalebarToAx:
 
 
 class TestAddCbarToAx:
-    def test_add_cbar_to_ax(self, mock_fig_ax, sample_array):
+    def test_add_cbar_to_ax(self, mock_fig_ax):
         fig, ax = mock_fig_ax
-        norm = Normalize(vmin=sample_array.min(), vmax=sample_array.max())
-        cmap = LinearSegmentedColormap.from_list("viridis", ["blue", "green", "red"])
-        im = ax.imshow(sample_array, norm=norm, cmap=cmap)
-        cbar = add_cbar_to_ax(fig, ax, norm, cmap)
-        assert cbar is not None
-        assert hasattr(cbar, "ax")
-        assert isinstance(cbar.ax, Axes)
-
-    def test_add_cbar_to_ax_with_custom_cmap(self, mock_fig_ax, sample_array):
-        fig, ax = mock_fig_ax
-        norm = Normalize(vmin=sample_array.min(), vmax=sample_array.max())
+        data = np.random.rand(10, 10)
+        norm = Normalize(vmin=data.min(), vmax=data.max())
         cmap = LinearSegmentedColormap.from_list("test", ["blue", "red"])
-        im = ax.imshow(sample_array, norm=norm, cmap=cmap)
-        cbar = add_cbar_to_ax(fig, ax, norm, cmap)
-        assert cbar is not None
-        assert hasattr(cbar, "ax")
-        assert isinstance(cbar.ax, Axes)
+        cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])  # [left, bottom, width, height]
+        cbar = add_cbar_to_ax(fig, cax=cax, norm=norm, cmap=cmap)
+        assert isinstance(cbar, Colorbar)
 
 
 class TestAddArgCbarToAx:
-    def test_add_arg_cbar_to_ax(self, mock_fig_ax, sample_complex_array):
+    def test_add_arg_cbar_to_ax(self, mock_fig_ax):
         fig, ax = mock_fig_ax
-        norm = Normalize(vmin=-np.pi, vmax=np.pi)
-        cmap = LinearSegmentedColormap.from_list(
-            "hsv", ["red", "yellow", "green", "blue", "red"]
-        )
-        im = ax.imshow(np.angle(sample_complex_array), norm=norm, cmap=cmap)
-        cbar = add_arg_cbar_to_ax(fig, ax)
-        assert cbar is not None
-        assert hasattr(cbar, "ax")
-        assert isinstance(cbar.ax, Axes)
+        # Create sample complex data
+        data = np.random.rand(10, 10) + 1j * np.random.rand(10, 10)
+        cmap = LinearSegmentedColormap.from_list("test", ["blue", "red"])
+        norm = Normalize(vmin=0, vmax=2 * np.pi)
+        im = ax.imshow(np.angle(data), cmap=cmap, norm=norm)
+        cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])  # [left, bottom, width, height]
+        cbar = add_arg_cbar_to_ax(fig, cax=cax)
+        assert isinstance(cbar, Colorbar)
 
     def test_add_arg_cbar_to_ax_with_chroma_boost(self, mock_fig_ax):
         fig, ax = mock_fig_ax
@@ -248,6 +237,22 @@ class TestTurboBlack:
 
 
 class TestBilinearHistogram2D:
+    def test_basic_histogram(self):
+        x = np.random.rand(100)
+        y = np.random.rand(100)
+        weight = np.ones_like(x)
+        shape = (10, 10)
+        hist = bilinear_histogram_2d(x=x, y=y, weight=weight, shape=shape)
+        assert hist.shape == shape
+
+    def test_with_custom_weights(self):
+        x = np.random.rand(100)
+        y = np.random.rand(100)
+        weight = np.random.rand(100)
+        shape = (10, 10)
+        hist = bilinear_histogram_2d(x=x, y=y, weight=weight, shape=shape)
+        assert hist.shape == shape
+
     def test_bilinear_histogram_2d(self, sample_array):
         # Create a grid of points that matches the sample array size
         x = np.linspace(
