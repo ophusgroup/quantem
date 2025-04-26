@@ -1,12 +1,15 @@
 from collections.abc import Sequence
 from functools import update_wrapper
+from typing import Any, List, Optional, Tuple, Union, cast
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
+from matplotlib import colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+from numpy.typing import NDArray
 
 from quantem.core.visualization.custom_normalizations import (
     CustomNormalization,
@@ -25,17 +28,17 @@ from quantem.core.visualization.visualization_utils import (
 
 
 def _show_2d(
-    array,
+    array: NDArray,
     *,
-    norm: NormalizationConfig | dict | str = None,
-    scalebar: ScalebarConfig | dict | bool = None,
-    cmap: str | mpl.colors.Colormap = "gray",
+    norm: Optional[Union[NormalizationConfig, dict, str]] = None,
+    scalebar: Optional[Union[ScalebarConfig, dict, bool]] = None,
+    cmap: Union[str, colors.Colormap] = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
-    figax: tuple = None,
-    figsize: tuple = (8, 8),
-    title: str = None,
-):
+    figax: Optional[Tuple[Any, Any]] = None,
+    figsize: Tuple[int, int] = (8, 8),
+    title: Optional[str] = None,
+) -> Tuple[Any, Any]:
     """Display a 2D array as an image with optional colorbar and scalebar.
 
     This function visualizes a 2D array, handling both real and complex data.
@@ -81,7 +84,7 @@ def _show_2d(
     norm_config = _resolve_normalization(norm)
     scalebar_config = _resolve_scalebar(scalebar)
 
-    norm = CustomNormalization(
+    norm_obj = CustomNormalization(
         interval_type=norm_config.interval_type,
         stretch_type=norm_config.stretch_type,
         lower_quantile=norm_config.lower_quantile,
@@ -96,7 +99,7 @@ def _show_2d(
         data=amplitude,
     )
 
-    scaled_amplitude = norm(amplitude)
+    scaled_amplitude = norm_obj(amplitude)
     rgba = array_to_rgba(scaled_amplitude, angle, cmap=cmap, chroma_boost=chroma_boost)
 
     if figax is None:
@@ -110,7 +113,9 @@ def _show_2d(
     if cbar:
         divider = make_axes_locatable(ax)
         ax_cb_abs = divider.append_axes("right", size="5%", pad="2.5%")
-        cb_abs = add_cbar_to_ax(fig, ax_cb_abs, norm, cmap)
+        # Convert cmap to Colormap if it's a string
+        cmap_obj = mpl.colormaps.get_cmap(cmap) if isinstance(cmap, str) else cmap
+        cb_abs = add_cbar_to_ax(fig, ax_cb_abs, norm_obj, cmap_obj)
 
         if is_complex:
             ax_cb_angle = divider.append_axes("right", size="5%", pad="10%")
@@ -135,16 +140,16 @@ def _show_2d(
 
 
 def _show_2d_combined(
-    list_of_arrays,
+    list_of_arrays: Sequence[NDArray],
     *,
-    norm: NormalizationConfig | dict | str = None,
-    scalebar: ScalebarConfig | dict | bool = None,
-    cmap: str | mpl.colors.Colormap = "gray",
+    norm: Optional[Union[NormalizationConfig, dict, str]] = None,
+    scalebar: Optional[Union[ScalebarConfig, dict, bool]] = None,
+    cmap: Union[str, colors.Colormap] = "gray",
     chroma_boost: float = 1.0,
     cbar: bool = False,
-    figax: tuple = None,
-    figsize: tuple = (8, 8),
-):
+    figax: Optional[Tuple[Any, Any]] = None,
+    figsize: Tuple[int, int] = (8, 8),
+) -> Tuple[Any, Any]:
     """Display multiple 2D arrays as a single combined image.
 
     This function takes a list of 2D arrays and creates a single visualization
@@ -154,8 +159,8 @@ def _show_2d_combined(
 
     Parameters
     ----------
-    list_of_arrays : list of ndarray
-        List of 2D arrays to combine into a single visualization.
+    list_of_arrays : sequence of ndarray
+        Sequence of 2D arrays to combine into a single visualization.
     norm : NormalizationConfig or dict or str, optional
         Configuration for normalizing the data before visualization.
     scalebar : ScalebarConfig or dict or bool, optional
@@ -186,7 +191,7 @@ def _show_2d_combined(
     norm_config = _resolve_normalization(norm)
     scalebar_config = _resolve_scalebar(scalebar)
 
-    norm = CustomNormalization(
+    norm_obj = CustomNormalization(
         interval_type=norm_config.interval_type,
         stretch_type=norm_config.stretch_type,
         lower_quantile=norm_config.lower_quantile,
@@ -200,9 +205,11 @@ def _show_2d_combined(
         asinh_linear_range=norm_config.asinh_linear_range,
     )
 
+    # Convert Sequence to List for list_of_arrays_to_rgba
+    list_of_arrays_list = list(list_of_arrays)
     rgba = list_of_arrays_to_rgba(
-        list_of_arrays,
-        norm=norm,
+        list_of_arrays_list,
+        norm=norm_obj,
         chroma_boost=chroma_boost,
     )
 
@@ -233,7 +240,9 @@ def _show_2d_combined(
     return fig, ax
 
 
-def _normalize_show_input_to_grid(arrays):
+def _normalize_show_input_to_grid(
+    arrays: Union[NDArray, Sequence[NDArray], Sequence[Sequence[NDArray]]],
+) -> List[List[NDArray]]:
     """Convert various input formats to a consistent grid format for visualization.
 
     This helper function normalizes different input formats to a consistent
@@ -241,7 +250,7 @@ def _normalize_show_input_to_grid(arrays):
 
     Parameters
     ----------
-    arrays : ndarray or list of ndarray or list of lists of ndarray
+    arrays : ndarray or sequence of ndarray or sequence of sequences of ndarray
         Input arrays in various formats.
 
     Returns
@@ -252,19 +261,21 @@ def _normalize_show_input_to_grid(arrays):
     if isinstance(arrays, np.ndarray):
         return [[arrays]]
     if isinstance(arrays, Sequence) and not isinstance(arrays[0], Sequence):
-        return [arrays]
-    return arrays
+        # Convert sequence to list and ensure each element is an NDArray
+        return [[cast(NDArray, arr) for arr in arrays]]
+    # Convert outer and inner sequences to lists, ensuring proper types
+    return [[cast(NDArray, arr) for arr in row] for row in arrays]
 
 
 def show_2d(
-    arrays,
+    arrays: Union[NDArray, Sequence[NDArray], Sequence[Sequence[NDArray]]],
     *,
-    figax=None,
-    axsize=(4, 4),
-    tight_layout=True,
-    combine_images=False,
-    **kwargs,
-):
+    figax: Optional[Tuple[Any, Any]] = None,
+    axsize: Tuple[int, int] = (4, 4),
+    tight_layout: bool = True,
+    combine_images: bool = False,
+    **kwargs: Any,
+) -> Tuple[Any, Any]:
     """Display one or more 2D arrays in a grid layout.
 
     This is the main visualization function that can display a single array,
@@ -273,9 +284,9 @@ def show_2d(
 
     Parameters
     ----------
-    arrays : ndarray or list of ndarray or list of lists of ndarray
-        The arrays to visualize. Can be a single array, a list of arrays,
-        or a nested list representing a grid of arrays.
+    arrays : ndarray or sequence of ndarray or sequence of sequences of ndarray
+        The arrays to visualize. Can be a single array, a sequence of arrays,
+        or a nested sequence representing a grid of arrays.
     figax : tuple, optional
         (fig, axs) tuple to use for plotting. If None, a new figure and axes are created.
     axsize : tuple, default=(4, 4)
@@ -283,7 +294,7 @@ def show_2d(
     tight_layout : bool, default=True
         Whether to apply tight_layout to the figure.
     combine_images : bool, default=False
-        If True and arrays is a list, combine all arrays into a single visualization
+        If True and arrays is a sequence, combine all arrays into a single visualization
         using color encoding. Only works for a single row of arrays.
     **kwargs : dict
         Additional keyword arguments passed to _show_2d or _show_2d_combined.
@@ -334,8 +345,9 @@ def show_2d(
             )
 
     # Hide unused axes in incomplete rows
-    for j in range(len(row), ncols):
-        axs[i][j].axis("off")
+    for i, row in enumerate(grid):
+        for j in range(len(row), ncols):
+            axs[i][j].axis("off")
 
     if tight_layout:
         fig.tight_layout()

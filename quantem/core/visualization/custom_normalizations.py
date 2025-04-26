@@ -1,7 +1,10 @@
+from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
 import matplotlib as mpl
 import numpy as np
+from matplotlib import colors
+from numpy.typing import NDArray
 
 """
 Custom normalization based on astropy's visualization routines.
@@ -13,13 +16,31 @@ Licensed under a 3-clause BSD style license.
 """
 
 
-class BaseInterval:
+class BaseInterval(ABC):
     """
     Base class for the interval classes, which when called with an array of values,
     return an interval clipped to the [0:1] range.
     """
 
-    def __call__(self, values):
+    @abstractmethod
+    def get_limits(self, values: NDArray) -> tuple[float, float]:
+        """
+        Get the minimum and maximum values for the interval.
+        This method must be implemented by subclasses.
+
+        Parameters
+        ----------
+        values : array-like
+            The input values.
+
+        Returns
+        -------
+        vmin, vmax : float
+            The minimum and maximum values.
+        """
+        raise NotImplementedError("Subclasses must implement get_limits")
+
+    def __call__(self, values: NDArray) -> NDArray:
         """
         Transform values using this interval.
 
@@ -46,7 +67,7 @@ class BaseInterval:
         np.clip(values, 0.0, 1.0, out=values)
         return values
 
-    def inverse(self, values):
+    def inverse(self, values: NDArray) -> NDArray:
         """
         Pseudo-inverse interval transform. Note this does not recover
         the original range due to clipping. Used for colorbars.
@@ -84,7 +105,7 @@ class ManualInterval(BaseInterval):
     vmin: float | None = None
     vmax: float | None = None
 
-    def get_limits(self, values):
+    def get_limits(self, values: NDArray) -> tuple[float, float]:
         # Avoid overhead of preparing array if both limits have been specified
         # manually, for performance.
 
@@ -118,7 +139,7 @@ class CenteredInterval(BaseInterval):
     vcenter: float = 0.0
     half_range: float | None = None
 
-    def get_limits(self, values):
+    def get_limits(self, values: NDArray) -> tuple[float, float]:
         if self.half_range is not None:
             return self.vcenter - self.half_range, self.vcenter + self.half_range
 
@@ -152,7 +173,7 @@ class QuantileInterval(BaseInterval):
     lower_quantile: float = 0.02
     upper_quantile: float = 0.98
 
-    def get_limits(self, values):
+    def get_limits(self, values: NDArray) -> tuple[float, float]:
         # Make sure values is a Numpy array
         values = np.asarray(values).ravel()
 
@@ -184,7 +205,7 @@ class LinearStretch:
     slope: float = 1.0
     intercept: float = 0.0
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         if self.slope == 1.0 and self.intercept == 0.0:
             return values
 
@@ -197,7 +218,7 @@ class LinearStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "LinearStretch":
         return LinearStretch(1 / self.slope, -self.intercept / self.slope)
 
 
@@ -220,11 +241,11 @@ class PowerLawStretch:
 
     power: float = 1.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.power <= 0.0:
             raise ValueError("power must be > 0")
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         if self.power == 1.0:
             return values
 
@@ -234,7 +255,7 @@ class PowerLawStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "PowerLawStretch":
         return PowerLawStretch(1.0 / self.power)
 
 
@@ -257,11 +278,11 @@ class LogarithmicStretch:
 
     a: float = 1000.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.a <= 0:
             raise ValueError("a must be > 0")
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         values = np.array(values, copy=copy)
         np.clip(values, 0.0, 1.0, out=values)
         np.multiply(values, self.a, out=values)
@@ -271,7 +292,7 @@ class LogarithmicStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "InverseLogarithmicStretch":
         return InverseLogarithmicStretch(self.a)
 
 
@@ -295,11 +316,11 @@ class InverseLogarithmicStretch:
 
     a: float = 1000.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.a <= 0:
             raise ValueError("a must be > 0")
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         values = np.array(values, copy=copy)
         np.clip(values, 0.0, 1.0, out=values)
         np.multiply(values, np.log(self.a + 1.0), out=values)
@@ -309,7 +330,7 @@ class InverseLogarithmicStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "LogarithmicStretch":
         return LogarithmicStretch(self.a)
 
 
@@ -335,11 +356,11 @@ class InverseHyperbolicSineStretch:
 
     a: float = 0.1
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.a <= 0:
             raise ValueError("a must be > 0")
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         values = np.array(values, copy=copy)
         np.clip(values, 0.0, 1.0, out=values)
         # map to [-1,1]
@@ -355,7 +376,7 @@ class InverseHyperbolicSineStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "HyperbolicSineStretch":
         return HyperbolicSineStretch(1.0 / np.arcsinh(1.0 / self.a))
 
 
@@ -379,11 +400,11 @@ class HyperbolicSineStretch:
 
     a: float = 1.0 / 3.0
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         if self.a <= 0:
             raise ValueError("a must be > 0")
 
-    def __call__(self, values, copy=True):
+    def __call__(self, values: NDArray, copy: bool = True) -> NDArray:
         values = np.array(values, copy=copy)
         np.clip(values, 0.0, 1.0, out=values)
 
@@ -400,11 +421,11 @@ class HyperbolicSineStretch:
         return values
 
     @property
-    def inverse(self):
+    def inverse(self) -> "InverseHyperbolicSineStretch":
         return InverseHyperbolicSineStretch(1.0 / np.sinh(1.0 / self.a))
 
 
-class CustomNormalization(mpl.colors.Normalize):
+class CustomNormalization(colors.Normalize):
     """A flexible normalization class that combines interval and stretch operations.
 
     This class extends matplotlib's Normalize class to provide more sophisticated
@@ -445,7 +466,7 @@ class CustomNormalization(mpl.colors.Normalize):
         interval_type: str = "quantile",
         stretch_type: str = "linear",
         *,
-        data: np.ndarray | None = None,
+        data: NDArray | None = None,
         lower_quantile: float = 0.02,
         upper_quantile: float = 0.98,
         vmin: float | None = None,
@@ -455,7 +476,7 @@ class CustomNormalization(mpl.colors.Normalize):
         power: float = 1.0,
         logarithmic_index: float = 1000.0,
         asinh_linear_range: float = 0.1,
-    ):
+    ) -> None:
         """Initialize the CustomNormalization object."""
         super().__init__(vmin=vmin, vmax=vmax, clip=False)
         if interval_type == "quantile":
@@ -489,7 +510,7 @@ class CustomNormalization(mpl.colors.Normalize):
         if data is not None:
             self._set_limits(data)
 
-    def _set_limits(self, data):
+    def _set_limits(self, data: NDArray) -> None:
         """Set the normalization limits based on the provided data.
 
         Parameters
@@ -507,29 +528,31 @@ class CustomNormalization(mpl.colors.Normalize):
         )  # set explicitly with ManualInterval
         return None
 
-    def __call__(self, values):
+    def __call__(self, value: NDArray, clip: bool | None = None) -> NDArray:  # type: ignore[override]
         """Apply the normalization to the input values.
 
         Parameters
         ----------
-        values : array-like
+        value : array-like
             The input values to normalize.
+        clip : bool, optional
+            If True, clip the normalized values to [0, 1].
 
         Returns
         -------
         ndarray
             The normalized values, with invalid values masked.
         """
-        values = self.interval(values)
+        values = self.interval(value)
         self.stretch(values, copy=False)
         return np.ma.masked_invalid(values)
 
-    def inverse(self, values):
+    def inverse(self, value: NDArray) -> NDArray:  # type: ignore[override]
         """Apply the inverse normalization to the input values.
 
         Parameters
         ----------
-        values : array-like
+        value : array-like
             The input values to inverse normalize.
 
         Returns
@@ -537,7 +560,7 @@ class CustomNormalization(mpl.colors.Normalize):
         ndarray
             The inverse normalized values.
         """
-        values = self.stretch.inverse(values)
+        values = self.stretch.inverse(value)
         values = self.interval.inverse(values)
         return values
 

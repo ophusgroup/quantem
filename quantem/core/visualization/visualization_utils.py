@@ -1,22 +1,28 @@
 from dataclasses import dataclass
+from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
+from matplotlib import cm, colors, legend, ticker
+from matplotlib.axes import Axes
+from matplotlib.colorbar import Colorbar
+from matplotlib.figure import Figure
 from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
+from numpy.typing import NDArray
 from scipy.stats import binned_statistic_2d
 
 from quantem.core.visualization.custom_normalizations import CustomNormalization
 
 
 def array_to_rgba(
-    scaled_amplitude: np.ndarray,
-    scaled_angle: np.ndarray | None = None,
+    scaled_amplitude: NDArray,
+    scaled_angle: Optional[NDArray] = None,
     *,
-    cmap: str | mpl.colors.Colormap = "gray",
+    cmap: Union[str, colors.Colormap] = "gray",
     chroma_boost: float = 1,
-):
+) -> NDArray:
     """Convert amplitude and angle arrays to an RGBA color array.
 
     This function creates a color representation of data using either a simple colormap
@@ -45,11 +51,11 @@ def array_to_rgba(
     ValueError
         If scaled_angle is provided but has a different shape than scaled_amplitude.
     """
-    cmap = (
-        cmap if isinstance(cmap, mpl.colors.Colormap) else mpl.colormaps.get_cmap(cmap)
+    cmap_obj = (
+        cmap if isinstance(cmap, colors.Colormap) else mpl.colormaps.get_cmap(cmap)
     )
     if scaled_angle is None:
-        rgba = cmap(scaled_amplitude)
+        rgba = cmap_obj(scaled_amplitude)
     else:
         if scaled_angle.shape != scaled_amplitude.shape:
             raise ValueError()
@@ -69,11 +75,11 @@ def array_to_rgba(
 
 
 def list_of_arrays_to_rgba(
-    list_of_arrays,
+    list_of_arrays: List[NDArray],
     *,
     norm: CustomNormalization = CustomNormalization(),
     chroma_boost: float = 1,
-):
+) -> NDArray:
     """Converts a list of arrays to a perceptually-uniform RGB array.
 
     This function takes multiple arrays and creates a color representation where each
@@ -141,14 +147,14 @@ class ScalebarConfig:
 
     sampling: float = 1.0
     units: str = "pixels"
-    length: float | None = None
+    length: Optional[float] = None
     width_px: float = 1
     pad_px: float = 0.5
     color: str = "white"
-    loc: str | int = "lower right"
+    loc: Union[str, int] = "lower right"
 
 
-def _resolve_scalebar(cfg) -> ScalebarConfig:
+def _resolve_scalebar(cfg: Any) -> Optional[ScalebarConfig]:
     """Resolve various input types to a ScalebarConfig object.
 
     Parameters
@@ -178,7 +184,7 @@ def _resolve_scalebar(cfg) -> ScalebarConfig:
         raise TypeError("scalebar must be None, dict, bool, or ScalebarConfig")
 
 
-def estimate_scalebar_length(length, sampling):
+def estimate_scalebar_length(length: float, sampling: float) -> Tuple[float, float]:
     """Estimate an appropriate scale bar length based on data dimensions.
 
     This function calculates a "nice" scale bar length that is a multiple of
@@ -202,26 +208,28 @@ def estimate_scalebar_length(length, sampling):
     exp = np.floor(np.log10(d))
     base = d / (10**exp)
     if base >= 1 and base < 2.1:
-        _spacing = 0.5
+        spacing = 0.5
     elif base >= 2.1 and base < 4.6:
-        _spacing = 1.0
+        spacing = 1.0
     elif base >= 4.6 and base <= 10:
-        _spacing = 2.0
-    spacing = _spacing * 10**exp
+        spacing = 2.0
+    else:
+        spacing = 1.0  # default case
+    spacing = spacing * 10**exp
     return spacing, spacing / sampling
 
 
 def add_scalebar_to_ax(
-    ax,
-    array_size,
-    sampling,
-    length_units,
-    units,
-    width_px,
-    pad_px,
-    color,
-    loc,
-):
+    ax: Axes,
+    array_size: float,
+    sampling: float,
+    length_units: Optional[float],
+    units: str,
+    width_px: float,
+    pad_px: float,
+    color: str,
+    loc: Union[str, int],
+) -> None:
     """Add a scale bar to a matplotlib axis.
 
     Parameters
@@ -257,7 +265,7 @@ def add_scalebar_to_ax(
         label = f"{length_units:.2f} {units}"
 
     if isinstance(loc, int):
-        loc_codes = mpl.legend.Legend.codes
+        loc_codes = legend.Legend.codes
         loc_strings = {v: k for k, v in loc_codes.items()}
         loc = loc_strings[loc]
 
@@ -270,18 +278,18 @@ def add_scalebar_to_ax(
         color=color,
         frameon=False,
         label_top=loc[:3] == "low",
-        size_vertical=width_px,
+        size_vertical=int(width_px),  # Convert to int as required by AnchoredSizeBar
     )
     ax.add_artist(bar)
 
 
 def add_cbar_to_ax(
-    fig,
-    cax,
-    norm,
-    cmap,
-    eps=1e-8,
-):
+    fig: Figure,
+    cax: Axes,
+    norm: colors.Normalize,
+    cmap: colors.Colormap,
+    eps: float = 1e-8,
+) -> Colorbar:
     """Add a colorbar to a matplotlib figure.
 
     Parameters
@@ -302,24 +310,29 @@ def add_cbar_to_ax(
     matplotlib.colorbar.Colorbar
         The created colorbar object.
     """
-    tick_locator = mpl.ticker.AutoLocator()
-    ticks = tick_locator.tick_values(norm.vmin, norm.vmax)
-    ticks = ticks[(ticks >= norm.vmin - eps) & (ticks <= norm.vmax + eps)]
+    tick_locator = ticker.AutoLocator()
+    vmin = cast(float, norm.vmin)  # Cast to float since we know it can't be None
+    vmax = cast(float, norm.vmax)  # Cast to float since we know it can't be None
+    ticks = tick_locator.tick_values(vmin, vmax)
+    # Convert to numpy array for boolean indexing
+    ticks_arr = np.asarray(ticks)
+    mask = (ticks_arr >= vmin - eps) & (ticks_arr <= vmax + eps)
+    ticks = ticks_arr[mask]
 
-    formatter = mpl.ticker.ScalarFormatter(useMathText=True)
+    formatter = ticker.ScalarFormatter(useMathText=True)
     formatter.set_scientific(True)
     formatter.set_powerlimits((-1, 1))
 
-    sm = mpl.cm.ScalarMappable(norm=norm, cmap=cmap)
+    sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax, ticks=ticks, format=formatter)
     return cb
 
 
 def add_arg_cbar_to_ax(
-    fig,
-    cax,
-    chroma_boost=1,
-):
+    fig: Figure,
+    cax: Axes,
+    chroma_boost: float = 1,
+) -> Colorbar:
     """Add a colorbar for phase values to a matplotlib figure.
 
     This function creates a colorbar suitable for displaying phase values.
@@ -344,9 +357,9 @@ def add_arg_cbar_to_ax(
     JCh = np.stack((J, C, h), axis=-1)
     rgb_vals = cspace_convert(JCh, "JCh", "sRGB1").clip(0, 1)
 
-    angle_cmap = mpl.colors.ListedColormap(rgb_vals)
-    angle_norm = mpl.colors.Normalize(vmin=-np.pi, vmax=np.pi)
-    sm = mpl.cm.ScalarMappable(norm=angle_norm, cmap=angle_cmap)
+    angle_cmap = colors.ListedColormap(rgb_vals)
+    angle_norm = colors.Normalize(vmin=-np.pi, vmax=np.pi)
+    sm = cm.ScalarMappable(norm=angle_norm, cmap=angle_cmap)
     cb_angle = fig.colorbar(sm, cax=cax)
 
     cb_angle.set_label("arg", rotation=0, ha="center", va="bottom")
@@ -359,7 +372,9 @@ def add_arg_cbar_to_ax(
     return cb_angle
 
 
-def turbo_black(num_colors=256, fade_len=None):
+def turbo_black(
+    num_colors: int = 256, fade_len: Optional[int] = None
+) -> colors.ListedColormap:
     """Create a modified version of the 'turbo' colormap that fades to black.
 
     This function creates a colormap based on the 'turbo' colormap but with
@@ -382,10 +397,10 @@ def turbo_black(num_colors=256, fade_len=None):
     if fade_len is None:
         fade_len = num_colors // 8
     turbo = mpl.colormaps.get_cmap("turbo").resampled(num_colors)
-    colors = turbo(np.linspace(0, 1, num_colors))
+    colors_array = turbo(np.linspace(0, 1, num_colors))
     fade = np.linspace(0, 1, fade_len)[:, None]
-    colors[:fade_len, :3] *= fade
-    return mpl.colors.ListedColormap(colors)
+    colors_array[:fade_len, :3] *= fade
+    return colors.ListedColormap(colors_array)
 
 
 _turbo_black = turbo_black()
@@ -394,14 +409,14 @@ mpl.colormaps.register(_turbo_black.reversed(), name="turbo_black_r")
 
 
 def bilinear_histogram_2d(
-    shape,
-    x,
-    y,
-    weight,
-    origin=(0.0, 0.0),
-    sampling=(1.0, 1.0),
-    statistic="sum",
-):
+    shape: Tuple[int, int],
+    x: NDArray,
+    y: NDArray,
+    weight: NDArray,
+    origin: Tuple[float, float] = (0.0, 0.0),
+    sampling: Tuple[float, float] = (1.0, 1.0),
+    statistic: str = "sum",
+) -> NDArray:
     """Create a 2D histogram with bilinear binning.
 
     This function creates a 2D histogram where data points are distributed
@@ -435,12 +450,14 @@ def bilinear_histogram_2d(
     x0, y0 = origin
     x1, y1 = x0 + Nx * dx, y0 + Ny * dy
 
+    # Convert shape tuple to list for binned_statistic_2d
+    bins: Sequence[int] = [Nx, Ny]
     hist, _, _, _ = binned_statistic_2d(
         x,
         y,
         values=weight,
         statistic=statistic,
-        bins=[Nx, Ny],  # [rows, cols]
+        bins=bins,  # type: ignore[arg-type]  # scipy's type hints are incorrect
         range=[[x0, x1], [y0, y1]],  # [[x_min, x_max], [y_min, y_max]]
     )
 
