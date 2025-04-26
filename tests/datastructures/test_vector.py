@@ -222,3 +222,62 @@ class TestVector:
             ]
         )
         np.testing.assert_array_equal(flattened, expected)  # type: ignore
+
+    def test_from_ragged_lists(self):
+        """Test creating a Vector from ragged lists."""
+        # Create test data
+        data = [
+            np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]),
+            np.array([[7.0, 8.0, 9.0]]),
+            np.array([[10.0, 11.0, 12.0], [13.0, 14.0, 15.0], [16.0, 17.0, 18.0]]),
+        ]
+
+        # Test with explicit fields
+        v1 = Vector.from_ragged_lists(
+            data=data,
+            fields=["field0", "field1", "field2"],
+            name="test_vector",
+            units=["unit0", "unit1", "unit2"],
+        )
+
+        # Check properties
+        assert v1.shape == (3,)
+        assert v1.num_fields == 3
+        assert v1.fields == ["field0", "field1", "field2"]
+        assert v1.units == ["unit0", "unit1", "unit2"]
+        assert v1.name == "test_vector"
+
+        # Check data
+        np.testing.assert_array_equal(v1.get_data(0), data[0])  # type: ignore
+        np.testing.assert_array_equal(v1.get_data(1), data[1])  # type: ignore
+        np.testing.assert_array_equal(v1.get_data(2), data[2])  # type: ignore
+
+        # Test with inferred fields
+        v2 = Vector.from_ragged_lists(data=data, num_fields=3)
+
+        # Check properties
+        assert v2.shape == (3,)
+        assert v2.num_fields == 3
+        assert v2.fields == ["field_0", "field_1", "field_2"]
+        assert v2.units == ["none", "none", "none"]
+
+        # Check data
+        np.testing.assert_array_equal(v2.get_data(0), data[0])  # type: ignore
+        np.testing.assert_array_equal(v2.get_data(1), data[1])  # type: ignore
+        np.testing.assert_array_equal(v2.get_data(2), data[2])  # type: ignore
+
+        # Test error cases
+        with pytest.raises(TypeError, match="Data must be a list"):
+            Vector.from_ragged_lists(data=np.array([1, 2, 3]))  # type: ignore
+
+        with pytest.raises(ValueError, match="Specified num_fields"):
+            Vector.from_ragged_lists(
+                data=data,
+                fields=["field0", "field1"],  # Wrong number of fields
+            )
+
+        with pytest.raises(ValueError, match="Duplicate field names"):
+            Vector.from_ragged_lists(
+                data=data,
+                fields=["field0", "field0", "field2"],  # Duplicate field names
+            )

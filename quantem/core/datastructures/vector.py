@@ -209,6 +209,80 @@ class Vector(AutoSerialize):
             _token=cls._token,
         )
 
+    @classmethod
+    def from_ragged_lists(
+        cls,
+        data: List[Any],
+        num_fields: Optional[int] = None,
+        name: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+        units: Optional[List[str]] = None,
+    ) -> "Vector":
+        """
+        Factory method to create a Vector from a list of ragged lists.
+
+        Parameters
+        ----------
+        data : List[Any]
+            A list of ragged lists containing the vector data.
+            Each element should be a numpy array with shape (n, num_fields).
+        num_fields : Optional[int]
+            Number of fields in the vector. If not provided, it will be inferred from the data.
+        name : Optional[str]
+            Name of the vector
+        fields : Optional[List[str]]
+            List of field names
+        units : Optional[List[str]]
+            List of units for each field
+
+        Returns
+        -------
+        Vector
+            A new Vector instance with the provided data
+
+        Raises
+        ------
+        ValueError
+            If the data structure is invalid or inconsistent
+        TypeError
+            If the data contains invalid types
+        """
+        # Validate that data is a list
+        if not isinstance(data, list):
+            raise TypeError("Data must be a list")
+
+        # Infer shape from data if shape is not provided
+        shape = (len(data),)  # The first dimension is the number of rows
+
+        # Validate the first item to determine the number of fields
+        if num_fields is None:
+            if len(data) == 0 or not isinstance(data[0], np.ndarray):
+                raise ValueError("Data must contain at least one numpy array.")
+            num_fields = data[0].shape[
+                1
+            ]  # Assuming all arrays have the same number of fields
+
+        # Create the vector using from_shape
+        vector = cls.from_shape(
+            shape=shape,
+            num_fields=num_fields,
+            name=name,
+            fields=fields,
+            units=units,
+        )
+
+        # Validate the data matches the expected shape and number of fields
+        for item in data:
+            if not isinstance(item, np.ndarray):
+                raise TypeError("Each item in data must be a numpy array.")
+            if item.shape[1] != num_fields:
+                raise ValueError(f"Each item in data must have {num_fields} fields.")
+
+        # Attach the data
+        vector.data = data
+
+        return vector
+
     def get_data(self, *indices: Union[int, slice]) -> Union[NDArray, List[NDArray]]:
         """
         Get data at specified indices.
