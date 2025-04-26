@@ -4,6 +4,13 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.utils.utils import (
+    validate_fields,
+    validate_num_fields,
+    validate_shape,
+    validate_vector_data,
+    validate_vector_units,
+)
 
 T = TypeVar("T", bound=np.generic)
 
@@ -17,13 +24,13 @@ class Vector(AutoSerialize):
     Basic Usage:
     -----------
     # Create a 2D vector with shape=(4, 3) and 3 named fields
-    v = Vector(shape=(4, 3), fields=['field0', 'field1', 'field2'])
+    v = Vector.from_shape(shape=(4, 3), fields=['field0', 'field1', 'field2'])
 
     # Alternative creation with num_fields instead of fields
-    v = Vector(shape=(4, 3), num_fields=3)  # Fields will be named field_0, field_1, field_2
+    v = Vector.from_shape(shape=(4, 3), num_fields=3)  # Fields will be named field_0, field_1, field_2
 
     # Create with custom name and units
-    v = Vector(
+    v = Vector.from_shape(
         shape=(4, 3),
         fields=['field0', 'field1', 'field2'],
         name='my_vector',
@@ -98,6 +105,8 @@ class Vector(AutoSerialize):
     - The name attribute can be used to identify the vector in a larger context
     """
 
+    _token = object()
+
     def __init__(
         self,
         shape: Tuple[int, ...],
@@ -105,32 +114,102 @@ class Vector(AutoSerialize):
         name: Optional[str] = None,
         fields: Optional[List[str]] = None,
         units: Optional[List[str]] = None,
+        _token: object | None = None,
     ) -> None:
-        self.shape = shape
+        if _token is not self._token:
+            raise RuntimeError("Use Vector.from_shape() to instantiate this class.")
+
+        # Initialize attributes
+        self._shape = validate_shape(shape)
+        self._ndim = len(self._shape)
+
         if fields is not None:
-            self.num_fields = len(fields)
-            if num_fields is not None and num_fields != self.num_fields:
+            self._num_fields = len(fields)
+            if num_fields is not None and num_fields != self._num_fields:
                 raise ValueError(
-                    f"Specified num_fields ({num_fields}) does not match length of fields ({self.num_fields})."
+                    f"Specified num_fields ({num_fields}) does not match length of fields ({self._num_fields})."
                 )
             if len(set(fields)) != len(fields):
                 raise ValueError("Duplicate field names are not allowed.")
         elif num_fields is not None:
-            self.num_fields = num_fields
+            self._num_fields = num_fields
         else:
             raise ValueError("Must specify either num_fields or fields.")
-        self.ndim = len(shape)
 
-        self.name = name or f"{self.ndim}d ragged array"
-        self.fields = (
+        self._name = name or f"{self._ndim}d ragged array"
+        self._fields = (
             list(fields)
             if fields is not None
-            else [f"field_{i}" for i in range(self.num_fields)]
+            else [f"field_{i}" for i in range(self._num_fields)]
         )
-        self.units = units if units is not None else ["none"] * self.num_fields
+        self._units = units if units is not None else ["none"] * self._num_fields
 
-        # initialize empty set of lists
-        self.data: List[Any] = nested_list(self.shape, fill=None)
+        # Initialize empty data structure
+        self._data = nested_list(self._shape, fill=None)
+
+    @classmethod
+    def from_shape(
+        cls,
+        shape: Tuple[int, ...],
+        num_fields: Optional[int] = None,
+        name: Optional[str] = None,
+        fields: Optional[List[str]] = None,
+        units: Optional[List[str]] = None,
+    ) -> "Vector":
+        """
+        Factory method to create a Vector with the specified shape and fields.
+
+        Parameters
+        ----------
+        shape : Tuple[int, ...]
+            The shape of the vector (dimensions)
+        num_fields : Optional[int]
+            Number of fields in the vector
+        name : Optional[str]
+            Name of the vector
+        fields : Optional[List[str]]
+            List of field names
+        units : Optional[List[str]]
+            List of units for each field
+
+        Returns
+        -------
+        Vector
+            A new Vector instance
+        """
+        # Validate inputs
+        validated_shape = validate_shape(shape)
+        _ndim = len(validated_shape)
+
+        if fields is not None:
+            _num_fields = len(fields)
+            if num_fields is not None and num_fields != _num_fields:
+                raise ValueError(
+                    f"Specified num_fields ({num_fields}) does not match length of fields ({_num_fields})."
+                )
+            if len(set(fields)) != len(fields):
+                raise ValueError("Duplicate field names are not allowed.")
+        elif num_fields is not None:
+            _num_fields = num_fields
+        else:
+            raise ValueError("Must specify either num_fields or fields.")
+
+        _name = name or f"{_ndim}d ragged array"
+        _fields = (
+            list(fields)
+            if fields is not None
+            else [f"field_{i}" for i in range(_num_fields)]
+        )
+        _units = units if units is not None else ["none"] * _num_fields
+
+        return cls(
+            shape=validated_shape,
+            num_fields=_num_fields,
+            name=_name,
+            fields=_fields,
+            units=_units,
+            _token=cls._token,
+        )
 
     def get_data(self, *indices: Union[int, slice]) -> Union[NDArray, List[NDArray]]:
         """
@@ -153,14 +232,14 @@ class Vector(AutoSerialize):
         ValueError
             If the number of indices does not match the vector dimensions.
         """
-        if len(indices) != len(self.shape):
-            raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
+        if len(indices) != len(self._shape):
+            raise ValueError(f"Expected {len(self._shape)} indices, got {len(indices)}")
 
-        ref: Any = self.data
+        ref: Any = self._data
         for dim, idx in enumerate(indices):
-            if isinstance(idx, int) and (idx < 0 or idx >= self.shape[dim]):
+            if isinstance(idx, int) and (idx < 0 or idx >= self._shape[dim]):
                 raise IndexError(
-                    f"Index {idx} out of bounds for axis {dim} with size {self.shape[dim]}"
+                    f"Index {idx} out of bounds for axis {dim} with size {self._shape[dim]}"
                 )
             ref = ref[idx]
         return cast(Union[NDArray, List[NDArray]], ref)
@@ -187,29 +266,29 @@ class Vector(AutoSerialize):
         TypeError
             If the provided value is not a numpy array.
         """
-        if len(indices) != len(self.shape):
-            raise ValueError(f"Expected {len(self.shape)} indices, got {len(indices)}")
+        if len(indices) != len(self._shape):
+            raise ValueError(f"Expected {len(self._shape)} indices, got {len(indices)}")
 
-        ref: Any = self.data
+        ref: Any = self._data
         for dim, idx in enumerate(indices[:-1]):
-            if isinstance(idx, int) and (idx < 0 or idx >= self.shape[dim]):
+            if isinstance(idx, int) and (idx < 0 or idx >= self._shape[dim]):
                 raise IndexError(
-                    f"Index {idx} out of bounds for axis {dim} with size {self.shape[dim]}"
+                    f"Index {idx} out of bounds for axis {dim} with size {self._shape[dim]}"
                 )
             ref = ref[idx]
 
         last_idx = indices[-1]
-        if isinstance(last_idx, int) and (last_idx < 0 or last_idx >= self.shape[-1]):
+        if isinstance(last_idx, int) and (last_idx < 0 or last_idx >= self._shape[-1]):
             raise IndexError(
-                f"Index {last_idx} out of bounds for last axis with size {self.shape[-1]}"
+                f"Index {last_idx} out of bounds for last axis with size {self._shape[-1]}"
             )
 
         if not isinstance(value, np.ndarray):
             raise TypeError(f"Value must be a numpy array, got {type(value).__name__}")
 
-        if value.ndim != 2 or value.shape[1] != self.num_fields:
+        if value.ndim != 2 or value.shape[1] != self._num_fields:
             raise ValueError(
-                f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape}"
+                f"Expected a numpy array with shape (_, {self._num_fields}), got {value.shape}"
             )
 
         ref[last_idx] = value
@@ -227,7 +306,7 @@ class Vector(AutoSerialize):
         self, idx: Union[str, Tuple[Union[int, slice], ...], int, slice]
     ) -> Union["_FieldView", NDArray, "Vector"]:
         if isinstance(idx, str):  # field-level access
-            if idx not in self.fields:
+            if idx not in self._fields:
                 raise KeyError(f"Field '{idx}' not found.")
             return _FieldView(self, idx)
 
@@ -235,22 +314,22 @@ class Vector(AutoSerialize):
             idx = (idx,)
 
         return_np = True
-        for ind in range(min(len(self.shape), len(idx))):
+        for ind in range(min(len(self._shape), len(idx))):
             if not isinstance(idx[ind], int):
                 return_np = False
-        if len(idx) < len(self.shape):
+        if len(idx) < len(self._shape):
             return_np = False
 
         if return_np:
             # Return a view into the numpy array at the user-specified index
-            view: Any = self.data
+            view: Any = self._data
             for i in range(len(idx)):
                 view = view[idx[i]]
             return cast(NDArray, view)
 
         else:
             # Return a view as a new Vector class
-            full_idx = list(idx) + [slice(None)] * (len(self.shape) - len(idx))
+            full_idx = list(idx) + [slice(None)] * (len(self._shape) - len(idx))
 
             def resolve_index(
                 dim_idx: Union[int, slice, NDArray[np.bool_], Sequence[int]],
@@ -284,23 +363,23 @@ class Vector(AutoSerialize):
                 idx_list = resolve_index(i, size)
                 return [recursive_index(data[j], rest, shape[1:]) for j in idx_list]
 
-            sliced_data = recursive_index(self.data, full_idx, self.shape)
+            sliced_data = recursive_index(self._data, full_idx, self._shape)
 
             new_shape: List[int] = []
             for i, s in enumerate(full_idx):
-                if i >= len(self.shape):
+                if i >= len(self._shape):
                     continue
-                resolved = resolve_index(s, self.shape[i])
+                resolved = resolve_index(s, self._shape[i])
                 new_shape.append(len(resolved))
 
-            vector_new = Vector(
+            vector_new = Vector.from_shape(
                 shape=tuple(new_shape),
-                num_fields=self.num_fields,
-                name=self.name + "[view]",
-                fields=self.fields,
-                units=self.units,
+                num_fields=self._num_fields,
+                name=self._name + "[view]",
+                fields=self._fields,
+                units=self._units,
             )
-            vector_new.data = sliced_data
+            vector_new._data = sliced_data
             return vector_new
 
     def __setitem__(
@@ -309,9 +388,9 @@ class Vector(AutoSerialize):
         value: Union[NDArray, "_FieldView", "Vector", List[NDArray]],
     ) -> None:
         if isinstance(idx, str):  # field-level assignment
-            if idx not in self.fields:
+            if idx not in self._fields:
                 raise KeyError(f"Field '{idx}' not found.")
-            field_index = self.fields.index(idx)
+            field_index = self._fields.index(idx)
 
             if isinstance(value, _FieldView):
                 if value.vector is not self:
@@ -325,7 +404,7 @@ class Vector(AutoSerialize):
                         for sub in arr:
                             set_field(sub)
 
-                set_field(self.data)
+                set_field(self._data)
                 return
 
             def set_field(arr: Any) -> None:
@@ -338,7 +417,7 @@ class Vector(AutoSerialize):
                     for sub in arr:
                         set_field(sub)
 
-            set_field(self.data)
+            set_field(self._data)
             return
 
         if not isinstance(idx, tuple):
@@ -362,24 +441,24 @@ class Vector(AutoSerialize):
                 for sub_ref, sub_val in zip(range(*i.indices(len(ref))), val):
                     if (
                         isinstance(sub_val, np.ndarray)
-                        and sub_val.shape[1] != self.num_fields
+                        and sub_val.shape[1] != self._num_fields
                     ):
                         raise ValueError(
-                            f"Expected a numpy array with shape (_, {self.num_fields}), got {sub_val.shape}"
+                            f"Expected a numpy array with shape (_, {self._num_fields}), got {sub_val.shape}"
                         )
                     ref[sub_ref] = recursive_assign(ref[sub_ref], rest, sub_val)
                 return ref
             else:
-                if isinstance(val, np.ndarray) and val.shape[1] != self.num_fields:
+                if isinstance(val, np.ndarray) and val.shape[1] != self._num_fields:
                     raise ValueError(
-                        f"Expected a numpy array with shape (_, {self.num_fields}), got {val.shape}"
+                        f"Expected a numpy array with shape (_, {self._num_fields}), got {val.shape}"
                     )
                 ref[i] = recursive_assign(ref[i], rest, val)
                 return ref
 
         if isinstance(value, Vector):
-            value = value.data
-        recursive_assign(self.data, list(idx), value)
+            value = value._data
+        recursive_assign(self._data, list(idx), value)
 
     def add_fields(self, new_fields: Union[str, List[str]]) -> None:
         if isinstance(new_fields, str):
@@ -387,21 +466,21 @@ class Vector(AutoSerialize):
         else:
             new_fields = list(new_fields)
 
-        if any(name in self.fields for name in new_fields):
+        if any(name in self._fields for name in new_fields):
             raise ValueError("One or more new field names already exist.")
 
         if len(set(new_fields)) != len(new_fields):
             raise ValueError("Duplicate field names in input are not allowed.")
 
-        self.fields = list(self.fields) + list(new_fields)
-        self.num_fields += len(new_fields)
-        self.units = list(self.units) + ["none"] * len(new_fields)
+        self._fields = list(self._fields) + list(new_fields)
+        self._num_fields += len(new_fields)
+        self._units = list(self._units) + ["none"] * len(new_fields)
 
         def expand_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
-                if arr.shape[1] != self.num_fields - len(new_fields):
+                if arr.shape[1] != self._num_fields - len(new_fields):
                     raise ValueError(
-                        f"Expected arrays with {self.num_fields - len(new_fields)} fields, got {arr.shape[1]}"
+                        f"Expected arrays with {self._num_fields - len(new_fields)} fields, got {arr.shape[1]}"
                     )
                 pad = np.zeros((arr.shape[0], len(new_fields)))
                 return np.hstack([arr, pad])
@@ -410,7 +489,7 @@ class Vector(AutoSerialize):
             else:
                 return arr
 
-        self.data = expand_array(self.data)
+        self._data = expand_array(self._data)
 
     def remove_fields(self, fields_to_remove: Union[str, List[str]]) -> None:
         if isinstance(fields_to_remove, str):
@@ -418,7 +497,7 @@ class Vector(AutoSerialize):
         else:
             fields_to_remove = list(fields_to_remove)
 
-        field_to_index = {name: i for i, name in enumerate(self.fields)}
+        field_to_index = {name: i for i, name in enumerate(self._fields)}
         indices_to_remove = []
         for field in fields_to_remove:
             if field not in field_to_index:
@@ -430,12 +509,14 @@ class Vector(AutoSerialize):
             return
 
         indices_to_remove = sorted(set(indices_to_remove))
-        keep_indices = [i for i in range(self.num_fields) if i not in indices_to_remove]
+        keep_indices = [
+            i for i in range(self._num_fields) if i not in indices_to_remove
+        ]
 
         # Update metadata
-        self.fields = [self.fields[i] for i in keep_indices]
-        self.units = [self.units[i] for i in keep_indices]
-        self.num_fields = len(self.fields)
+        self._fields = [self._fields[i] for i in keep_indices]
+        self._units = [self._units[i] for i in keep_indices]
+        self._num_fields = len(self._fields)
 
         def prune_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
@@ -449,19 +530,19 @@ class Vector(AutoSerialize):
             else:
                 return arr
 
-        self.data = prune_array(self.data)
+        self._data = prune_array(self._data)
 
     def copy(self) -> "Vector":
         import copy
 
-        vector_copy = Vector(
-            shape=self.shape,
-            num_fields=self.num_fields,
-            name=self.name,
-            fields=list(self.fields),
-            units=list(self.units),
+        vector_copy = Vector.from_shape(
+            shape=self._shape,
+            num_fields=self._num_fields,
+            name=self._name,
+            fields=list(self._fields),
+            units=list(self._units),
         )
-        vector_copy.data = copy.deepcopy(self.data)
+        vector_copy._data = copy.deepcopy(self._data)
         return vector_copy
 
     def flatten(self) -> NDArray:
@@ -480,26 +561,196 @@ class Vector(AutoSerialize):
             else:
                 return []
 
-        arrays = collect_arrays(self.data)
+        arrays = collect_arrays(self._data)
         if not arrays:
-            return np.empty((0, self.num_fields))
+            return np.empty((0, self._num_fields))
         return np.vstack(arrays)
 
     def __repr__(self) -> str:
         description = [
-            f"quantem.Vector, shape={self.shape}, name={self.name}",
-            f"  fields = {self.fields}",
-            f"  units: {self.units}",
+            f"quantem.Vector, shape={self._shape}, name={self._name}",
+            f"  fields = {self._fields}",
+            f"  units: {self._units}",
         ]
         return "\n".join(description)
 
     def __str__(self) -> str:
         description = [
-            f"quantem.Vector, shape={self.shape}, name={self.name}",
-            f"  fields = {self.fields}",
-            f"  units: {self.units}",
+            f"quantem.Vector, shape={self._shape}, name={self._name}",
+            f"  fields = {self._fields}",
+            f"  units: {self._units}",
         ]
         return "\n".join(description)
+
+    @property
+    def shape(self) -> Tuple[int, ...]:
+        """
+        Get the shape of the vector.
+
+        Returns
+        -------
+        Tuple[int, ...]
+            The shape of the vector
+        """
+        return self._shape
+
+    @shape.setter
+    def shape(self, value: Tuple[int, ...]) -> None:
+        """
+        Set the shape of the vector.
+
+        Parameters
+        ----------
+        value : Tuple[int, ...]
+            The new shape of the vector
+
+        Raises
+        ------
+        ValueError
+            If the shape is invalid
+        """
+        self._shape = validate_shape(value)
+        self._ndim = len(self._shape)
+
+    @property
+    def num_fields(self) -> int:
+        """
+        Get the number of fields in the vector.
+
+        Returns
+        -------
+        int
+            The number of fields
+        """
+        return self._num_fields
+
+    @num_fields.setter
+    def num_fields(self, value: int) -> None:
+        """
+        Set the number of fields in the vector.
+
+        Parameters
+        ----------
+        value : int
+            The new number of fields
+
+        Raises
+        ------
+        ValueError
+            If the number of fields is invalid
+        """
+        self._num_fields = validate_num_fields(value, self._fields)
+
+    @property
+    def name(self) -> str:
+        """
+        Get the name of the vector.
+
+        Returns
+        -------
+        str
+            The name of the vector
+        """
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        """
+        Set the name of the vector.
+
+        Parameters
+        ----------
+        value : str
+            The new name of the vector
+        """
+        self._name = value
+
+    @property
+    def fields(self) -> List[str]:
+        """
+        Get the field names of the vector.
+
+        Returns
+        -------
+        List[str]
+            The field names
+        """
+        return self._fields
+
+    @fields.setter
+    def fields(self, value: List[str]) -> None:
+        """
+        Set the field names of the vector.
+
+        Parameters
+        ----------
+        value : List[str]
+            The new field names
+
+        Raises
+        ------
+        ValueError
+            If the field names are invalid
+        """
+        self._fields = validate_fields(value, self._num_fields)
+
+    @property
+    def units(self) -> List[str]:
+        """
+        Get the units of the vector.
+
+        Returns
+        -------
+        List[str]
+            The units
+        """
+        return self._units
+
+    @units.setter
+    def units(self, value: List[str]) -> None:
+        """
+        Set the units of the vector.
+
+        Parameters
+        ----------
+        value : List[str]
+            The new units
+
+        Raises
+        ------
+        ValueError
+            If the units are invalid
+        """
+        self._units = validate_vector_units(value, self._num_fields)
+
+    @property
+    def data(self) -> List[Any]:
+        """
+        Get the data of the vector.
+
+        Returns
+        -------
+        List[Any]
+            The data
+        """
+        return self._data
+
+    @data.setter
+    def data(self, value: List[Any]) -> None:
+        """
+        Set the data of the vector.
+
+        Parameters
+        ----------
+        value : List[Any]
+            The new data
+
+        Raises
+        ------
+        ValueError
+            If the data is invalid
+        """
+        self._data = validate_vector_data(value, self._shape, self._num_fields)
 
 
 # Helper function for nexting lists
@@ -514,7 +765,7 @@ class _FieldView:
     def __init__(self, vector: Vector, field_name: str) -> None:
         self.vector = vector
         self.field_name = field_name
-        self.field_index = vector.fields.index(field_name)
+        self.field_index = vector._fields.index(field_name)
 
     def _apply_op(self, op: Any) -> None:
         def apply(arr: Any) -> None:
@@ -524,7 +775,7 @@ class _FieldView:
                 for sub in arr:
                     apply(sub)
 
-        apply(self.vector.data)
+        apply(self.vector._data)
 
     def __iadd__(self, other: Any) -> "_FieldView":
         self._apply_op(lambda x: x + other)
@@ -558,7 +809,7 @@ class _FieldView:
             else:
                 return []
 
-        arrays = collect(self.vector.data)
+        arrays = collect(self.vector._data)
         if not arrays:
             return np.empty((0,), dtype=float)
         return np.concatenate(arrays, axis=0)
@@ -587,7 +838,7 @@ class _FieldView:
         if values.shape[0] != expected:
             raise ValueError(f"Expected {expected} values, got {values.shape[0]}")
 
-        fill(self.vector.data, values, cursor=0)
+        fill(self.vector._data, values, cursor=0)
 
     def __getitem__(
         self, idx: Union[Tuple[Union[int, slice], ...], int, slice]

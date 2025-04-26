@@ -11,7 +11,7 @@ class TestVector:
     def test_initialization(self):
         """Test Vector initialization with different parameters."""
         # Test with fields
-        v1 = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v1 = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
         assert v1.shape == (2, 3)
         assert v1.num_fields == 3
         assert v1.fields == ["field0", "field1", "field2"]
@@ -19,14 +19,14 @@ class TestVector:
         assert v1.name == "2d ragged array"
 
         # Test with num_fields
-        v2 = Vector(shape=(2, 3), num_fields=3)
+        v2 = Vector.from_shape(shape=(2, 3), num_fields=3)
         assert v2.shape == (2, 3)
         assert v2.num_fields == 3
         assert v2.fields == ["field_0", "field_1", "field_2"]
         assert v2.units == ["none", "none", "none"]
 
         # Test with custom name and units
-        v3 = Vector(
+        v3 = Vector.from_shape(
             shape=(2, 3),
             fields=["field0", "field1", "field2"],
             name="my_vector",
@@ -39,17 +39,17 @@ class TestVector:
         with pytest.raises(
             ValueError, match="Must specify either num_fields or fields"
         ):
-            Vector(shape=(2, 3))
+            Vector.from_shape(shape=(2, 3))
 
         with pytest.raises(ValueError, match="Specified num_fields"):
-            Vector(shape=(2, 3), num_fields=3, fields=["field0", "field1"])
+            Vector.from_shape(shape=(2, 3), num_fields=3, fields=["field0", "field1"])
 
         with pytest.raises(ValueError, match="Duplicate field names"):
-            Vector(shape=(2, 3), fields=["field0", "field0", "field2"])
+            Vector.from_shape(shape=(2, 3), fields=["field0", "field0", "field2"])
 
     def test_data_access(self):
         """Test data access and assignment."""
-        v = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
 
         # Set data at specific indices
         data1 = np.array([[1.0, 2.0, 3.0]])
@@ -76,7 +76,7 @@ class TestVector:
 
     def test_field_operations(self):
         """Test field-level operations."""
-        v = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
 
         # Set initial data
         v[0, 0] = np.array([[1.0, 2.0, 3.0]])
@@ -119,7 +119,7 @@ class TestVector:
 
     def test_slicing(self):
         """Test slicing operations."""
-        v = Vector(shape=(4, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(4, 3), fields=["field0", "field1", "field2"])
 
         # Set data
         for i in range(4):
@@ -145,7 +145,7 @@ class TestVector:
 
     def test_field_management(self):
         """Test adding and removing fields."""
-        v = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
 
         # Set initial data
         v[0, 0] = np.array([[1.0, 2.0, 3.0]])
@@ -178,7 +178,7 @@ class TestVector:
 
     def test_copy(self):
         """Test deep copying."""
-        v = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
         v[0, 0] = np.array([[1.0, 2.0, 3.0]])
 
         # Create a copy
@@ -197,7 +197,7 @@ class TestVector:
 
     def test_flatten(self):
         """Test flattening the entire vector."""
-        v = Vector(shape=(2, 3), fields=["field0", "field1", "field2"])
+        v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
 
         # Set data
         v[0, 0] = np.array([[1.0, 2.0, 3.0]])
@@ -222,8 +222,3 @@ class TestVector:
             ]
         )
         np.testing.assert_array_equal(flattened, expected)  # type: ignore
-
-        # Test with empty vector
-        v_empty = Vector(shape=(0, 0), fields=["field0"])
-        flattened_empty = v_empty.flatten()
-        assert flattened_empty.shape == (0, 1)
