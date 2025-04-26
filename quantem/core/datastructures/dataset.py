@@ -1,121 +1,55 @@
-from typing import Any, List, Optional, Tuple, Union, cast
+from typing import Any, Optional, Union, cast
 
 import numpy as np
-from numpy import ndarray
+from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import (
-    EnsureArray,
-    EnsureArrayDtype,
-    EnsureNdinfo,
-    EnsureStr,
-    EnsureUnits,
-    ValidateArrayDimensions,
-    ValidatedProperty,
-    ValidateListLength,
-    ValidateNdinfoLength,
-    Validator,
+    ensure_valid_array,
+    validate_ndinfo,
+    validate_units,
 )
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
+# Re-add conditional import for cp alias within this file's scope
 if config.get("has_cupy"):
     import cupy as cp  # type: ignore
 else:
-    import numpy as cp
+    import numpy as cp  # Alias numpy as cp
 
 
 class Dataset(AutoSerialize):
     """
     A class representing a multi-dimensional dataset with metadata.
+    Uses standard properties and validation within __init__ for type safety.
 
-    The Dataset class wraps an n-dimensional array (either numpy or cupy) and provides
-    metadata about the array's dimensions, units, and sampling. It supports automatic
-    serialization through inheritance from AutoSerialize.
-
-    Attributes
-    ----------
-    array : np.ndarray | cp.ndarray
-        The underlying n-dimensional array data
-    name : str
-        A descriptive name for the dataset
-    origin : np.ndarray
-        The origin coordinates for each dimension
-    sampling : np.ndarray
-        The sampling rate/spacing for each dimension
-    units : list[str]
-        Units for each dimension (e.g. "nm", "eV", etc.)
-    signal_units : str
-        Units for the array values
+    Attributes (Properties):
+        array (NDArray | Any): The underlying n-dimensional array data (Any for CuPy).
+        name (str): A descriptive name for the dataset.
+        origin (NDArray): The origin coordinates for each dimension (1D array).
+        sampling (NDArray): The sampling rate/spacing for each dimension (1D array).
+        units (list[str]): Units for each dimension.
+        signal_units (str): Units for the array values.
     """
 
     _token = object()
 
-    # Define validated properties using type hints
-    array = ValidatedProperty[Union[np.ndarray, cp.ndarray]](
-        EnsureArray(),
-        EnsureArrayDtype(),
-        ValidateArrayDimensions(),
-    )
-
-    name = ValidatedProperty[str](EnsureStr())
-
-    origin = ValidatedProperty[np.ndarray](
-        EnsureNdinfo(),
-        ValidateNdinfoLength(),
-    )
-
-    sampling = ValidatedProperty[np.ndarray](
-        EnsureNdinfo(),
-        ValidateNdinfoLength(),
-    )
-
-    units = ValidatedProperty[List[str]](
-        EnsureUnits(),
-        ValidateListLength(),
-    )
-
-    signal_units = ValidatedProperty[str](EnsureStr())
-
     def __init__(
         self,
-        array: np.ndarray | cp.ndarray,
+        array: Any,  # Input can be array-like
         name: str,
-        origin: np.ndarray,
-        sampling: np.ndarray,
-        units: list[str],
+        origin: Union[NDArray, tuple, list, float, int],
+        sampling: Union[NDArray, tuple, list, float, int],
+        units: Union[list[str], tuple, list],
         signal_units: str = "arb. units",
         _token: object | None = None,
     ):
-        """Initialize a Dataset.
-
-        Parameters
-        ----------
-        array : np.ndarray | cp.ndarray
-            The underlying n-dimensional array data
-        name : str
-            A descriptive name for the dataset
-        origin : np.ndarray
-            The origin coordinates for each dimension
-        sampling : np.ndarray
-            The sampling rate/spacing for each dimension
-        units : list[str]
-            Units for each dimension (e.g. "nm", "eV", etc.)
-        signal_units : str, optional
-            Units for the array values, by default "arb. units"
-        _token : object | None, optional
-            Token to prevent direct instantiation, by default None
-
-        Raises
-        ------
-        RuntimeError
-            If instantiated directly without using from_array()
-        """
         if _token is not self._token:
             raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
 
-        self.array = array
+        self._array = ensure_valid_array(array)
         self.name = name
         self.origin = origin
         self.sampling = sampling
@@ -125,52 +59,107 @@ class Dataset(AutoSerialize):
     @classmethod
     def from_array(
         cls,
-        array: np.ndarray | cp.ndarray,
+        array: Any,  # Input can be array-like
         name: str | None = None,
-        origin: np.ndarray | tuple | list | None = None,
-        sampling: np.ndarray | tuple | list | None = None,
-        units: list[str] | None = None,
+        origin: Union[NDArray, tuple, list, float, int] | None = None,
+        sampling: Union[NDArray, tuple, list, float, int] | None = None,
+        units: Union[list[str], tuple, list] | None = None,
         signal_units: str = "arb. units",
     ) -> "Dataset":
         """
-        Create a new Dataset from an array.
+        Validates and creates a Dataset from an array.
 
         Parameters
         ----------
-        array : np.ndarray | cp.ndarray
-            The underlying n-dimensional array data
-        name : str | None, optional
-            A descriptive name for the dataset. If None, defaults to "{array.ndim}d dataset"
-        origin : np.ndarray | tuple | list | None, optional
-            The origin coordinates for each dimension. If None, defaults to zeros
-        sampling : np.ndarray | tuple | list | None, optional
-            The sampling rate/spacing for each dimension. If None, defaults to ones
-        units : list[str] | None, optional
-            Units for each dimension. If None, defaults to ["pixels"] * array.ndim
-        signal_units : str, optional
-            Units for the array values, by default "arb. units"
+        array: Any
+            The array to validate and create a Dataset from.
+        name: str | None
+            The name of the Dataset.
+        origin: Union[NDArray, tuple, list, float, int] | None
+            The origin of the Dataset.
+        sampling: Union[NDArray, tuple, list, float, int] | None
+            The sampling of the Dataset.
+        units: Union[list[str], tuple, list] | None
+            The units of the Dataset.
+        signal_units: str
+            The units of the signal.
 
         Returns
         -------
         Dataset
-            A new Dataset instance
+            A Dataset object with the validated array and metadata.
         """
+        validated_array = ensure_valid_array(array)
+        _ndim = validated_array.ndim
+
+        # Set defaults if None
+        _name = name if name is not None else f"{_ndim}d dataset"
+        _origin = origin if origin is not None else np.zeros(_ndim)
+        _sampling = sampling if sampling is not None else np.ones(_ndim)
+        _units = units if units is not None else ["pixels"] * _ndim
+
         return cls(
-            array=array,
-            name=name if name is not None else f"{array.ndim}d dataset",
-            origin=cast(
-                np.ndarray, origin if origin is not None else np.zeros(array.ndim)
-            ),
-            sampling=cast(
-                np.ndarray, sampling if sampling is not None else np.ones(array.ndim)
-            ),
-            units=units if units is not None else ["pixels"] * array.ndim,
+            array=validated_array,
+            name=_name,
+            origin=_origin,
+            sampling=_sampling,
+            units=_units,
             signal_units=signal_units,
             _token=cls._token,
         )
 
+    # --- Properties ---
     @property
-    def shape(self) -> tuple:
+    def array(self) -> Union[NDArray, Any]:
+        return self._array
+
+    @array.setter
+    def array(self, value: Union[NDArray, Any]) -> None:
+        self._array = ensure_valid_array(value, dtype=self.dtype, ndim=self.ndim)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    @name.setter
+    def name(self, value: str) -> None:
+        self._name = str(value)
+
+    @property
+    def origin(self) -> NDArray:
+        return self._origin
+
+    @origin.setter
+    def origin(self, value: Union[NDArray, tuple, list, float, int]) -> None:
+        self._origin = validate_ndinfo(value, self.ndim, "origin")
+
+    @property
+    def sampling(self) -> NDArray:
+        return self._sampling
+
+    @sampling.setter
+    def sampling(self, value: Union[NDArray, tuple, list, float, int]) -> None:
+        self._sampling = validate_ndinfo(value, self.ndim, "sampling")
+
+    @property
+    def units(self) -> list[str]:
+        return self._units
+
+    @units.setter
+    def units(self, value: Union[list[str], tuple, list]) -> None:
+        self._units = validate_units(value, self.ndim)
+
+    @property
+    def signal_units(self) -> str:
+        return self._signal_units
+
+    @signal_units.setter
+    def signal_units(self, value: str) -> None:
+        self._signal_units = str(value)
+
+    # --- Derived Properties ---
+    @property
+    def shape(self) -> tuple[int, ...]:
         return self.array.shape
 
     @property
@@ -178,7 +167,7 @@ class Dataset(AutoSerialize):
         return self.array.ndim
 
     @property
-    def dtype(self) -> np.dtype:
+    def dtype(self) -> DTypeLike:
         return self.array.dtype
 
     @property
@@ -190,128 +179,141 @@ class Dataset(AutoSerialize):
         """
         return str(self.array.device)
 
-    # Summaries
-    def __repr__(self):
+    # --- Summaries ---
+    def __repr__(self) -> str:
         description = [
-            f"Dataset(shape={self.shape}, dtype={self.dtype}, name={self.name},)",
+            f"Dataset(shape={self.shape}, dtype={self.dtype}, name='{self.name}')",
             f"  sampling: {self.sampling}",
             f"  units: {self.units}",
-            f"  signal units: {self.signal_units}",
+            f"  signal units: '{self.signal_units}'",
         ]
         return "\n".join(description)
 
-    def __str__(self):
+    def __str__(self) -> str:
         description = [
-            f"quantem Dataset named {self.name}",
+            f"quantem Dataset named '{self.name}'",
             f"  shape: {self.shape}",
             f"  dtype: {self.dtype}",
+            f"  device: {self.device}",
             f"  origin: {self.origin}",
             f"  sampling: {self.sampling}",
             f"  units: {self.units}",
-            f"  signal units: {self.signal_units}",
+            f"  signal units: '{self.signal_units}'",
         ]
         return "\n".join(description)
 
-    def copy(self, copy_attributes=False):  # TODO
+    # --- Methods ---
+    def copy(self) -> "Dataset":
         """
-        Copies Dataset
+        Copies Dataset.
 
         Parameters
         ----------
         copy_attributes: bool
-            If True, copies attributes
+            If True, copies non-standard attributes. Standard attributes (array, metadata)
+            are always deep-copied.
         """
-        dataset = Dataset.from_array(self.array.copy())
-        dataset.name = self.name
-        dataset.origin = self.origin.copy()
-        dataset.sampling = self.sampling.copy()
-        dataset.units = self.units
-        dataset.signal_units = self.signal_units
+        # Metadata arrays (origin, sampling) are numpy, use copy()
+        # Units list is copied by slicing
+        new_dataset = Dataset(
+            array=self.array.copy(),
+            name=self.name,
+            origin=self.origin.copy(),
+            sampling=self.sampling.copy(),
+            units=self.units[:],
+            signal_units=self.signal_units,
+            _token=self._token,
+        )
 
-        if copy_attributes:
-            for attr in vars(self):
-                if not hasattr(dataset, attr):
-                    try:
-                        setattr(dataset, attr, getattr(self, attr).copy())
-                    except AttributeError:
-                        pass
-        return dataset
+        return new_dataset
 
-    def mean(self, axes: tuple | None = None):
+    def mean(self, axes: Optional[tuple[int, ...]] = None) -> Any:
         """
-        Computes and returns mean of Dataset
+        Computes and returns mean of the data array.
 
         Parameters
         ----------
-        axes: tuple
-            Axes over which to compute mean. If None specified, all axes are used.
+        axes: tuple, optional
+            Axes over which to compute mean. If None specified, mean of all elements is computed.
 
         Returns
         --------
-        mean: Dataset
-            Mean of Dataset
+        mean: scalar or array (np.ndarray or cp.ndarray)
+            Mean of the data.
         """
-        mean = self.array.mean(axis=axes)
-        return mean
+        return self.array.mean(axis=axes)
 
-    def max(self, axes: tuple | None = None):
+    def max(self, axes: Optional[tuple[int, ...]] = None) -> Any:
         """
-        Computes and returns max of Dataset
+        Computes and returns max of the data array.
 
         Parameters
         ----------
-        axes: tuple
-            Axes over which to compute max. If None specified, all axes are used.
+        axes: tuple, optional
+            Axes over which to compute max. If None specified, max of all elements is computed.
 
         Returns
         --------
-        maximum: Dataset
-            Maximum of Dataset
+        maximum: scalar or array (np.ndarray or cp.ndarray)
+            Maximum of the data.
         """
-        maximum = self.array.max(axis=axes)
-        return maximum
+        return self.array.max(axis=axes)
 
-    def min(self, axes: tuple | None = None):
+    def min(self, axes: Optional[tuple[int, ...]] = None) -> Any:
         """
-        Computes and returns min of Dataset
+        Computes and returns min of the data array.
 
         Parameters
         ----------
-        axes: tuple
-            Axes over which to compute min. If None specified, all axes are used.
+        axes: tuple, optional
+            Axes over which to compute min. If None specified, min of all elements is computed.
 
         Returns
         --------
-        minimum: Dataset
-            Minimum of Dataset
+        minimum: scalar or array (np.ndarray or cp.ndarray)
+            Minimum of the data.
         """
-        minimum = self.array.min(axis=axes)
-        return minimum
+        return self.array.min(axis=axes)
 
-    def pad(self, pad_width: tuple, modify_in_place: bool = False, **kwargs):
+    def pad(
+        self,
+        pad_width: Union[int, tuple[int, int], tuple[tuple[int, int], ...]],
+        modify_in_place: bool = False,
+        **kwargs: Any,
+    ) -> Optional["Dataset"]:
         """
-        Pads Dataset
+        Pads Dataset data array using numpy.pad or cupy.pad.
+        Metadata (origin, sampling) is not modified.
 
         Parameters
         ----------
-        pad_width: tuple
-            Number of values padded to the edges of each axis. `((before_1, after_1), ... (before_N, after_N))`
-            unique pad widths for each axis. `(before, after)` or `((before, after),)` yields same before and
-            after pad for each axis. `(pad,)` or `int` is a shortcut for before = after = pad width for all axes.
+        pad_width: int, tuple
+            Number of values padded to the edges of each axis. See numpy.pad documentation.
         modify_in_place: bool
-            If True, modifies dataset
+            If True, modifies this dataset's array directly. If False, returns a new Dataset.
+        kwargs: dict
+            Additional keyword arguments passed to numpy.pad or cupy.pad.
 
         Returns
         --------
-        Dataset (padded) only if modify_in_place is False
-
+        Dataset or None
+            Padded Dataset if modify_in_place is False, otherwise None.
         """
-        if modify_in_place is False:
-            dataset = self.copy()
-            dataset.array = np.pad(dataset.array, pad_width=pad_width, **kwargs)
-            return dataset
+        if config.get("has_cupy") and isinstance(self.array, cp.ndarray):
+            pad_func = cp.pad
         else:
-            self.array = np.pad(self.array, pad_width=pad_width, **kwargs)
+            pad_func = np.pad
+
+        padded_array = pad_func(self.array, pad_width=pad_width, **kwargs)
+
+        if modify_in_place:
+            self._array = padded_array
+            return None
+        else:
+            new_dataset = self.copy()
+            new_dataset.array = padded_array
+            new_dataset.name = self.name + " (padded)"
+            return new_dataset
 
     def crop(self, crop_widths, axes=None, modify_in_place=False):
         """

@@ -1,4 +1,7 @@
 import importlib
+from typing import Any, Dict, Union
+
+import h5py
 
 from quantem.core.datastructures import Dataset as Dataset
 from quantem.core.datastructures import Dataset4dstem as Dataset4dstem
@@ -86,5 +89,38 @@ def read_2d(
             imported_data["axes"][1]["units"],
         ],
     )
+
+    return dataset
+
+
+def read_emdfile_to_4dstem(file_path: str) -> Dataset4dstem:
+    """
+    File reader for legacy `emdFile` / `py4DSTEM` files.
+
+    Parameters
+    ----------
+    file_path: str
+        Path to data
+
+    Returns
+    --------
+    Dataset4dstem
+    """
+    with h5py.File(file_path, "r") as file:
+        # Access the data directly
+        data = file["datacube_root"]["datacube"]["data"]  # type: ignore
+
+        # Access calibration values directly
+        calibration = file["datacube_root"]["metadatabundle"]["calibration"]  # type: ignore
+        r_pixel_size = calibration["R_pixel_size"][()]  # type: ignore
+        q_pixel_size = calibration["Q_pixel_size"][()]  # type: ignore
+        r_pixel_units = calibration["R_pixel_units"][()]  # type: ignore
+        q_pixel_units = calibration["Q_pixel_units"][()]  # type: ignore
+
+        dataset = Dataset4dstem.from_array(
+            array=data,
+            sampling=[r_pixel_size, r_pixel_size, q_pixel_size, q_pixel_size],
+            units=[r_pixel_units, r_pixel_units, q_pixel_units, q_pixel_units],
+        )
 
     return dataset
