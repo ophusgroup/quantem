@@ -37,11 +37,11 @@ class TestVector:
 
         # Test error cases
         with pytest.raises(
-            ValueError, match="Must specify either num_fields or fields"
+            ValueError, match="Must specify either 'fields' or 'num_fields'."
         ):
             Vector.from_shape(shape=(2, 3))
 
-        with pytest.raises(ValueError, match="Specified num_fields"):
+        with pytest.raises(ValueError, match="does not match length of fields"):
             Vector.from_shape(shape=(2, 3), num_fields=3, fields=["field0", "field1"])
 
         with pytest.raises(ValueError, match="Duplicate field names"):
@@ -270,7 +270,7 @@ class TestVector:
         with pytest.raises(TypeError, match="Data must be a list"):
             Vector.from_data(data=np.array([1, 2, 3]))  # type: ignore
 
-        with pytest.raises(ValueError, match="Specified num_fields"):
+        with pytest.raises(ValueError, match="does not match length of fields"):
             Vector.from_data(
                 data=data,
                 fields=["field0", "field1"],  # Wrong number of fields

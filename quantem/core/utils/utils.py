@@ -187,6 +187,14 @@ def validate_shape(shape: Tuple[int, ...]) -> Tuple[int, ...]:
     return tuple(validated)
 
 
+def validate_fields(fields: List[str]) -> List[str]:
+    if not isinstance(fields, (list, tuple)):
+        raise TypeError(f"fields must be a list or tuple, got {type(fields)}")
+    if len(set(fields)) != len(fields):
+        raise ValueError("Duplicate field names are not allowed.")
+    return [str(field) for field in fields]
+
+
 def validate_num_fields(num_fields: int, fields: Optional[List[str]] = None) -> int:
     """
     Validate number of fields.
@@ -219,59 +227,9 @@ def validate_num_fields(num_fields: int, fields: Optional[List[str]] = None) -> 
     return num_fields
 
 
-def validate_fields(fields: List[str], num_fields: int) -> List[str]:
-    """
-    Validate field names.
-
-    Parameters
-    ----------
-    fields : List[str]
-        List of field names
-    num_fields : int
-        Expected number of fields
-
-    Returns
-    -------
-    List[str]
-        The validated field names
-
-    Raises
-    ------
-    ValueError
-        If fields has duplicate names or wrong length
-    """
-    if not isinstance(fields, (list, tuple)):
-        raise TypeError(f"fields must be a list or tuple, got {type(fields)}")
-    if len(fields) != num_fields:
-        raise ValueError(
-            f"Length of fields ({len(fields)}) must match num_fields ({num_fields})"
-        )
-    if len(set(fields)) != len(fields):
-        raise ValueError("Duplicate field names are not allowed")
-    return [str(field) for field in fields]
-
-
-def validate_vector_units(units: List[str], num_fields: int) -> List[str]:
-    """
-    Validate units for fields.
-
-    Parameters
-    ----------
-    units : List[str]
-        List of units
-    num_fields : int
-        Expected number of fields
-
-    Returns
-    -------
-    List[str]
-        The validated units
-
-    Raises
-    ------
-    ValueError
-        If units has wrong length
-    """
+def validate_vector_units(units: Optional[List[str]], num_fields: int) -> List[str]:
+    if units is None:
+        return ["none"] * num_fields
     if not isinstance(units, (list, tuple)):
         raise TypeError(f"units must be a list or tuple, got {type(units)}")
     if len(units) != num_fields:
@@ -279,6 +237,30 @@ def validate_vector_units(units: List[str], num_fields: int) -> List[str]:
             f"Length of units ({len(units)}) must match num_fields ({num_fields})"
         )
     return [str(unit) for unit in units]
+
+
+def validate_vector_data_for_inference(data: List[Any]) -> Tuple[Tuple[int, ...], int]:
+    if not isinstance(data, list):
+        raise TypeError("Data must be a list.")
+    if len(data) == 0:
+        raise ValueError("Data list cannot be empty.")
+
+    first_item = data[0]
+    if isinstance(first_item, list):
+        first_item = np.array(first_item)
+    if not isinstance(first_item, np.ndarray):
+        raise TypeError("Data elements must be numpy arrays or convertible.")
+
+    inferred_num_fields = first_item.shape[1]
+
+    for item in data:
+        if isinstance(item, list):
+            item = np.array(item)
+        if not isinstance(item, np.ndarray) or item.shape[1] != inferred_num_fields:
+            raise ValueError("All data arrays must have same number of fields.")
+
+    shape = (len(data),)
+    return shape, inferred_num_fields
 
 
 def validate_vector_data(

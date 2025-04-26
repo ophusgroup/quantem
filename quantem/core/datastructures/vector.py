@@ -9,6 +9,7 @@ from quantem.core.utils.utils import (
     validate_num_fields,
     validate_shape,
     validate_vector_data,
+    validate_vector_data_for_inference,
     validate_vector_units,
 )
 
@@ -133,51 +134,30 @@ class Vector(AutoSerialize):
     def __init__(
         self,
         shape: Tuple[int, ...],
-        num_fields: Optional[int] = None,
-        name: Optional[str] = None,
-        fields: Optional[List[str]] = None,
-        units: Optional[List[str]] = None,
+        fields: List[str],
+        units: List[str],
+        name: str,
         _token: object | None = None,
     ) -> None:
         if _token is not self._token:
-            raise RuntimeError("Use Vector.from_shape() to instantiate this class.")
+            raise RuntimeError(
+                "Use Vector.from_shape() or Vector.from_data() to instantiate."
+            )
 
-        # Initialize attributes
-        self._shape = validate_shape(shape)
-        self._ndim = len(self._shape)
-
-        if fields is not None:
-            self._num_fields = len(fields)
-            if num_fields is not None and num_fields != self._num_fields:
-                raise ValueError(
-                    f"Specified num_fields ({num_fields}) does not match length of fields ({self._num_fields})."
-                )
-            if len(set(fields)) != len(fields):
-                raise ValueError("Duplicate field names are not allowed.")
-        elif num_fields is not None:
-            self._num_fields = num_fields
-        else:
-            raise ValueError("Must specify either num_fields or fields.")
-
-        self._name = name or f"{self._ndim}d ragged array"
-        self._fields = (
-            list(fields)
-            if fields is not None
-            else [f"field_{i}" for i in range(self._num_fields)]
-        )
-        self._units = units if units is not None else ["none"] * self._num_fields
-
-        # Initialize empty data structure
-        self._data = nested_list(self._shape, fill=None)
+        self.shape = shape
+        self.fields = fields
+        self.units = units
+        self.name = name
+        self._data = nested_list(self.shape, fill=None)
 
     @classmethod
     def from_shape(
         cls,
         shape: Tuple[int, ...],
         num_fields: Optional[int] = None,
-        name: Optional[str] = None,
         fields: Optional[List[str]] = None,
         units: Optional[List[str]] = None,
+        name: Optional[str] = None,
     ) -> "Vector":
         """
         Factory method to create a Vector with the specified shape and fields.
@@ -200,37 +180,30 @@ class Vector(AutoSerialize):
         Vector
             A new Vector instance
         """
-        # Validate inputs
         validated_shape = validate_shape(shape)
-        _ndim = len(validated_shape)
+        ndim = len(validated_shape)
 
         if fields is not None:
-            _num_fields = len(fields)
-            if num_fields is not None and num_fields != _num_fields:
+            validated_fields = validate_fields(fields)
+            validated_num_fields = len(validated_fields)
+            if num_fields is not None and validated_num_fields != num_fields:
                 raise ValueError(
-                    f"Specified num_fields ({num_fields}) does not match length of fields ({_num_fields})."
+                    f"num_fields ({num_fields}) does not match length of fields ({validated_num_fields})"
                 )
-            if len(set(fields)) != len(fields):
-                raise ValueError("Duplicate field names are not allowed.")
         elif num_fields is not None:
-            _num_fields = num_fields
+            validated_num_fields = validate_num_fields(num_fields)
+            validated_fields = [f"field_{i}" for i in range(validated_num_fields)]
         else:
-            raise ValueError("Must specify either num_fields or fields.")
+            raise ValueError("Must specify either 'fields' or 'num_fields'.")
 
-        _name = name or f"{_ndim}d ragged array"
-        _fields = (
-            list(fields)
-            if fields is not None
-            else [f"field_{i}" for i in range(_num_fields)]
-        )
-        _units = units if units is not None else ["none"] * _num_fields
+        validated_units = validate_vector_units(units, validated_num_fields)
+        name = name or f"{ndim}d ragged array"
 
         return cls(
             shape=validated_shape,
-            num_fields=_num_fields,
-            name=_name,
-            fields=_fields,
-            units=_units,
+            fields=validated_fields,
+            units=validated_units,
+            name=name,
             _token=cls._token,
         )
 
@@ -239,9 +212,9 @@ class Vector(AutoSerialize):
         cls,
         data: List[Any],
         num_fields: Optional[int] = None,
-        name: Optional[str] = None,
         fields: Optional[List[str]] = None,
         units: Optional[List[str]] = None,
+        name: Optional[str] = None,
     ) -> "Vector":
         """
         Factory method to create a Vector from a list of
@@ -254,12 +227,12 @@ class Vector(AutoSerialize):
             Each element should be a numpy array with shape (n, num_fields).
         num_fields : Optional[int]
             Number of fields in the vector. If not provided, it will be inferred from the data.
-        name : Optional[str]
-            Name of the vector
         fields : Optional[List[str]]
             List of field names
         units : Optional[List[str]]
             List of units for each field
+        name : Optional[str]
+            Name of the vector
 
         Returns
         -------
@@ -273,45 +246,24 @@ class Vector(AutoSerialize):
         TypeError
             If the data contains invalid types
         """
-        # Validate that data is a list
-        if not isinstance(data, list):
-            raise TypeError("Data must be a list")
+        inferred_shape, inferred_num_fields = validate_vector_data_for_inference(data)
 
-        # Validate and determine num_fields
-        first_item = data[0]
-        if isinstance(first_item, list):
-            first_item = np.array(first_item)
-        elif not isinstance(first_item, np.ndarray):
-            raise TypeError(
-                f"Data elements must be numpy arrays or lists, got {type(first_item).__name__}"
+        final_num_fields = num_fields or inferred_num_fields
+        if num_fields is not None and num_fields != inferred_num_fields:
+            raise ValueError(
+                f"Provided num_fields ({num_fields}) does not match inferred ({inferred_num_fields})."
             )
 
-        inferred_num_fields = first_item.shape[1]
-
-        # Validate all elements and convert lists to numpy arrays if needed
-        for idx, item in enumerate(data):
-            if isinstance(item, list):
-                data[idx] = np.array(item)
-            elif not isinstance(item, np.ndarray):
-                raise TypeError(
-                    f"Data elements must be numpy arrays or lists, got {type(item).__name__}"
-                )
-
-            if data[idx].shape[1] != inferred_num_fields:
-                raise ValueError("All arrays must have the same number of fields.")
-
-        num_fields = num_fields or inferred_num_fields
-
-        shape = (len(data),)
         vector = cls.from_shape(
-            shape,
-            num_fields=num_fields,
-            name=name,
+            shape=inferred_shape,
+            num_fields=final_num_fields,
             fields=fields,
             units=units,
+            name=name,
         )
-        vector.data = data
 
+        # Now fully validate and set the data
+        vector.data = data
         return vector
 
     def get_data(self, *indices: Union[int, slice]) -> Union[NDArray, List[NDArray]]:
@@ -388,9 +340,9 @@ class Vector(AutoSerialize):
         if not isinstance(value, np.ndarray):
             raise TypeError(f"Value must be a numpy array, got {type(value).__name__}")
 
-        if value.ndim != 2 or value.shape[1] != self._num_fields:
+        if value.ndim != 2 or value.shape[1] != self.num_fields:
             raise ValueError(
-                f"Expected a numpy array with shape (_, {self._num_fields}), got {value.shape}"
+                f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape}"
             )
 
         ref[last_idx] = value
@@ -501,7 +453,7 @@ class Vector(AutoSerialize):
 
             vector_new = Vector.from_shape(
                 shape=tuple(new_shape),
-                num_fields=self._num_fields,
+                num_fields=self.num_fields,
                 name=self._name + "[view]",
                 fields=self._fields,
                 units=self._units,
@@ -592,17 +544,17 @@ class Vector(AutoSerialize):
                 for sub_ref, sub_val in zip(range(*i.indices(len(ref))), val):
                     if (
                         isinstance(sub_val, np.ndarray)
-                        and sub_val.shape[1] != self._num_fields
+                        and sub_val.shape[1] != self.num_fields
                     ):
                         raise ValueError(
-                            f"Expected a numpy array with shape (_, {self._num_fields}), got {sub_val.shape}"
+                            f"Expected a numpy array with shape (_, {self.num_fields}), got {sub_val.shape}"
                         )
                     ref[sub_ref] = recursive_assign(ref[sub_ref], rest, sub_val)
                 return ref
             else:
-                if isinstance(val, np.ndarray) and val.shape[1] != self._num_fields:
+                if isinstance(val, np.ndarray) and val.shape[1] != self.num_fields:
                     raise ValueError(
-                        f"Expected a numpy array with shape (_, {self._num_fields}), got {val.shape}"
+                        f"Expected a numpy array with shape (_, {self.num_fields}), got {val.shape}"
                     )
                 ref[i] = recursive_assign(ref[i], rest, val)
                 return ref
@@ -637,14 +589,13 @@ class Vector(AutoSerialize):
             raise ValueError("Duplicate field names in input are not allowed.")
 
         self._fields = list(self._fields) + list(new_fields)
-        self._num_fields += len(new_fields)
         self._units = list(self._units) + ["none"] * len(new_fields)
 
         def expand_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
-                if arr.shape[1] != self._num_fields - len(new_fields):
+                if arr.shape[1] != self.num_fields - len(new_fields):
                     raise ValueError(
-                        f"Expected arrays with {self._num_fields - len(new_fields)} fields, got {arr.shape[1]}"
+                        f"Expected arrays with {self.num_fields - len(new_fields)} fields, got {arr.shape[1]}"
                     )
                 pad = np.zeros((arr.shape[0], len(new_fields)))
                 return np.hstack([arr, pad])
@@ -686,14 +637,11 @@ class Vector(AutoSerialize):
             return
 
         indices_to_remove = sorted(set(indices_to_remove))
-        keep_indices = [
-            i for i in range(self._num_fields) if i not in indices_to_remove
-        ]
+        keep_indices = [i for i in range(self.num_fields) if i not in indices_to_remove]
 
         # Update metadata
         self._fields = [self._fields[i] for i in keep_indices]
         self._units = [self._units[i] for i in keep_indices]
-        self._num_fields = len(self._fields)
 
         def prune_array(arr: Any) -> Any:
             if isinstance(arr, np.ndarray):
@@ -721,11 +669,10 @@ class Vector(AutoSerialize):
         import copy
 
         vector_copy = Vector.from_shape(
-            shape=self._shape,
-            num_fields=self._num_fields,
-            name=self._name,
-            fields=list(self._fields),
-            units=list(self._units),
+            shape=self.shape,
+            name=self.name,
+            fields=self.fields,
+            units=self.units,
         )
         vector_copy._data = copy.deepcopy(self._data)
         return vector_copy
@@ -753,7 +700,7 @@ class Vector(AutoSerialize):
 
         arrays = collect_arrays(self._data)
         if not arrays:
-            return np.empty((0, self._num_fields))
+            return np.empty((0, self.num_fields))
         return np.vstack(arrays)
 
     def __repr__(self) -> str:
@@ -802,7 +749,6 @@ class Vector(AutoSerialize):
             If value is not a tuple or contains non-integer values.
         """
         self._shape = validate_shape(value)
-        self._ndim = len(self._shape)
 
     @property
     def num_fields(self) -> int:
@@ -814,26 +760,7 @@ class Vector(AutoSerialize):
         int
             The number of fields.
         """
-        return self._num_fields
-
-    @num_fields.setter
-    def num_fields(self, value: int) -> None:
-        """
-        Set the number of fields in the vector.
-
-        Parameters
-        ----------
-        value : int
-            The new number of fields. Must be positive.
-
-        Raises
-        ------
-        ValueError
-            If value is not positive or doesn't match existing fields.
-        TypeError
-            If value is not an integer.
-        """
-        self._num_fields = validate_num_fields(value, self._fields)
+        return len(self._fields)
 
     @property
     def name(self) -> str:
@@ -857,7 +784,7 @@ class Vector(AutoSerialize):
         value : str
             The new name of the vector
         """
-        self._name = value
+        self._name = str(value)
 
     @property
     def fields(self) -> List[str]:
@@ -888,7 +815,7 @@ class Vector(AutoSerialize):
         TypeError
             If value is not a list or contains non-string values.
         """
-        self._fields = validate_fields(value, self._num_fields)
+        self._fields = validate_fields(value)
 
     @property
     def units(self) -> List[str]:
@@ -919,7 +846,7 @@ class Vector(AutoSerialize):
         TypeError
             If value is not a list or contains non-string values.
         """
-        self._units = validate_vector_units(value, self._num_fields)
+        self._units = validate_vector_units(value, self.num_fields)
 
     @property
     def data(self) -> List[Any]:
@@ -950,7 +877,7 @@ class Vector(AutoSerialize):
         TypeError
             If value is not a list or contains invalid data types.
         """
-        self._data = validate_vector_data(value, self._shape, self._num_fields)
+        self._data = validate_vector_data(value, self.shape, self.num_fields)
 
 
 # Helper function for nexting lists
