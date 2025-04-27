@@ -511,112 +511,100 @@ class Vector(AutoSerialize):
     def __setitem__(
         self,
         idx: Union[
-            str,
-            Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]], List[int]], ...],
-            int,
-            slice,
-            np.ndarray[Any, np.dtype[Any]],
-            List[int],
+            Tuple[Union[int, slice, List[int]], ...], int, slice, List[int], str
         ],
-        value: Union[
-            NDArray[Any],
-            "_FieldView",
-            "Vector",
-            List[NDArray[Any]],
-            Callable[[NDArray[Any]], NDArray[Any]],
-        ],
+        value: Union[NDArray, List[NDArray]],
     ) -> None:
-        """Set data at specified indices or field."""
+        """Set data at specified indices."""
         if isinstance(idx, str):
             if idx not in self._fields:
                 raise KeyError(f"Field '{idx}' not found.")
-            field_index = self._fields.index(idx)
-
-            if isinstance(value, _FieldView):
-                if value.vector is not self:
-                    raise ValueError("Cannot assign from another Vector.")
-                src_index = value.field_index
-
-                def set_field(arr: Any) -> None:
-                    if isinstance(arr, np.ndarray):
-                        arr[:, field_index] = arr[:, src_index]
-                    elif isinstance(arr, list):
-                        for sub in arr:
-                            set_field(sub)
-
-                set_field(self._data)
-                return
-
-            def set_field(arr: Any) -> None:
-                if isinstance(arr, np.ndarray):
-                    if callable(value):
-                        arr[:, field_index] = value(arr[:, field_index])
-                    else:
-                        arr[:, field_index] = value
-                elif isinstance(arr, list):
-                    for sub in arr:
-                        set_field(sub)
-
-            set_field(self._data)
+            field_view = _FieldView(self, idx)
+            field_view.set_flattened(value)
             return
 
         if not isinstance(idx, tuple):
             idx = (idx,)
 
-        # Validate value shape and number of fields first
-        if isinstance(value, np.ndarray):
-            if value.ndim != 2:
-                raise ValueError(f"Expected 2D array, got {value.ndim}D array")
-            if value.shape[1] != self.num_fields:
-                raise ValueError(
-                    f"Expected array with {self.num_fields} fields, got {value.shape[1]} fields"
-                )
-
         # Convert sequences to numpy arrays for fancy indexing
-        idx_converted: Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]]], ...] = (
-            tuple(
-                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
-            )
+        idx_converted = tuple(
+            np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
         )
 
-        # Handle fancy indexing and slicing
-        def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
-            if isinstance(dim_idx, slice):
-                return np.arange(*dim_idx.indices(dim_size))
-            elif isinstance(dim_idx, (np.ndarray, list)):
-                return np.asarray(dim_idx)
-            elif isinstance(dim_idx, (int, np.integer)):
-                return np.array([dim_idx])
-            return np.arange(dim_size)
-
-        # Get indices for each dimension
-        full_idx = list(idx_converted) + [slice(None)] * (
-            len(self._shape) - len(idx_converted)
+        # Check if we're doing fancy indexing
+        has_fancy = any(
+            isinstance(i, np.ndarray) and i.size > 1
+            for i in idx_converted[: len(self.shape)]
         )
-        indices = [get_indices(i, s) for i, s in zip(full_idx, self._shape)]
 
-        if isinstance(value, Vector):
-            if value.num_fields != self.num_fields:
-                raise ValueError(
-                    f"Expected Vector with {self.num_fields} fields, got {value.num_fields} fields"
+        if has_fancy:
+            # For fancy indexing, value should be a list of arrays
+            if not isinstance(value, list):
+                raise TypeError(
+                    "For fancy indexing, value must be a list of numpy arrays"
                 )
-            value = value._data
 
-        # Handle assignment
-        for out_idx in np.ndindex(*[len(i) for i in indices]):
-            dst_idx = tuple(ind[i] for ind, i in zip(indices, out_idx))
-            if isinstance(value, list):
-                if not isinstance(value[out_idx[0]][out_idx[1]], np.ndarray):
+            # Get indices for each dimension
+            def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
+                if isinstance(dim_idx, slice):
+                    return np.arange(*dim_idx.indices(dim_size))
+                elif isinstance(dim_idx, (np.ndarray, list)):
+                    idx = np.asarray(dim_idx)
+                    if np.any((idx < 0) | (idx >= dim_size)):
+                        raise IndexError(
+                            f"Index out of bounds for axis with size {dim_size}"
+                        )
+                    return idx
+                elif isinstance(dim_idx, (int, np.integer)):
+                    if dim_idx < 0 or dim_idx >= dim_size:
+                        raise IndexError(
+                            f"Index out of bounds for axis with size {dim_size}"
+                        )
+                    return np.array([dim_idx])
+                return np.arange(dim_size)
+
+            indices_arrays = [
+                get_indices(i, s) for i, s in zip(idx_converted, self._shape)
+            ]
+            total_indices = np.prod([len(i) for i in indices_arrays])
+
+            if len(value) != total_indices:
+                raise ValueError(f"Expected {total_indices} arrays, got {len(value)}")
+
+            # Validate and set values
+            for array_idx, idx in enumerate(
+                np.ndindex(*[len(i) for i in indices_arrays])
+            ):
+                src_idx = tuple(ind[i] for ind, i in zip(indices_arrays, idx))
+                if not isinstance(value[array_idx], np.ndarray):
                     raise TypeError(
-                        f"Expected numpy array, got {type(value[out_idx[0]][out_idx[1]]).__name__}"
+                        f"Expected numpy array, got {type(value[array_idx]).__name__}"
                     )
-                if value[out_idx[0]][out_idx[1]].shape[1] != self.num_fields:
+                if (
+                    value[array_idx].ndim != 2
+                    or value[array_idx].shape[1] != self.num_fields
+                ):
                     raise ValueError(
-                        f"Expected array with {self.num_fields} fields, got {value[out_idx[0]][out_idx[1]].shape[1]} fields"
+                        f"Expected array with shape (_, {self.num_fields}), got {value[array_idx].shape}"
                     )
-                self._data[dst_idx[0]][dst_idx[1]] = value[out_idx[0]][out_idx[1]]
-            else:
-                self._data[dst_idx[0]][dst_idx[1]] = value
+                ref = self._data
+                for i in src_idx[:-1]:
+                    ref = ref[i]
+                ref[src_idx[-1]] = value[array_idx]
+        else:
+            # For single value assignment
+            if not isinstance(value, np.ndarray):
+                raise TypeError(
+                    f"Value must be a numpy array, got {type(value).__name__}"
+                )
+            if value.ndim != 2 or value.shape[1] != self.num_fields:
+                raise ValueError(
+                    f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape}"
+                )
+            ref = self._data
+            for i in idx_converted[:-1]:
+                ref = ref[i]
+            ref[idx_converted[-1]] = value
 
     def add_fields(self, new_fields: Union[str, List[str]]) -> None:
         """
@@ -959,23 +947,38 @@ class _FieldView:
 
         apply(self.vector._data)
 
-    def __iadd__(self, other: Any) -> "_FieldView":
+    def __iadd__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place addition (+=)."""
         self._apply_op(lambda x: x + other)
         return self
 
-    def __isub__(self, other: Any) -> "_FieldView":
+    def __isub__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place subtraction (-=)."""
         self._apply_op(lambda x: x - other)
         return self
 
-    def __imul__(self, other: Any) -> "_FieldView":
+    def __imul__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place multiplication (*=)."""
         self._apply_op(lambda x: x * other)
         return self
 
-    def __itruediv__(self, other: Any) -> "_FieldView":
+    def __itruediv__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place division (/=)."""
         self._apply_op(lambda x: x / other)
         return self
 
-    def __ipow__(self, other: Any) -> "_FieldView":
+    def __ifloordiv__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place floor division (//=)."""
+        self._apply_op(lambda x: x // other)
+        return self
+
+    def __imod__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place modulo (%=)."""
+        self._apply_op(lambda x: x % other)
+        return self
+
+    def __ipow__(self, other: Union[float, int, np.ndarray]) -> "_FieldView":
+        """Handle in-place power (**=)."""
         self._apply_op(lambda x: x**other)
         return self
 
@@ -1033,7 +1036,6 @@ class _FieldView:
             return sub[:, self.field_index]
         return cast(NDArray, None)
 
-    def __array__(self) -> None:
-        raise TypeError(
-            "Cannot convert FieldView to array directly. Use `.flatten()` if needed."
-        )
+    def __array__(self) -> np.ndarray:
+        """Convert to numpy array when needed."""
+        return self.flatten()

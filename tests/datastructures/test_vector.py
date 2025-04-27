@@ -92,13 +92,13 @@ class TestVector:
         )
 
         # Test field operations
-        v["field0"] += 10
+        v["field0"] += 10  # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 0)[:, 0], np.array([11.0]))  # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 1)[:, 0], np.array([14.0]))  # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 2)[:, 0], np.array([17.0]))  # type: ignore
 
         # Test applying a function to a field
-        v["field1"] *= 2  # Using multiplication instead of lambda
+        v["field1"] *= 2  # Using multiplication instead of lambda # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 0)[:, 1], np.array([4.0]))  # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 1)[:, 1], np.array([10.0]))  # type: ignore
         np.testing.assert_array_equal(v.get_data(0, 2)[:, 1], np.array([16.0]))  # type: ignore
@@ -281,3 +281,155 @@ class TestVector:
                 data=data,
                 fields=["field0", "field0", "field2"],  # Duplicate field names
             )
+
+    def test_fancy_indexing(self):
+        """Test fancy indexing with __getitem__ and __setitem__."""
+        v = Vector.from_shape(shape=(3, 2), fields=["field0", "field1", "field2"])
+
+        # Set initial data
+        v[0, 0] = np.array([[1.0, 2.0, 3.0]])
+        v[0, 1] = np.array([[4.0, 5.0, 6.0]])
+        v[1, 0] = np.array([[7.0, 8.0, 9.0]])
+        v[1, 1] = np.array([[10.0, 11.0, 12.0]])
+        v[2, 0] = np.array([[13.0, 14.0, 15.0]])
+        v[2, 1] = np.array([[16.0, 17.0, 18.0]])
+
+        # Test list indexing with __getitem__
+        result = v[[0, 1], 0]
+        assert isinstance(result, Vector)
+        assert result.shape == (2, 1)
+        np.testing.assert_array_equal(
+            result.get_data(0, 0), np.array([[1.0, 2.0, 3.0]])
+        )
+        np.testing.assert_array_equal(
+            result.get_data(1, 0), np.array([[7.0, 8.0, 9.0]])
+        )
+
+        # Test numpy array indexing with __getitem__
+        result = v[np.array([1, 2]), 1]  # type: ignore
+        assert isinstance(result, Vector)
+        assert result.shape == (2, 1)
+        np.testing.assert_array_equal(
+            result.get_data(0, 0), np.array([[10.0, 11.0, 12.0]])
+        )
+        np.testing.assert_array_equal(
+            result.get_data(1, 0), np.array([[16.0, 17.0, 18.0]])
+        )
+
+        # Test fancy indexing with __setitem__
+        new_data = [np.array([[20.0, 21.0, 22.0]]), np.array([[23.0, 24.0, 25.0]])]
+        v[[0, 2], 1] = new_data
+        np.testing.assert_array_equal(v.get_data(0, 1), new_data[0])
+        np.testing.assert_array_equal(v.get_data(2, 1), new_data[1])
+
+        # Test numpy array fancy indexing with __setitem__
+        new_data = [np.array([[26.0, 27.0, 28.0]]), np.array([[29.0, 30.0, 31.0]])]
+        v[np.array([1, 2]), 0] = new_data  # type: ignore
+        np.testing.assert_array_equal(v.get_data(1, 0), new_data[0])
+        np.testing.assert_array_equal(v.get_data(2, 0), new_data[1])
+
+        # Test error cases
+        with pytest.raises(IndexError):
+            v[[3, 4], 0]  # Index out of bounds
+
+        with pytest.raises(IndexError):
+            v[[0, 1], 2]  # Index out of bounds
+
+        with pytest.raises(ValueError):
+            v[[0, 1], 0] = [np.array([[1.0]])]  # Wrong number of arrays
+
+        with pytest.raises(ValueError):
+            v[[0, 1], 0] = [
+                np.array([[1.0]]),
+                np.array([[2.0]]),
+            ]  # Wrong number of fields
+
+    def test_get_data_methods(self):
+        """Test get_data method with various indexing scenarios."""
+        v = Vector.from_shape(shape=(3, 2), fields=["field0", "field1", "field2"])
+
+        # Set some test data
+        v[0, 0] = np.array([[1.0, 2.0, 3.0]])
+        v[0, 1] = np.array([[4.0, 5.0, 6.0]])
+        v[1, 0] = np.array([[7.0, 8.0, 9.0]])
+        v[1, 1] = np.array([[10.0, 11.0, 12.0]])
+        v[2, 0] = np.array([[13.0, 14.0, 15.0]])
+        v[2, 1] = np.array([[16.0, 17.0, 18.0]])
+
+        # Test single integer indexing
+        result = v.get_data(0, 0)
+        np.testing.assert_array_equal(result, np.array([[1.0, 2.0, 3.0]]))
+
+        # Test list indexing
+        result = v.get_data([0, 1], 0)
+        np.testing.assert_array_equal(result[0], np.array([[1.0, 2.0, 3.0]]))
+        np.testing.assert_array_equal(result[1], np.array([[7.0, 8.0, 9.0]]))
+
+        # Test numpy array indexing
+        result = v.get_data(np.array([1, 2]), 1)
+        np.testing.assert_array_equal(result[0], np.array([[10.0, 11.0, 12.0]]))
+        np.testing.assert_array_equal(result[1], np.array([[16.0, 17.0, 18.0]]))
+
+        # Test slice indexing
+        result = v.get_data(slice(1, 3), 0)
+        np.testing.assert_array_equal(result[0], np.array([[7.0, 8.0, 9.0]]))
+        np.testing.assert_array_equal(result[1], np.array([[13.0, 14.0, 15.0]]))
+
+        # Test error cases
+        with pytest.raises(ValueError, match="Expected 2 indices"):
+            v.get_data(0)  # Too few indices
+
+        with pytest.raises(ValueError, match="Expected 2 indices"):
+            v.get_data(0, 0, 0)  # Too many indices
+
+        with pytest.raises(IndexError):
+            v.get_data(3, 0)  # Index out of bounds
+
+        with pytest.raises(IndexError):
+            v.get_data([3, 4], 0)  # List index out of bounds
+
+    def test_set_data_methods(self):
+        """Test set_data method with various indexing scenarios."""
+        v = Vector.from_shape(shape=(3, 2), fields=["field0", "field1", "field2"])
+
+        # Test single integer indexing
+        data1 = np.array([[1.0, 2.0, 3.0]])
+        v.set_data(data1, 0, 0)
+        np.testing.assert_array_equal(v.get_data(0, 0), data1)
+
+        # Test list indexing
+        data2 = [np.array([[4.0, 5.0, 6.0]]), np.array([[7.0, 8.0, 9.0]])]
+        v.set_data(data2, [0, 1], 1)
+        np.testing.assert_array_equal(v.get_data(0, 1), data2[0])
+        np.testing.assert_array_equal(v.get_data(1, 1), data2[1])
+
+        # Test numpy array indexing
+        data3 = [np.array([[10.0, 11.0, 12.0]]), np.array([[13.0, 14.0, 15.0]])]
+        v.set_data(data3, np.array([1, 2]), 0)
+        np.testing.assert_array_equal(v.get_data(1, 0), data3[0])
+        np.testing.assert_array_equal(v.get_data(2, 0), data3[1])
+
+        # Test slice indexing
+        data4 = [np.array([[16.0, 17.0, 18.0]]), np.array([[19.0, 20.0, 21.0]])]
+        v.set_data(data4, slice(1, 3), 1)
+        np.testing.assert_array_equal(v.get_data(1, 1), data4[0])
+        np.testing.assert_array_equal(v.get_data(2, 1), data4[1])
+
+        # Test error cases
+        with pytest.raises(ValueError, match="Expected 2 indices"):
+            v.set_data(data1, 0)  # Too few indices
+
+        with pytest.raises(ValueError, match="Expected 2 indices"):
+            v.set_data(data1, 0, 0, 0)  # Too many indices
+
+        with pytest.raises(IndexError):
+            v.set_data(data1, 3, 0)  # Index out of bounds
+
+        with pytest.raises(IndexError):
+            v.set_data([data1, data1], [3, 4], 0)  # List index out of bounds
+
+        with pytest.raises(TypeError):
+            v.set_data([1, 2, 3], 0, 0)  # Invalid data type # type: ignore
+
+        with pytest.raises(ValueError):
+            v.set_data(np.array([[1.0]]), 0, 0)  # Wrong number of fields
