@@ -143,6 +143,12 @@ class TestVector:
         field_sliced = sliced["field1"]
         np.testing.assert_array_equal(field_sliced.flatten(), np.array([5.0, 8.0]))  # type: ignore
 
+        # Test copying slices of vectors
+        v[2:4, 1] = v[1:3, 1]
+
+        # Test copying slices of vectors with fancy indexing
+        v[[0, 1], 1] = v[[2, 3], 0]
+
     def test_field_management(self):
         """Test adding and removing fields."""
         v = Vector.from_shape(shape=(2, 3), fields=["field0", "field1", "field2"])
