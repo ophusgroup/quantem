@@ -11,8 +11,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-        - uses: astral-sh/ruff-action@v3
-          with:
-            src: /home/runner/work/quantem/
-            args: check --select E4,E7,E9,F,I --exclude __init__.py
-        - run: ruff format
+      - uses: actions/checkout@v4
+
+      - name: Install uv and set python version
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install the project
+        run: uv sync --locked --all-extras --dev
+
+      - name: Run ruff linter
+        run: uv run ruff check --fix
+      - name: Run ruff formatter
+        run: uv run ruff format
