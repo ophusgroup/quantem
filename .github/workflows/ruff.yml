@@ -13,5 +13,6 @@ jobs:
     steps:
         - uses: astral-sh/ruff-action@v3
           with:
+            src: /home/runner/work/quantem/
             args: check --select E4,E7,E9,F,I --exclude __init__.py
         - run: ruff format
