@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-from matplotlib import colors
 
 from quantem.core.visualization.custom_normalizations import (
     NORMALIZATION_PRESETS,

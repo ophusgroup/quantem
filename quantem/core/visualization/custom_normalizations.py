@@ -1,7 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 
-import matplotlib as mpl
 import numpy as np
 from matplotlib import colors
 from numpy.typing import NDArray

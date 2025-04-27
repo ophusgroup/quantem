@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-from matplotlib import colors
 from matplotlib.axes import Axes
 from matplotlib.figure import Figure
 

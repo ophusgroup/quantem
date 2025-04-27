@@ -1,6 +1,5 @@
 import numpy as np
 import pytest
-from numpy.typing import NDArray
 
 from quantem.core.datastructures.vector import Vector
 
