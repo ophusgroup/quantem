@@ -19,7 +19,7 @@ description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
   "colorspacious",
   "dill",
@@ -27,7 +27,7 @@ dependencies = [
   "matplotlib",
   "scipy",
   "tqdm",
-  "zarr",
+  "zarr>3",
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
