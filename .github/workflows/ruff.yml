@@ -13,5 +13,6 @@ jobs:
     steps:
         - uses: astral-sh/ruff-action@v3
           with:
+            src: ./
             args: check --select I --exclude __init__.py
         - run: ruff format
