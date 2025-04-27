@@ -277,14 +277,17 @@ class Vector(AutoSerialize):
         vector.data = data
         return vector
 
-    def get_data(self, *indices: Union[int, slice]) -> Union[NDArray, List[NDArray]]:
+    def get_data(
+        self, *indices: Union[int, slice, List[int], np.ndarray[Any, np.dtype[Any]]]
+    ) -> Union[NDArray, List[NDArray]]:
         """
         Get data at specified indices.
 
         Parameters:
         -----------
-        *indices : int or slice
+        *indices : Union[int, slice, List[int], np.ndarray]
             Indices to access. Must match the number of dimensions in the vector.
+            Supports fancy indexing with lists or numpy arrays.
 
         Returns:
         --------
@@ -301,25 +304,59 @@ class Vector(AutoSerialize):
         if len(indices) != len(self._shape):
             raise ValueError(f"Expected {len(self._shape)} indices, got {len(indices)}")
 
-        ref: Any = self._data
-        for dim, idx in enumerate(indices):
-            if isinstance(idx, int) and (idx < 0 or idx >= self._shape[dim]):
-                raise IndexError(
-                    f"Index {idx} out of bounds for axis {dim} with size {self._shape[dim]}"
-                )
-            ref = ref[idx]
-        return cast(Union[NDArray, List[NDArray]], ref)
+        # Handle fancy indexing and slicing
+        def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
+            if isinstance(dim_idx, slice):
+                return np.arange(*dim_idx.indices(dim_size))
+            elif isinstance(dim_idx, (np.ndarray, list)):
+                idx = np.asarray(dim_idx)
+                if np.any((idx < 0) | (idx >= dim_size)):
+                    raise IndexError(
+                        f"Index out of bounds for axis with size {dim_size}"
+                    )
+                return idx
+            elif isinstance(dim_idx, (int, np.integer)):
+                if dim_idx < 0 or dim_idx >= dim_size:
+                    raise IndexError(
+                        f"Index {dim_idx} out of bounds for axis with size {dim_size}"
+                    )
+                return np.array([dim_idx])
+            return np.arange(dim_size)
 
-    def set_data(self, value: NDArray, *indices: Union[int, slice]) -> None:
+        # Get indices for each dimension
+        indices_arrays = [get_indices(i, s) for i, s in zip(indices, self._shape)]
+
+        # If all indices are single integers, return a single array
+        if all(len(i) == 1 for i in indices_arrays):
+            ref = self._data
+            for idx in (i[0] for i in indices_arrays):
+                ref = ref[idx]
+            return ref
+
+        # Create result structure for fancy indexing
+        result = []
+        for idx in np.ndindex(*[len(i) for i in indices_arrays]):
+            src_idx = tuple(ind[i] for ind, i in zip(indices_arrays, idx))
+            result.append(self._data[src_idx[0]][src_idx[1]])
+
+        return result
+
+    def set_data(
+        self,
+        value: Union[NDArray, List[NDArray]],
+        *indices: Union[int, slice, List[int], np.ndarray[Any, np.dtype[Any]]],
+    ) -> None:
         """
         Set data at specified indices.
 
         Parameters
         ----------
-        value : NDArray
-            The numpy array to set at the specified indices. Must have shape (_, num_fields).
-        *indices : Union[int, slice]
+        value : Union[NDArray, List[NDArray]]
+            The numpy array(s) to set at the specified indices. Must have shape (_, num_fields).
+            For fancy indexing, can be a list of arrays.
+        *indices : Union[int, slice, List[int], np.ndarray]
             Indices to set data at. Must match the number of dimensions in the vector.
+            Supports fancy indexing with lists or numpy arrays.
 
         Raises
         ------
@@ -329,34 +366,68 @@ class Vector(AutoSerialize):
             If the number of indices does not match the vector dimensions,
             or if the value shape doesn't match the expected shape.
         TypeError
-            If the value is not a numpy array.
+            If the value is not a numpy array or list of numpy arrays.
         """
         if len(indices) != len(self._shape):
             raise ValueError(f"Expected {len(self._shape)} indices, got {len(indices)}")
 
-        ref: Any = self._data
-        for dim, idx in enumerate(indices[:-1]):
-            if isinstance(idx, int) and (idx < 0 or idx >= self._shape[dim]):
-                raise IndexError(
-                    f"Index {idx} out of bounds for axis {dim} with size {self._shape[dim]}"
+        # Handle fancy indexing and slicing
+        def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
+            if isinstance(dim_idx, slice):
+                return np.arange(*dim_idx.indices(dim_size))
+            elif isinstance(dim_idx, (np.ndarray, list)):
+                idx = np.asarray(dim_idx)
+                if np.any((idx < 0) | (idx >= dim_size)):
+                    raise IndexError(
+                        f"Index out of bounds for axis with size {dim_size}"
+                    )
+                return idx
+            elif isinstance(dim_idx, (int, np.integer)):
+                if dim_idx < 0 or dim_idx >= dim_size:
+                    raise IndexError(
+                        f"Index {dim_idx} out of bounds for axis with size {dim_size}"
+                    )
+                return np.array([dim_idx])
+            return np.arange(dim_size)
+
+        # Get indices for each dimension
+        indices_arrays = [get_indices(i, s) for i, s in zip(indices, self._shape)]
+
+        # If all indices are single integers, handle as single value
+        if all(len(i) == 1 for i in indices_arrays):
+            if not isinstance(value, np.ndarray):
+                raise TypeError(
+                    f"Value must be a numpy array, got {type(value).__name__}"
                 )
-            ref = ref[idx]
+            if value.ndim != 2 or value.shape[1] != self.num_fields:
+                raise ValueError(
+                    f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape}"
+                )
+            ref = self._data
+            for idx in (i[0] for i in indices_arrays[:-1]):
+                ref = ref[idx]
+            ref[indices_arrays[-1][0]] = value
+            return
 
-        last_idx = indices[-1]
-        if isinstance(last_idx, int) and (last_idx < 0 or last_idx >= self._shape[-1]):
-            raise IndexError(
-                f"Index {last_idx} out of bounds for last axis with size {self._shape[-1]}"
-            )
+        # Handle fancy indexing
+        if not isinstance(value, list):
+            raise TypeError("For fancy indexing, value must be a list of numpy arrays")
 
-        if not isinstance(value, np.ndarray):
-            raise TypeError(f"Value must be a numpy array, got {type(value).__name__}")
-
-        if value.ndim != 2 or value.shape[1] != self.num_fields:
-            raise ValueError(
-                f"Expected a numpy array with shape (_, {self.num_fields}), got {value.shape}"
-            )
-
-        ref[last_idx] = value
+        # Validate and set values
+        for idx in np.ndindex(*[len(i) for i in indices_arrays]):
+            src_idx = tuple(ind[i] for ind, i in zip(indices_arrays, idx))
+            if not isinstance(value[idx[0]], np.ndarray):
+                raise TypeError(
+                    f"Expected numpy array, got {type(value[idx[0]]).__name__}"
+                )
+            if value[idx[0]].ndim != 2 or value[idx[0]].shape[1] != self.num_fields:
+                raise ValueError(
+                    f"Expected array with shape (_, {self.num_fields}), got {value[idx[0]].shape}"
+                )
+            ref = self._data
+            for i in src_idx[:-1]:
+                ref = ref[i]
+            ref[src_idx[-1]] = value[idx[0]]
 
     @overload
     def __getitem__(self, idx: str) -> "_FieldView": ...
