@@ -5,7 +5,6 @@ from matplotlib import colors
 from matplotlib.axes import Axes
 from matplotlib.colorbar import Colorbar
 from matplotlib.colors import LinearSegmentedColormap, Normalize
-from matplotlib.figure import Figure
 
 from quantem.core.visualization.visualization_utils import (
     ScalebarConfig,
@@ -206,7 +205,7 @@ class TestAddArgCbarToAx:
         data = np.random.rand(10, 10) + 1j * np.random.rand(10, 10)
         cmap = LinearSegmentedColormap.from_list("test", ["blue", "red"])
         norm = Normalize(vmin=0, vmax=2 * np.pi)
-        im = ax.imshow(np.angle(data), cmap=cmap, norm=norm)
+        ax.imshow(np.angle(data), cmap=cmap, norm=norm)
         cax = fig.add_axes([0.85, 0.15, 0.05, 0.7])  # [left, bottom, width, height]
         cbar = add_arg_cbar_to_ax(fig, cax=cax)
         assert isinstance(cbar, Colorbar)

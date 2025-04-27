@@ -5,10 +5,8 @@ from typing import Any, List, Optional, Tuple, Union, cast
 import matplotlib as mpl
 import matplotlib.pyplot as plt
 import numpy as np
-from colorspacious import cspace_convert
 from matplotlib import colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
-from mpl_toolkits.axes_grid1.anchored_artists import AnchoredSizeBar
 from numpy.typing import NDArray
 
 from quantem.core.visualization.custom_normalizations import (
@@ -119,7 +117,7 @@ def _show_2d(
 
         if is_complex:
             ax_cb_angle = divider.append_axes("right", size="5%", pad="10%")
-            cb_angle = add_arg_cbar_to_ax(fig, ax_cb_angle, chroma_boost=chroma_boost)
+            add_arg_cbar_to_ax(fig, ax_cb_angle, chroma_boost=chroma_boost)
             cb_abs.set_label("abs", rotation=0, ha="center", va="bottom")
             cb_abs.ax.yaxis.set_label_coords(0.5, -0.05)
 

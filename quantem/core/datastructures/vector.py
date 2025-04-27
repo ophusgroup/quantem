@@ -1,11 +1,8 @@
 from typing import (
     Any,
-    Callable,
     List,
     Optional,
-    Sequence,
     Tuple,
-    TypeVar,
     Union,
     cast,
     overload,
@@ -531,17 +528,30 @@ class Vector(AutoSerialize):
             np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
         )
 
-        # Check if we're doing fancy indexing
+        # Check if we're doing slice‐ or array‐based (multi‐cell) indexing
         has_fancy = any(
-            isinstance(i, np.ndarray) and i.size > 1
+            isinstance(i, slice) or (isinstance(i, np.ndarray) and i.size > 1)
             for i in idx_converted[: len(self.shape)]
         )
 
         if has_fancy:
+            # If user passed a Vector, extract its cell arrays
+            if isinstance(value, Vector):
+
+                def _flatten_cells(data):
+                    if isinstance(data, np.ndarray):
+                        return [data]
+                    out = []
+                    for sub in data:
+                        out.extend(_flatten_cells(sub))
+                    return out
+
+                value = _flatten_cells(value._data)
+
             # For fancy indexing, value should be a list of arrays
             if not isinstance(value, list):
                 raise TypeError(
-                    "For fancy indexing, value must be a list of numpy arrays"
+                    "For fancy/slice indexing, value must be a list of numpy arrays or a Vector"
                 )
 
             # Get indices for each dimension
