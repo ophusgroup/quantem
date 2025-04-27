@@ -2,7 +2,6 @@ from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Tuple, Union, cast
 
 import matplotlib as mpl
-import matplotlib.pyplot as plt
 import numpy as np
 from colorspacious import cspace_convert
 from matplotlib import cm, colors, legend, ticker
