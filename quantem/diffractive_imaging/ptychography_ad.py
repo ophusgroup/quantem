@@ -312,7 +312,7 @@ class PtychographyAD(AutoSerialize):
         """Extracts roi-shaped patches from `obj_array`."""
         # maybe add this back here cuz it kinda makes sense
         if self.object_type == "potential":
-            obj_array = np.exp(1j * obj_array)
+            obj_array = torch.exp(1j * obj_array)
         return obj_array[..., patch_row, patch_col]
 
     def overlap_projection(self, obj_patches, shifted_probes, descan_shifts=None):
@@ -351,6 +351,24 @@ class PtychographyAD(AutoSerialize):
         else:
             return torch.sqrt(torch.sum(torch.abs(overlap_fft) ** 2, dim=1))
 
+    def forward_operator(
+        self,
+        obj_array,
+        probe_array,
+        patch_row,
+        patch_col,
+        fract_positions,
+        descan_shifts=None,
+    ):
+        """Single-pass forward operator."""
+        shifted_probes = self.shift_probes(probe_array, fract_positions)
+        obj_patches = self.object_patches(obj_array, patch_row, patch_col)
+        shifted_probes, obj_patches, overlap = self.overlap_projection(
+            obj_patches, shifted_probes, descan_shifts
+        )
+
+        return obj_patches, shifted_probes, overlap
+
     def error_estimate(
         self,
         obj_array,
@@ -362,10 +380,13 @@ class PtychographyAD(AutoSerialize):
         descan_shifts=None,
     ):
         """Computes the error between the measured and estimated amplitudes."""
-        shifted_probes = self.shift_probes(probe_array, fract_positions)
-        obj_patches = self.object_patches(obj_array, patch_row, patch_col)
-        _, _, overlap = self.overlap_projection(
-            obj_patches, shifted_probes, descan_shifts
+        _, _, overlap = self.forward_operator(
+            obj_array,
+            probe_array,
+            patch_row,
+            patch_col,
+            fract_positions,
+            descan_shifts,
         )
         farfield_amplitudes = self.estimated_amplitudes(overlap)
         mse = torch.mean(torch.abs(amplitudes - farfield_amplitudes) ** 2)

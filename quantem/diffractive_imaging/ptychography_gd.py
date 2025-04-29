@@ -259,6 +259,7 @@ class PtychographyGD(AutoSerialize):
         pos_frac = self.xp.asarray(self.positions_px_fractional)
         patch_row = self.xp.asarray(self.patch_row)
         patch_col = self.xp.asarray(self.patch_col)
+        amplitudes = self.xp.asarray(self.shifted_amplitudes)
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in trange(num_iter):
@@ -268,24 +269,36 @@ class PtychographyGD(AutoSerialize):
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
                 batch_indices = shuffled_indices[start:end]
-                object, probe = self._single_slice_iter(
+
+                obj_patches, shifted_probes, overlap = self.forward_operator(
                     object,
                     probe,
                     patch_row[batch_indices],
                     patch_col[batch_indices],
                     pos_frac[batch_indices],
-                    self.shifted_amplitudes[batch_indices],
+                )
+
+                object, probe = self.adjoint_operator(
+                    object,
+                    probe,
+                    obj_patches,
+                    patch_row[batch_indices],
+                    patch_col[batch_indices],
+                    shifted_probes,
+                    amplitudes[batch_indices],
+                    overlap,
                     step_size,
                     fix_probe=fix_probe,
                 )
 
+                ## don't need to do this, could just use previous error estimate
                 error += self.error_estimate(
                     object,
                     probe,
                     patch_row[batch_indices],
                     patch_col[batch_indices],
                     pos_frac[batch_indices],
-                    self.shifted_amplitudes[batch_indices],
+                    amplitudes[batch_indices],
                 )
 
             self._losses.append(error.item() / num_batches)
@@ -378,17 +391,16 @@ class PtychographyGD(AutoSerialize):
         patch_row,
         patch_col,
         fract_positions,
-        amplitudes,
+        descan_shifts=None,
     ):
         """Single-pass forward operator."""
         shifted_probes = self.shift_probes(probe_array, fract_positions)
         obj_patches = self.object_patches(obj_array, patch_row, patch_col)
         shifted_probes, obj_patches, overlap = self.overlap_projection(
-            obj_patches, shifted_probes
+            obj_patches, shifted_probes, descan_shifts
         )
-        modified_overlap = self.fourier_projection(amplitudes, overlap)
 
-        return obj_patches, shifted_probes, overlap, modified_overlap
+        return obj_patches, shifted_probes, overlap
 
     def error_estimate(
         self,
@@ -401,10 +413,13 @@ class PtychographyGD(AutoSerialize):
         descan_shifts=None,
     ):
         """Computes the error between the measured and estimated amplitudes."""
-        shifted_probes = self.shift_probes(probe_array, fract_positions)
-        obj_patches = self.object_patches(obj_array, patch_row, patch_col)
-        _, _, overlap = self.overlap_projection(
-            obj_patches, shifted_probes, descan_shifts
+        _, _, overlap = self.forward_operator(
+            obj_array,
+            probe_array,
+            patch_row,
+            patch_col,
+            fract_positions,
+            descan_shifts,
         )
         farfield_amplitudes = self.estimated_amplitudes(overlap)
         mse = self.xp.mean(self.xp.abs(amplitudes - farfield_amplitudes) ** 2)
@@ -614,13 +629,14 @@ class PtychographyGD(AutoSerialize):
         patch_row,
         patch_col,
         shifted_probes,
-        overlap_array,
-        modified_overlap_array,
+        amplitudes,
+        overlap,
         step_size,
         fix_probe: bool = False,
     ):
         """Single-pass adjoint operator."""
-        gradient = self.gradient_step(overlap_array, modified_overlap_array)
+        modified_overlap = self.fourier_projection(amplitudes, overlap)
+        gradient = self.gradient_step(overlap, modified_overlap)
         obj_array, probe_array = self.update_object_and_probe(
             obj_array,
             probe_array,
@@ -632,35 +648,4 @@ class PtychographyGD(AutoSerialize):
             step_size,
             fix_probe=fix_probe,
         )
-        return obj_array, probe_array
-
-    def _single_slice_iter(
-        self,
-        obj_array,
-        probe_array,
-        patch_row,
-        patch_col,
-        fract_positions,
-        amplitudes,
-        step_size,
-        fix_probe: bool = False,
-    ):
-        """Single-pass of single-slice algorithm."""
-        obj_patches, shifted_probes, overlap, modified_overlap = self.forward_operator(
-            obj_array, probe_array, patch_row, patch_col, fract_positions, amplitudes
-        )
-
-        obj_array, probe_array = self.adjoint_operator(
-            obj_array,
-            probe_array,
-            obj_patches,
-            patch_row,
-            patch_col,
-            shifted_probes,
-            overlap,
-            modified_overlap,
-            step_size,
-            fix_probe=fix_probe,
-        )
-
         return obj_array, probe_array
