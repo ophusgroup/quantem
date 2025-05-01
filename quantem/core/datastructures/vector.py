@@ -12,7 +12,7 @@ import numpy as np
 from numpy.typing import ArrayLike, NDArray
 
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import (
+from quantem.core.utils.validators import (
     validate_fields,
     validate_num_fields,
     validate_shape,

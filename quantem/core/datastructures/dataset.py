@@ -5,7 +5,7 @@ from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import (
+from quantem.core.utils.validators import (
     ensure_valid_array,
     validate_ndinfo,
     validate_units,
