@@ -2,7 +2,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Sequence, Union
 from zipfile import ZipFile
 
 import dill
@@ -18,11 +18,43 @@ class AutoSerialize:
         path: str | Path,
         mode: Literal["w", "o"] = "w",
         store: Literal["auto", "zip", "dir"] = "auto",
-        skip: Sequence[str] | str | type | tuple[type, ...] = (),
+        skip: Union[str, type, Sequence[Union[str, type]]] = (),
+        compression_level: int | None = None,
     ) -> None:
-        if isinstance(skip, (str, type)):
-            skip = [skip]
-        skip_set = set(skip)
+        """
+        Save the current object to disk using Zarr serialization.
+
+        Parameters
+        ----------
+        path : str or Path
+            Target file path. Use '.zip' extension for zip format, otherwise a directory.
+        mode : {'w', 'o'}
+            'w' = write only if file doesn't exist, 'o' = overwrite if it does.
+        store : {'auto', 'zip', 'dir'}
+            Storage format. 'auto' infers from file extension.
+        skip : str, type, or list of (str or type)
+            Attributes to skip saving by name or type.
+        compression_level : int or None
+            If set (0–9), applies Zstandard compression with Blosc backend at that level.
+            Level 0 disables compression. Raises ValueError if > 9.
+        """
+        if compression_level is not None:
+            if not (0 <= compression_level <= 9):
+                raise ValueError(
+                    f"compression_level must be between 0 and 9, got {compression_level}"
+                )
+            compressors = [
+                {
+                    "name": "blosc",
+                    "configuration": {
+                        "cname": "zstd",
+                        "clevel": int(compression_level),
+                        "shuffle": "bitshuffle",
+                    },
+                }
+            ]
+        else:
+            compressors = None
 
         path = str(path)
         if store == "auto":
@@ -43,11 +75,16 @@ class AutoSerialize:
                     f"File '{path}' already exists. Use mode='o' to overwrite."
                 )
 
+        if isinstance(skip, (str, type)):
+            skip = [skip]
+        skip_names = {s for s in skip if isinstance(s, str)}
+        skip_types = tuple(s for s in skip if isinstance(s, type))
+
         if store == "zip":
             with tempfile.TemporaryDirectory() as tmpdir:
                 store_obj = LocalStore(tmpdir)
                 root = zarr.group(store=store_obj, overwrite=True)
-                self._recursive_save(self, root, skip_set)
+                self._recursive_save(self, root, skip_names, skip_types, compressors)
                 with ZipFile(path, mode="w") as zf:
                     for dirpath, _, filenames in os.walk(tmpdir):
                         for filename in filenames:
@@ -62,7 +99,7 @@ class AutoSerialize:
             os.makedirs(path, exist_ok=True)
             store_obj = LocalStore(path)
             root = zarr.group(store=store_obj, overwrite=True)
-            self._recursive_save(self, root, skip_set)
+            self._recursive_save(self, root, skip_names, skip_types, compressors)
         else:
             raise ValueError(f"Unknown store type: {store}")
 
@@ -70,24 +107,23 @@ class AutoSerialize:
         self,
         obj: "AutoSerialize",
         group: zarr.Group,
-        skip: set[str | type] = set(),
+        skip_names: set[str] = set(),
+        skip_types: tuple[type, ...] = (),
+        compressors: Any = None,
     ) -> None:
         if "_class_def" not in group.attrs:
             group.attrs["_class_def"] = dill.dumps(obj.__class__).hex()
 
         attrs_fields = getattr(obj.__class__, "__attrs_attrs__", None)
-        items = (
-            [(field.name, getattr(obj, field.name)) for field in attrs_fields]
-            if attrs_fields is not None
-            else obj.__dict__.items()
-        )
+        if attrs_fields is not None:
+            items = [(field.name, getattr(obj, field.name)) for field in attrs_fields]
+        else:
+            items = obj.__dict__.items()
 
         for attr_name, attr_value in items:
-            # Skip by name or by class
-            if any(
-                attr_name == s if isinstance(s, str) else isinstance(attr_value, s)
-                for s in skip
-            ):
+            if attr_name in skip_names:
+                continue
+            if isinstance(attr_value, skip_types):
                 continue
 
             if isinstance(attr_value, np.ndarray):
@@ -96,14 +132,16 @@ class AutoSerialize:
                         name=attr_name,
                         shape=attr_value.shape,
                         dtype=attr_value.dtype,
+                        compressors=compressors,
                     )
                     arr[:] = attr_value
-
             elif isinstance(attr_value, (int, float, str, bool, type(None))):
                 group.attrs[attr_name] = attr_value
             elif isinstance(attr_value, AutoSerialize):
                 subgroup = group.require_group(attr_name)
-                self._recursive_save(attr_value, subgroup, skip)
+                self._recursive_save(
+                    attr_value, subgroup, skip_names, skip_types, compressors
+                )
             else:
                 group.attrs[attr_name] = dill.dumps(attr_value).hex()
 
