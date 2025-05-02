@@ -1,10 +1,10 @@
-from typing import Any, Optional, Union
+from typing import Any, Optional, Self, Union
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
-from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.utils.utils import as_numpy, get_array_module
 from quantem.core.utils.validators import (
     ensure_valid_array,
     validate_ndinfo,
@@ -12,12 +12,6 @@ from quantem.core.utils.validators import (
 )
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
-
-# Re-add conditional import for cp alias within this file's scope
-if config.get("has_cupy"):
-    import cupy as cp  # type: ignore
-else:
-    import numpy as cp  # Alias numpy as cp
 
 
 class Dataset(AutoSerialize):
@@ -65,7 +59,7 @@ class Dataset(AutoSerialize):
         sampling: Union[NDArray, tuple, list, float, int] | None = None,
         units: Union[list[str], tuple, list] | None = None,
         signal_units: str = "arb. units",
-    ) -> "Dataset":
+    ) -> Self:
         """
         Validates and creates a Dataset from an array.
 
@@ -110,11 +104,12 @@ class Dataset(AutoSerialize):
 
     # --- Properties ---
     @property
-    def array(self) -> Union[NDArray, Any]:
+    def array(self) -> NDArray:
+        """The underlying n-dimensional array data. Can be a np.ndarray or cp.ndarray."""
         return self._array
 
     @array.setter
-    def array(self, value: Union[NDArray, Any]) -> None:
+    def array(self, value: NDArray) -> None:
         self._array = ensure_valid_array(value, dtype=self.dtype, ndim=self.ndim)
 
     @property
@@ -171,6 +166,10 @@ class Dataset(AutoSerialize):
         return self.array.dtype
 
     @property
+    def _xp(self):
+        return get_array_module(self.array)
+
+    @property
     def device(self) -> str:
         """
         Outputting a string is likely temporary -- once we have our use cases we can
@@ -203,7 +202,7 @@ class Dataset(AutoSerialize):
         return "\n".join(description)
 
     # --- Methods ---
-    def copy(self) -> "Dataset":
+    def copy(self) -> Self:
         """
         Copies Dataset.
 
@@ -215,14 +214,13 @@ class Dataset(AutoSerialize):
         """
         # Metadata arrays (origin, sampling) are numpy, use copy()
         # Units list is copied by slicing
-        new_dataset = Dataset(
+        new_dataset = type(self).from_array(
             array=self.array.copy(),
             name=self.name,
             origin=self.origin.copy(),
             sampling=self.sampling.copy(),
             units=self.units[:],
             signal_units=self.signal_units,
-            _token=self._token,
         )
 
         return new_dataset
@@ -299,12 +297,7 @@ class Dataset(AutoSerialize):
         Dataset or None
             Padded Dataset if modify_in_place is False, otherwise None.
         """
-        if config.get("has_cupy") and isinstance(self.array, cp.ndarray):
-            pad_func = cp.pad
-        else:
-            pad_func = np.pad
-
-        padded_array = pad_func(self.array, pad_width=pad_width, **kwargs)
+        padded_array = np.pad(self.array, pad_width=pad_width, **kwargs)
 
         if modify_in_place:
             self._array = padded_array
@@ -469,4 +462,4 @@ class Dataset(AutoSerialize):
         if title is None:
             title = self.name
 
-        return show_2d(self.array, scalebar=scalebar, title=title, **kwargs)
+        return show_2d(as_numpy(self.array), scalebar=scalebar, title=title, **kwargs)

@@ -39,7 +39,8 @@ class TestClass:
         x = "this"
         assert "h" in x
 
-    # def test_two(self): ### fails
+    ### fails
+    # def test_two(self):
     #     x = "hello"
     #     assert hasattr(x, "check")
 
@@ -56,7 +57,8 @@ class TestClassInstance:
         self.value = 1
         assert self.value == 1
 
-    # def test_two(self): ### fails
+    ### fails
+    # def test_two(self):
     #     assert self.value == 1
 
 
@@ -64,7 +66,7 @@ class TestClassInstance:
 ### tmp_path and tmp_path_factory are pytest fixtures which make a temporary path (as a path.Path
 ### object and a pytest.TempDirFactory respectively), and which can be used in individual tests
 ### or for an entire testing session
-### here we created a temp file in conftest.py and can read it here
+### we created a temp file called "image_file" in conftest.py and can read it in these tests
 ### more on this here: https://docs.pytest.org/en/stable/how-to/tmp_path.html
 
 
@@ -74,13 +76,15 @@ def test_image1(image_file):
     assert np.array_equal(load_img, test)
 
 
+### fails, note it also shows the tempfile path
 # def test_image2(image_file):
 #     load_img = np.load(image_file)
 #     test = np.ones((16,16))
-# assert np.array_equal(load_img, test) ### fails, note it also shows the tempfile path
+# assert np.array_equal(load_img, test)
 
 
-### there are also markers for skipping certain tests or expected failures
+### there are also markers for skipping certain tests or expected failures,
+### e.g based on platform or python version
 
 
 # @pytest.mark.skipif(not sys.platform.startswith("win"), reason="windows only test")
