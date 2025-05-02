@@ -178,21 +178,41 @@ class AutoSerialize:
 
 
 # Load an autoserialized class
-def load(path) -> Any:
+def load(path: str, skip: Sequence[str] = ()) -> Any:
+    """
+    Load an AutoSerialize object from a directory or .zip file,
+    optionally skipping any attributes or subgroups named in `skip`.
+    """
+    skip_set = set(skip)
+    skip_set.discard("_class_def")  # never skip the class definition
+
+    def _prune(group: zarr.Group) -> None:
+        # Remove any attrs or arrays/groups at this level whose name is in skip_set
+        for key in list(skip_set):
+            if key in group.attrs:
+                del group.attrs[key]
+            if key in group:
+                del group[key]
+        # Recurse into remaining subgroups
+        for subname, subgroup in group.groups():
+            _prune(subgroup)
+
+    # Open the zarr tree
     if os.path.isdir(path):
         store = LocalStore(path)
         root = zarr.group(store=store)
-        if "_class_def" not in root.attrs:
-            raise KeyError(
-                "Missing '_class_def' in Zarr root attributes. This directory may not have been saved using AutoSerialize."
-            )
-        class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-        return class_def._recursive_load(root)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, "r") as zf:
                 zf.extractall(tmpdir)
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
-            class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-            return class_def._recursive_load(root)
+
+    # Prune out skipped names at every level
+    _prune(root)
+
+    # Reconstruct the object
+    if "_class_def" not in root.attrs:
+        raise KeyError("Missing '_class_def' in Zarr root attributes.")
+    cls = dill.loads(bytes.fromhex(root.attrs["_class_def"]))
+    return cls._recursive_load(root)
