@@ -110,9 +110,7 @@ class set:
             self._assign(keys[1:], value, d[key], path)
 
 
-def refresh(
-    config: dict = config, defaults: list[Mapping] = defaults, **kwargs
-) -> None:
+def refresh(config: dict = config, defaults: list[Mapping] = defaults, **kwargs) -> None:
     """
     Update configuration by re-reading yaml files and env variables
 
@@ -174,9 +172,7 @@ def get(
     return result
 
 
-def update_defaults(
-    new: dict, config: dict = config, defaults: list[Mapping] = defaults
-) -> None:
+def update_defaults(new: dict, config: dict = config, defaults: list[Mapping] = defaults) -> None:
     """Add a new set of defaults to the configuration
 
     It does two things:
@@ -424,9 +420,7 @@ def _load_config_file(path: str) -> dict | None:
     return config
 
 
-def check_key_val(
-    key: str, val: Any, deprecations: dict = deprecations
-) -> tuple[str, Any]:
+def check_key_val(key: str, val: Any, deprecations: dict = deprecations) -> tuple[str, Any]:
     """Check if the provided value has been renamed or removed
 
     Parameters
@@ -487,7 +481,8 @@ def check_key_val(
                 raise ValueError(f"Invalid device: {new_val}")
             if gpu_id > NUM_DEVICES - 1:
                 raise ValueError(
-                    f"Trying to set device {new_val} but only found {NUM_DEVICES} GPUs"
+                    f"Trying to set device {new_val} but found {NUM_DEVICES} GPUs | "
+                    + f"has_cupy: {config['has_cupy']} | has_torch: {config['has_torch']}"
                 )
             if config["has_torch"]:
                 torch.cuda.set_device(f"cuda:{gpu_id}")

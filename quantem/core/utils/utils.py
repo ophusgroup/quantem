@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import NDArray
@@ -46,7 +46,7 @@ def get_tensor_module(tensor: NDArray):
     )
 
 
-def as_numpy(array: np.ndarray | cp.ndarray | torch.Tensor) -> np.ndarray:
+def as_numpy(array: Any) -> np.ndarray:
     """Convert a torch.Tensor or cupy.ndarray to a numpy.ndarray."""
     if config.get("has_cupy"):
         if isinstance(array, cp.ndarray):
