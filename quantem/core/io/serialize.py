@@ -126,18 +126,17 @@ class AutoSerialize:
                 group.attrs[attr_name] = dill.dumps(attr_value).hex()
 
     @classmethod
-    def _recursive_load(cls, group) -> Any:
+    def _recursive_load(cls, group, skip: set[str] = set()) -> Any:
         class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
         obj = class_def.__new__(class_def)
 
         # Initialize attrs classes if needed
         if hasattr(class_def, "__attrs_post_init__"):
-            # Set all fields to None initially
             for field in class_def.__attrs_attrs__:
                 setattr(obj, field.name, None)
 
         for attr_name in group.attrs:
-            if attr_name == "_class_def":
+            if attr_name == "_class_def" or attr_name in skip:
                 continue
             try:
                 deserialized = dill.loads(bytes.fromhex(group.attrs[attr_name]))
@@ -146,12 +145,13 @@ class AutoSerialize:
                 setattr(obj, attr_name, group.attrs[attr_name])
 
         for ds_name in group.array_keys():
-            setattr(obj, ds_name, group[ds_name][:])
+            if ds_name not in skip:
+                setattr(obj, ds_name, group[ds_name][:])
 
         for subgroup_name, subgroup in group.groups():
-            setattr(obj, subgroup_name, cls._recursive_load(subgroup))
+            if subgroup_name not in skip:
+                setattr(obj, subgroup_name, cls._recursive_load(subgroup, skip=skip))
 
-        # Call post_init for attrs classes if it exists
         if hasattr(obj, "__attrs_post_init__"):
             obj.__attrs_post_init__()
 
@@ -178,41 +178,21 @@ class AutoSerialize:
 
 
 # Load an autoserialized class
-def load(path: str, skip: Sequence[str] = ()) -> Any:
-    """
-    Load an AutoSerialize object from a directory or .zip file,
-    optionally skipping any attributes or subgroups named in `skip`.
-    """
-    skip_set = set(skip)
-    skip_set.discard("_class_def")  # never skip the class definition
-
-    def _prune(group: zarr.Group) -> None:
-        # Remove any attrs or arrays/groups at this level whose name is in skip_set
-        for key in list(skip_set):
-            if key in group.attrs:
-                del group.attrs[key]
-            if key in group:
-                del group[key]
-        # Recurse into remaining subgroups
-        for subname, subgroup in group.groups():
-            _prune(subgroup)
-
-    # Open the zarr tree
+def load(path, skip: Sequence[str] = ()) -> Any:
     if os.path.isdir(path):
         store = LocalStore(path)
         root = zarr.group(store=store)
+        if "_class_def" not in root.attrs:
+            raise KeyError(
+                "Missing '_class_def' in Zarr root attributes. This directory may not have been saved using AutoSerialize."
+            )
+        class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
+        return class_def._recursive_load(root, skip=set(skip))
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, "r") as zf:
                 zf.extractall(tmpdir)
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
-
-    # Prune out skipped names at every level
-    _prune(root)
-
-    # Reconstruct the object
-    if "_class_def" not in root.attrs:
-        raise KeyError("Missing '_class_def' in Zarr root attributes.")
-    cls = dill.loads(bytes.fromhex(root.attrs["_class_def"]))
-    return cls._recursive_load(root)
+            class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
+            return class_def._recursive_load(root, skip=set(skip))
