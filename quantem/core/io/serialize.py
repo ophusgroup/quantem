@@ -18,24 +18,20 @@ class AutoSerialize:
         path: str | Path,
         mode: Literal["w", "o"] = "w",
         store: Literal["auto", "zip", "dir"] = "auto",
-        skip: Sequence[str] = (),
+        skip: Sequence[str] | str | type | tuple[type, ...] = (),
     ) -> None:
-        """
-        Save this object, optionally skipping any attributes whose names appear in `skip`.
-        """
-        path = str(path)
+        if isinstance(skip, (str, type)):
+            skip = [skip]
         skip_set = set(skip)
 
-        # decide zip vs dir
+        path = str(path)
         if store == "auto":
             store = "zip" if path.endswith(".zip") else "dir"
 
-        # ensure .zip extension if needed
         if store == "zip" and not path.endswith(".zip"):
             print(f"Warning: appending .zip to path '{path}'")
             path += ".zip"
 
-        # handle overwrite
         if os.path.exists(path):
             if mode == "o":
                 if os.path.isdir(path):
@@ -58,17 +54,15 @@ class AutoSerialize:
                             full_path = os.path.join(dirpath, filename)
                             rel_path = os.path.relpath(full_path, tmpdir)
                             zf.write(full_path, arcname=rel_path)
-
         elif store == "dir":
             if os.path.splitext(path)[1]:
                 raise ValueError(
-                    f"Expected a directory path for store='dir', but got '{path}'"
+                    f"Expected a directory path for store='dir', but got file-like path '{path}'"
                 )
             os.makedirs(path, exist_ok=True)
             store_obj = LocalStore(path)
             root = zarr.group(store=store_obj, overwrite=True)
             self._recursive_save(self, root, skip_set)
-
         else:
             raise ValueError(f"Unknown store type: {store}")
 
@@ -76,25 +70,26 @@ class AutoSerialize:
         self,
         obj: "AutoSerialize",
         group: zarr.Group,
-        skip_set: set[str],
+        skip: set[str | type] = set(),
     ) -> None:
-        # write class definition once
         if "_class_def" not in group.attrs:
             group.attrs["_class_def"] = dill.dumps(obj.__class__).hex()
 
-        # gather items
         attrs_fields = getattr(obj.__class__, "__attrs_attrs__", None)
-        if attrs_fields is not None:
-            items = [(field.name, getattr(obj, field.name)) for field in attrs_fields]
-        else:
-            items = obj.__dict__.items()
+        items = (
+            [(field.name, getattr(obj, field.name)) for field in attrs_fields]
+            if attrs_fields is not None
+            else obj.__dict__.items()
+        )
 
         for attr_name, attr_value in items:
-            # skip if requested
-            if attr_name in skip_set:
+            # Skip by name or by class
+            if any(
+                attr_name == s if isinstance(s, str) else isinstance(attr_value, s)
+                for s in skip
+            ):
                 continue
 
-            # numpy arrays
             if isinstance(attr_value, np.ndarray):
                 if attr_name not in group:
                     arr = group.create_array(
@@ -102,39 +97,26 @@ class AutoSerialize:
                         shape=attr_value.shape,
                         dtype=attr_value.dtype,
                     )
-                    arr[...] = attr_value
+                    arr[:] = attr_value
 
-            # primitives
             elif isinstance(attr_value, (int, float, str, bool, type(None))):
                 group.attrs[attr_name] = attr_value
-
-            # nested AutoSerialize
             elif isinstance(attr_value, AutoSerialize):
-                # skip entire subtree if name in skip_set
-                if attr_name in skip_set:
-                    continue
-                if attr_name in group:
-                    subgroup = group[attr_name]
-                    if not isinstance(subgroup, zarr.Group):
-                        subgroup = group.create_group(attr_name)
-                else:
-                    subgroup = group.create_group(attr_name)
-                self._recursive_save(attr_value, subgroup, skip_set)
-
-            # anything else
+                subgroup = group.require_group(attr_name)
+                self._recursive_save(attr_value, subgroup, skip)
             else:
                 group.attrs[attr_name] = dill.dumps(attr_value).hex()
 
     @classmethod
-    def _recursive_load(cls, group, skip: set[str] = set()) -> Any:
+    def _recursive_load(cls, group, skip: Sequence[str] = ()) -> Any:
         class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
         obj = class_def.__new__(class_def)
 
-        # Initialize attrs classes if needed
         if hasattr(class_def, "__attrs_post_init__"):
             for field in class_def.__attrs_attrs__:
                 setattr(obj, field.name, None)
 
+        # Handle scalar attributes
         for attr_name in group.attrs:
             if attr_name == "_class_def" or attr_name in skip:
                 continue
@@ -144,10 +126,12 @@ class AutoSerialize:
             except Exception:
                 setattr(obj, attr_name, group.attrs[attr_name])
 
+        # Load arrays
         for ds_name in group.array_keys():
             if ds_name not in skip:
                 setattr(obj, ds_name, group[ds_name][:])
 
+        # Load subgroups recursively unless skipped
         for subgroup_name, subgroup in group.groups():
             if subgroup_name not in skip:
                 setattr(obj, subgroup_name, cls._recursive_load(subgroup, skip=skip))
@@ -179,6 +163,10 @@ class AutoSerialize:
 
 # Load an autoserialized class
 def load(path, skip: Sequence[str] = ()) -> Any:
+    # Make sure skip is a list
+    if isinstance(skip, str):
+        skip = [skip]
+
     if os.path.isdir(path):
         store = LocalStore(path)
         root = zarr.group(store=store)
@@ -196,3 +184,46 @@ def load(path, skip: Sequence[str] = ()) -> Any:
             root = zarr.group(store=store)
             class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
             return class_def._recursive_load(root, skip=set(skip))
+
+
+@staticmethod
+def print_file(path: str | Path) -> None:
+    """Print the saved structure of a serialized object (dir or zip) without loading."""
+    if os.path.isdir(path):
+        store = LocalStore(path)
+    else:
+        # Extract zip to temp dir
+        tempdir = tempfile.TemporaryDirectory()
+        with ZipFile(path, "r") as zf:
+            zf.extractall(tempdir.name)
+        store = LocalStore(tempdir.name)
+
+    root = zarr.group(store=store)
+
+    def _recurse(group: zarr.Group, prefix: str = "") -> None:
+        keys = sorted(
+            set(group.attrs.keys()) | set(group.array_keys()) | set(group.group_keys())
+        )
+        for idx, key in enumerate(keys):
+            last = idx == len(keys) - 1
+            branch = "└── " if last else "├── "
+            new_prefix = prefix + ("    " if last else "│   ")
+
+            if key in group.group_keys():
+                print(prefix + branch + key)
+                _recurse(group[key], new_prefix)
+            elif key in group.array_keys():
+                arr = group[key]
+                print(prefix + branch + f"{key}: ndarray{arr.shape}")
+            else:
+                val = group.attrs[key]
+                if key == "_class_def":
+                    print(prefix + branch + f"{key}: class def")
+                else:
+                    try:
+                        print(prefix + branch + f"{key}: {type(val).__name__}")
+                    except Exception:
+                        print(prefix + branch + f"{key}: <unreadable>")
+
+    print(Path(path).name)
+    _recurse(root)
