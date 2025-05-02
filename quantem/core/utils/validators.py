@@ -1,4 +1,5 @@
 from typing import Any, List, Optional, Tuple, Union
+from warnings import warn
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -13,8 +14,8 @@ else:
 
 # --- Dataset Validation Functions ---
 def ensure_valid_array(
-    array: Union[NDArray, Any], dtype: DTypeLike = None, ndim: int | None = None
-) -> Union[NDArray, Any]:
+    array: NDArray, dtype: DTypeLike = None, ndim: int | None = None
+) -> Union[NDArray, cp.ndarray]:
     """
     Ensure input is a numpy array or cupy array (if available), converting if necessary.
 
@@ -42,10 +43,10 @@ def ensure_valid_array(
     """
     if isinstance(array, (np.ndarray, cp.ndarray)):
         if dtype is not None:
-            validated_array = array.astype(dtype)
+            validated_array = array.astype(dtype)  # copies the array
         else:
             validated_array = array
-    else:
+    else:  # default to numpy
         try:
             validated_array = np.array(array, dtype=dtype)
             if validated_array.ndim < 1:
@@ -54,11 +55,14 @@ def ensure_valid_array(
                 raise ValueError("Array must contain numeric values")
         except Exception as e:
             raise TypeError(f"Input could not be converted to a NumPy array: {e}")
-        if ndim is not None:
-            if validated_array.ndim != ndim:
-                raise ValueError(
-                    f"Array ndim {validated_array.ndim} does not match expected ndim {ndim}"
-                )
+    if ndim is not None:
+        val_ndim = validated_array.ndim
+        if val_ndim < ndim:
+            for _ in range(ndim - val_ndim):
+                validated_array = np.expand_dims(validated_array, axis=0)
+            warn(f"Array ndim {val_ndim} is being padded to {ndim}")
+        elif val_ndim > ndim:
+            raise ValueError(f"Array ndim {val_ndim} > expected ndim {ndim}")
     return validated_array
 
 

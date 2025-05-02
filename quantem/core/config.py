@@ -6,43 +6,40 @@ import threading
 import warnings
 from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Literal, Union
+from typing import TYPE_CHECKING, Any, Literal, Union
 
 import yaml
 
+if TYPE_CHECKING:
+    import cupy as cp
+    import torch
+
+NUM_DEVICES = 0
 _defaults = {}
 try:
     import torch as torch
 
+    NUM_DEVICES = torch.cuda.device_count()
     _defaults["has_torch"] = True
 except ModuleNotFoundError:
     _defaults["has_torch"] = False
-
 try:
-    import cupy as cupy
+    import cupy as cp
 
+    NUM_DEVICES = cp.cuda.runtime.getDeviceCount()
     _defaults["has_cupy"] = True
 except ModuleNotFoundError:
     _defaults["has_cupy"] = False
 
+defaults: list[Mapping] = [_defaults]
 no_default = "__no_default__"
-
-PATH = Path(os.getenv("QUANTUM_CONFIG", "~/.config/quantem")).expanduser().resolve()
-paths = [PATH]
-
-config: dict = {}
-
-aliases: dict[str, dict[str, str]] = {
-    "device": {"gpu": "cuda:0"},
-}
-deprecations: dict[str, str | None] = {}
-
 config_lock = threading.Lock()
 
-defaults: list[Mapping] = [_defaults]
+PATH = Path(os.getenv("QUANTUM_CONFIG", "~/.config/quantem")).expanduser().resolve()
 
-# TODO - clean up the torch/cupy part, working but rough. check if has cupy or torch on refresh or initialize
-# TODO - add a write to disk option, update docstrings
+config: dict = {}
+aliases: dict[str, dict[str, str]] = {"device": {"gpu": "cuda:0"}}
+deprecations: dict[str, str | None] = {}
 
 
 class set:
@@ -178,7 +175,7 @@ def get(
 
 
 def update_defaults(
-    new: Mapping, config: dict = config, defaults: list[Mapping] = defaults
+    new: dict, config: dict = config, defaults: list[Mapping] = defaults
 ) -> None:
     """Add a new set of defaults to the configuration
 
@@ -188,11 +185,13 @@ def update_defaults(
     2.  Updates the global config with the new configuration
         prioritizing older values over newer ones
     """
+    for key, value in new.items():
+        key, nval = check_key_val(key, value)
+        new[key] = nval
+
     current_defaults = merge(*defaults)
     defaults.append(new)
-    # defaults.append(new)
     update(config, new, priority="new-defaults", defaults=current_defaults)
-    # TODO rewrite this so it works like we want
 
 
 def _initialize() -> None:
@@ -295,9 +294,7 @@ def update(
     return old
 
 
-def collect(
-    paths: Sequence[os.PathLike] = paths, env: Mapping[str, str] | None = None
-) -> dict:
+def collect(path: Path | str = PATH, env: Mapping[str, str] | None = None) -> dict:
     """
     Collect configuration from paths and environment variables
 
@@ -317,46 +314,37 @@ def collect(
     if env is None:
         env = os.environ
 
-    configs = [*collect_yaml(paths=paths), collect_env(env=env)]
+    # configs = [*collect_yaml(paths=paths), collect_env(env=env)] # skipping env
+    configs = list([*collect_yaml(path=Path(path))])
     return merge(*configs)
 
 
 def collect_yaml(
-    paths: Sequence[os.PathLike], *, return_paths: bool = False
-) -> Iterator[dict | tuple[Path, dict]]:
+    path: Path,
+) -> Iterator[dict]:
     """Collect configuration from yaml files
 
     This searches through a list of paths, expands to find all yaml or json
     files, and then parses each file.
     """
-    # Find all paths
     file_paths = []
-    for path in paths:
-        if os.path.exists(path):
-            if os.path.isdir(path):
-                try:
-                    file_paths.extend(
-                        sorted(
-                            os.path.join(path, p)
-                            for p in os.listdir(path)
-                            if os.path.splitext(p)[1].lower()
-                            in (".json", ".yaml", ".yml")
-                        )
-                    )
-                except OSError:
-                    # Ignore permission errors
-                    pass
-            else:
-                file_paths.append(path)
-
+    if path.exists():
+        if path.is_dir():
+            try:
+                file_paths.extend(path.glob("*.json"))
+                file_paths.extend(path.glob("*.yaml"))
+                file_paths.extend(path.glob("*.yml"))
+                file_paths = sorted(file_paths)
+            except OSError:
+                # Ignore permission errors
+                pass
+        else:
+            file_paths.append(path)
     # Parse yaml files
-    for path in file_paths:
-        config = _load_config_file(path)
+    for p in file_paths:
+        config = _load_config_file(p)
         if config is not None:
-            if return_paths:
-                yield Path(path), config
-            else:
-                yield config
+            yield config
 
 
 def collect_env(env: Mapping[str, str] | None = None) -> dict:
@@ -487,30 +475,62 @@ def check_key_val(
             new_val = val_aliases[val]
 
     if key == "device":
-        if "cuda" in val:
-            gpu_id = _get_device_id(val)
+        if "cpu" in str(new_val):
+            new_val = "cpu"
+        else:
+            if isinstance(new_val, int):
+                gpu_id = new_val
+                new_val = f"cuda:{gpu_id}"
+            elif "cuda" in str(new_val).lower():
+                gpu_id = device_id_to_int(new_val)
+            else:
+                raise ValueError(f"Invalid device: {new_val}")
+            if gpu_id > NUM_DEVICES - 1:
+                raise ValueError(
+                    f"Trying to set device {new_val} but only found {NUM_DEVICES} GPUs"
+                )
             if config["has_torch"]:
-                torch.cuda.set_device(val)
+                torch.cuda.set_device(f"cuda:{gpu_id}")
             if config["has_cupy"]:
-                cupy.cuda.runtime.setDevice(gpu_id)
-
+                cp.cuda.runtime.setDevice(gpu_id)
     return key, new_val
 
 
-def _get_device_id(dev: str | int) -> int:
+def device_id_to_int(dev: str | int) -> int:
+    """
+    utility for getting the device id integer from a string as used in torch and cupy
+    can/will be expanded to support torch.device and cupy.Device objects
+    """
     if isinstance(dev, str):
-        if not dev.startswith("cuda:"):
-            raise NotImplementedError(f"found a new case for string device id: {dev}")
-        id = int(dev[5:])
-    else:
-        if not isinstance(dev, int):
-            raise NotImplementedError(f"found a new case for numeric device id: {dev}")
+        if dev.startswith("cuda:"):  # for torch
+            id = int(dev[5:])
+        elif dev.startswith("<CUDA"):  # for cupy
+            id = int(dev.split(" ")[-1][:-1])
+        elif dev.isnumeric():
+            id = int(dev)
+        else:
+            raise NotImplementedError(f"new case for string device id: {dev}")
+    elif isinstance(dev, int):
         id = dev
-    if id > torch.cuda.device_count() - 1:
-        raise ValueError(
-            f"Trying to set device {dev} but only found {torch.cuda.device_count()} GPUs"
-        )
+    else:
+        raise NotImplementedError(f"new case for device id: {dev} of type {type(dev)}")
     return id
+
+
+def write(path: Path | str = PATH / "config.yaml") -> None:
+    """Write the current configuration to a yaml file.
+
+    Parameters
+    ----------
+    path : Path or str, optional
+        Path to write the yaml file to. Defaults to ~/.config/quantem/config.yaml
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    print("writing config to: ", path)
+    with open(path, "w") as f:
+        yaml.dump(config, f)
 
 
 refresh()

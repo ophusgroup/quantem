@@ -9,7 +9,7 @@ from quantem.core.datastructures import Dataset4dstem as Dataset4dstem
 def read_4dstem(
     file_path: str,
     file_type: str,
-):
+) -> Dataset4dstem:
     """
     File reader for 4D-STEM data
 
