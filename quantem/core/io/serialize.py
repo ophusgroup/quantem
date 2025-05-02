@@ -1,3 +1,5 @@
+import base64
+import gzip
 import os
 import shutil
 import tempfile
@@ -10,6 +12,8 @@ import numpy as np
 import zarr
 from zarr.storage import LocalStore
 
+MAX_ATTR_SIZE = 1_000_000  # 1 MB threshold for storing in attrs
+
 
 # Base class for automatic serialization of classes
 class AutoSerialize:
@@ -19,7 +23,7 @@ class AutoSerialize:
         mode: Literal["w", "o"] = "w",
         store: Literal["auto", "zip", "dir"] = "auto",
         skip: Union[str, type, Sequence[Union[str, type]]] = (),
-        compression_level: int | None = None,
+        compression_level: int | None = 4,
     ) -> None:
         """
         Save the current object to disk using Zarr serialization.
@@ -105,11 +109,11 @@ class AutoSerialize:
 
     def _recursive_save(
         self,
-        obj: "AutoSerialize",
+        obj,
         group: zarr.Group,
         skip_names: set[str] = set(),
         skip_types: tuple[type, ...] = (),
-        compressors: Any = None,
+        compressors=None,
     ) -> None:
         if "_class_def" not in group.attrs:
             group.attrs["_class_def"] = dill.dumps(obj.__class__).hex()
@@ -121,9 +125,7 @@ class AutoSerialize:
             items = obj.__dict__.items()
 
         for attr_name, attr_value in items:
-            if attr_name in skip_names:
-                continue
-            if isinstance(attr_value, skip_types):
+            if attr_name in skip_names or isinstance(attr_value, skip_types):
                 continue
 
             if isinstance(attr_value, np.ndarray):
@@ -143,10 +145,23 @@ class AutoSerialize:
                     attr_value, subgroup, skip_names, skip_types, compressors
                 )
             else:
-                group.attrs[attr_name] = dill.dumps(attr_value).hex()
+                serialized = dill.dumps(attr_value)
+                compressed = gzip.compress(serialized)
+                if len(compressed) < MAX_ATTR_SIZE:
+                    group.attrs[attr_name] = base64.b16encode(compressed).decode(
+                        "ascii"
+                    )
+                else:
+                    ds = group.create_dataset(
+                        name=attr_name,
+                        shape=(len(compressed),),
+                        dtype="uint8",
+                        compressors=compressors,
+                    )
+                    ds[:] = np.frombuffer(compressed, dtype="uint8")
 
     @classmethod
-    def _recursive_load(cls, group, skip: Sequence[str] = ()) -> Any:
+    def _recursive_load(cls, group, skip: set[str] = ()) -> object:
         class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
         obj = class_def.__new__(class_def)
 
@@ -154,25 +169,29 @@ class AutoSerialize:
             for field in class_def.__attrs_attrs__:
                 setattr(obj, field.name, None)
 
-        # Handle scalar attributes
         for attr_name in group.attrs:
             if attr_name == "_class_def" or attr_name in skip:
                 continue
             try:
-                deserialized = dill.loads(bytes.fromhex(group.attrs[attr_name]))
+                compressed = base64.b16decode(group.attrs[attr_name])
+                deserialized = dill.loads(gzip.decompress(compressed))
                 setattr(obj, attr_name, deserialized)
             except Exception:
                 setattr(obj, attr_name, group.attrs[attr_name])
 
-        # Load arrays
         for ds_name in group.array_keys():
-            if ds_name not in skip:
-                setattr(obj, ds_name, group[ds_name][:])
+            if ds_name in skip:
+                continue
+            try:
+                ds = group[ds_name][:]
+                deserialized = dill.loads(gzip.decompress(ds.tobytes()))
+                setattr(obj, ds_name, deserialized)
+            except Exception:
+                setattr(obj, ds_name, ds)
 
-        # Load subgroups recursively unless skipped
         for subgroup_name, subgroup in group.groups():
             if subgroup_name not in skip:
-                setattr(obj, subgroup_name, cls._recursive_load(subgroup, skip=skip))
+                setattr(obj, subgroup_name, cls._recursive_load(subgroup, skip))
 
         if hasattr(obj, "__attrs_post_init__"):
             obj.__attrs_post_init__()
