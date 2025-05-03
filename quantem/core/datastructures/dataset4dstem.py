@@ -1,17 +1,12 @@
-from typing import Any
+from typing import Any, Self
 
 import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
-from quantem.core import config
 from quantem.core.datastructures.dataset import Dataset
+from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization.visualization_utils import ScalebarConfig
-
-if config.get("has_cupy"):
-    pass  # type: ignore
-else:
-    pass
 
 
 class Dataset4dstem(Dataset):
@@ -101,7 +96,7 @@ class Dataset4dstem(Dataset):
         sampling: NDArray | tuple | list | float | int | None = None,
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
-    ) -> "Dataset4dstem":
+    ) -> Self:
         """
         Create a new Dataset4dstem from an array.
 
@@ -125,6 +120,7 @@ class Dataset4dstem(Dataset):
         Dataset4dstem
             A new Dataset4dstem instance
         """
+        array = ensure_valid_array(array, ndim=4)
         return cls(
             array=array,
             name=name if name is not None else "4D-STEM dataset",
