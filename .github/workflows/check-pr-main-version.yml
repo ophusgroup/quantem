@@ -16,6 +16,7 @@ jobs:
       - name: Checkout PR branch (head)
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.head_ref }}
           fetch-depth: 0
 
       - name: Install uv
