@@ -1,0 +1,132 @@
+name: Check PR version
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch (head)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Get PR branch version
+        id: pr_version
+        run: |
+          PR_VERSION=$(uv version --short)
+          echo "pr_version=$PR_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Fetch main and get version
+        id: main_version
+        run: |
+          git fetch origin main
+          git checkout origin/main -- pyproject.toml
+          MAIN_VERSION=$(uv version --short)
+          echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Compare versions
+        id: version_comparison
+        env:
+          PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
+          MAIN_VERSION: ${{ steps.main_version.outputs.main_version }}
+        run: |
+          VERSION_COMPARISON=$(uv run python scripts/compare-python-versions.py "$MAIN_VERSION" "$PR_VERSION")
+          echo "version_comparison=$VERSION_COMPARISON" >> $GITHUB_OUTPUT
+
+      - name: Release new branch
+        id: release_branch
+        env:
+          RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
+          PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+
+          # Default outputs
+          echo "bump_pr_required=false" >> $GITHUB_OUTPUT
+          echo "action_should_fail=false" >> $GITHUB_OUTPUT
+
+          if [[ "$RESULT" -eq 1 ]]; then
+            echo "New version is greater — creating release branch"
+            git checkout "$HEAD_BRANCH"
+            git checkout -b release/$PR_VERSION
+            git push origin release/$PR_VERSION
+
+          elif [[ "$RESULT" -eq 0 ]]; then
+            echo "Version matches — bumping version and creating new release branch"
+
+            git checkout "$HEAD_BRANCH"
+
+            # Bump the version and sync lock
+            uv version --bump patch
+            NEXT_VERSION=$(uv version --short)
+            uv sync
+
+            if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
+              echo "Version bump had no effect — maybe it was already bumped?"
+              echo "action_should_fail=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+
+            echo "Bumped version to $NEXT_VERSION"
+
+            # Create a new release branch and commit bump
+            git checkout -b release/$NEXT_VERSION
+            git commit -am "Bump version to $NEXT_VERSION"
+            git push origin release/$NEXT_VERSION
+
+            echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
+            echo "bump_pr_required=true" >> $GITHUB_OUTPUT
+            echo "action_should_fail=true" >> $GITHUB_OUTPUT
+
+          elif [[ "$RESULT" -eq -1 ]]; then
+            echo "Error: New version is less than main — rejecting."
+            echo "action_should_fail=true" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Create version bump PR
+        if: steps.release_branch.outputs.bump_pr_required == 'true'
+        uses: peter-evans/create-pull-request@v6
+        with:
+          commit-message: "Bump version to ${{ steps.release_branch.outputs.next_version }}"
+          branch: release/${{ steps.release_branch.outputs.next_version }}
+          title: Bump version to ${{ steps.release_branch.outputs.next_version }}
+          body: |
+            This PR was automatically created because the submitted version matched the current release.
+            It bumps the patch version and starts a new release process.
+          base: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on original PR
+        if: steps.release_branch.outputs.bump_pr_required == 'true'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            🚧 This pull request cannot be merged because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
+
+            🔄 A patch bump has been created and submitted as a new pull request:
+            [`release/${{ steps.release_branch.outputs.next_version }}`](https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3Arelease%2F${{ steps.release_branch.outputs.next_version }})
+
+            Please review and merge as appropriate.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail original PR
+        if: steps.release_branch.outputs.action_should_fail == 'true'
+        run: exit 1
