@@ -61,26 +61,23 @@ jobs:
         env:
           RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
           PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
-          HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
-          # Default outputs
           echo "bump_pr_required=false" >> $GITHUB_OUTPUT
           echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
           if [[ "$RESULT" -eq 1 ]]; then
             echo "New version is greater — creating release branch"
-            git checkout "$HEAD_BRANCH"
+            git checkout $HEAD_SHA
             git checkout -b release/$PR_VERSION
             git push origin release/$PR_VERSION
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
-
-            git checkout "$HEAD_BRANCH"
-            echo "head branch: $HEAD_BRANCH"
+            git checkout $HEAD_SHA
             git checkout -b release-tmp
 
             uv version --bump patch
@@ -96,7 +93,6 @@ jobs:
             echo "Bumped version to $NEXT_VERSION"
             git commit -am "Bump version to $NEXT_VERSION"
 
-            # Rename release branch and commit bump
             git branch -m release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
