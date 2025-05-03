@@ -34,10 +34,17 @@ jobs:
       - name: Fetch main and get version
         id: main_version
         run: |
+
+          # Fetch main without changing the working directory
           git fetch origin main
+
+          # Get version from main branch pyproject.toml
           git checkout origin/main -- pyproject.toml
           MAIN_VERSION=$(uv version --short)
           echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
+
+          # Restore any stashed changes (if any)
+          git restore pyproject.toml
 
       - name: Compare versions
         id: version_comparison
@@ -54,29 +61,42 @@ jobs:
           RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
           PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
           HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.QUANTEM_BOT_PAT }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          git config user.name "github-actions"
-          git config user.email "github-actions@github.com"
+          git config user.name "quantem-bot"
+          git config user.email "quantembot@gmail.com"
 
-          # Default outputs
           echo "bump_pr_required=false" >> $GITHUB_OUTPUT
           echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
+          # Exit early if this PR is from a release/* branch to avoid loops
+          if [[ "$HEAD_BRANCH" == release/* ]]; then
+            echo "PR already comes from a release branch — skipping."
+            exit 0
+          fi
+
+          # Checkout the PR branch to include its changes
+          git checkout $HEAD_SHA
+
           if [[ "$RESULT" -eq 1 ]]; then
-            echo "New version is greater — creating release branch"
-            git checkout "$HEAD_BRANCH"
-            git checkout -b release/$PR_VERSION
-            git push origin release/$PR_VERSION
+            # Check if release branch already exists
+            if git ls-remote --exit-code --heads origin "release/$PR_VERSION" > /dev/null; then
+              echo "Release branch release/$PR_VERSION already exists — skipping creation."
+            else
+              echo "New version is greater — creating release branch"
+              git checkout -b release/$PR_VERSION
+              git push origin release/$PR_VERSION
+            fi
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
 
-            git checkout "$HEAD_BRANCH"
-
-            # Bump the version and sync lock
             uv version --bump patch
-            NEXT_VERSION=$(uv version --short)
             uv sync
+            NEXT_VERSION=$(uv version --short)
 
             if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
               echo "Version bump had no effect — maybe it was already bumped?"
@@ -85,47 +105,31 @@ jobs:
             fi
 
             echo "Bumped version to $NEXT_VERSION"
-
-            # Create a new release branch and commit bump
-            git checkout -b release/$NEXT_VERSION
             git commit -am "Bump version to $NEXT_VERSION"
+
+            git checkout -b release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
 
+            # Create the pull request using the GitHub CLI
+            gh pr create \
+              --repo "$REPO" \
+              --head "release/$NEXT_VERSION" \
+              --base "main" \
+              --title "Bump version to $NEXT_VERSION" \
+              --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
+
+            # Comment on PR
+            gh pr comment "$PR_NUMBER" --body \
+              "🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n[\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)\n\nPlease review and merge as appropriate."
+
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
           fi
-
-      - name: Create version bump PR
-        if: steps.release_branch.outputs.bump_pr_required == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "Bump version to ${{ steps.release_branch.outputs.next_version }}"
-          branch: release/${{ steps.release_branch.outputs.next_version }}
-          title: Bump version to ${{ steps.release_branch.outputs.next_version }}
-          body: |
-            This PR was automatically created because the submitted version matched the current release.
-            It bumps the patch version and starts a new release process.
-          base: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Comment on original PR
-        if: steps.release_branch.outputs.bump_pr_required == 'true'
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            🚧 This pull request cannot be merged because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
-
-            🔄 A patch bump has been created and submitted as a new pull request:
-            [`release/${{ steps.release_branch.outputs.next_version }}`](https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3Arelease%2F${{ steps.release_branch.outputs.next_version }})
-
-            Please review and merge as appropriate.
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fail original PR
         if: steps.release_branch.outputs.action_should_fail == 'true'
