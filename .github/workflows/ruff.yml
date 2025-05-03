@@ -3,7 +3,7 @@ name: Ruff
 on:
   pull_request:
     branches:
-      - main
+      - dev
 
 jobs:
   uv-ruff:
