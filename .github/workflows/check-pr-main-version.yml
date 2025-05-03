@@ -111,17 +111,12 @@ jobs:
               --title "Bump version to $NEXT_VERSION" \
               --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
 
-            # Comment on the original PR
-            gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
-                        🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.
-
-                        🔄 A patch bump has been created and submitted as a new pull request:
-                        [\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)
-
-                        Please review and merge as appropriate.
-                        EOF
-                        )"
-
+            # Comment on PR
+            COMMENT="🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.\n\n"
+            COMMENT+="🔄 A patch bump has been created and submitted as a new pull request:\n"
+            COMMENT+="[\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)\n\n"
+            COMMENT+="Please review and merge as appropriate."
+            gh pr comment "$PR_NUMBER" --body "$COMMENT"
 
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
