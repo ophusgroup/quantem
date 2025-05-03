@@ -103,9 +103,6 @@ jobs:
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
 
-            # Login with bot PAT
-            echo "$GH_TOKEN" | gh auth login --with-token
-
             # Create the pull request using the GitHub CLI
             gh pr create \
               --repo "$REPO" \
