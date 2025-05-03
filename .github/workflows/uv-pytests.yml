@@ -3,7 +3,7 @@ name: PyTests
 on:
   pull_request:
     branches:
-      - main
+      - dev
 
 jobs:
   uv-pytests:
