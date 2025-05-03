@@ -34,10 +34,18 @@ jobs:
       - name: Fetch main and get version
         id: main_version
         run: |
+          # Stash any changes (if any) to pyproject.toml
+          git stash --include-untracked
+
+          # Fetch main without changing the working directory
           git fetch origin main
-          git show origin/main:pyproject.toml > pyproject_main.toml
-          MAIN_VERSION=$(uv version --short --project pyproject_main.toml)
+
+          # Get version from main branch (pyproject.toml remains unchanged)
+          MAIN_VERSION=$(uv version --short)
           echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
+
+          # Restore any stashed changes (if any)
+          git stash pop || echo "No changes to restore"
 
       - name: Compare versions
         id: version_comparison
@@ -72,11 +80,12 @@ jobs:
             echo "Version matches — bumping version and creating new release branch"
 
             git checkout "$HEAD_BRANCH"
+            echo "head branch: $HEAD_BRANCH"
+            git checkout -b release-tmp
 
-            # Bump the version and sync lock
             uv version --bump patch
-            NEXT_VERSION=$(uv version --short)
             uv sync
+            NEXT_VERSION=$(uv version --short)
 
             if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
               echo "Version bump had no effect — maybe it was already bumped?"
@@ -85,10 +94,10 @@ jobs:
             fi
 
             echo "Bumped version to $NEXT_VERSION"
-
-            # Create a new release branch and commit bump
-            git checkout -b release/$NEXT_VERSION
             git commit -am "Bump version to $NEXT_VERSION"
+
+            # Rename release branch and commit bump
+            git branch -m release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
