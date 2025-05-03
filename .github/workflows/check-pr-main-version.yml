@@ -69,17 +69,17 @@ jobs:
           echo "bump_pr_required=false" >> $GITHUB_OUTPUT
           echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
+          # Checkout the PR branch to include its changes
+          git checkout $HEAD_SHA
+
           if [[ "$RESULT" -eq 1 ]]; then
             echo "New version is greater — creating release branch"
-            git checkout $HEAD_SHA
             git checkout -b release/$PR_VERSION
             git push origin release/$PR_VERSION
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
-            git checkout $HEAD_SHA
-            git checkout -b release-tmp
-
+            # Apply the version bump on the current PR branch
             uv version --bump patch
             uv sync
             NEXT_VERSION=$(uv version --short)
@@ -93,7 +93,8 @@ jobs:
             echo "Bumped version to $NEXT_VERSION"
             git commit -am "Bump version to $NEXT_VERSION"
 
-            git branch -m release/$NEXT_VERSION
+            # Create the release branch from the updated PR branch
+            git checkout -b release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
