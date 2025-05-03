@@ -73,9 +73,10 @@ jobs:
 
             git checkout "$HEAD_BRANCH"
 
-            # Bump the version
+            # Bump the version and sync lock
             uv version --bump patch
             NEXT_VERSION=$(uv version --short)
+            uv sync
 
             if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
               echo "Version bump had no effect — maybe it was already bumped?"
