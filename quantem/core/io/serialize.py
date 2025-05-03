@@ -161,38 +161,65 @@ class AutoSerialize:
                     ds[:] = np.frombuffer(compressed, dtype="uint8")
 
     @classmethod
-    def _recursive_load(cls, group, skip: set[str] = ()) -> object:
+    def _recursive_load(
+        cls,
+        group: zarr.Group,
+        skip_names: set[str] = frozenset(),
+        skip_types: tuple[type, ...] = (),
+    ) -> object:
+        """
+        Recursively loads an AutoSerialize object and its children.
+        """
+        # reconstitute the class
         class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
         obj = class_def.__new__(class_def)
 
+        # init attrs-classes if needed
         if hasattr(class_def, "__attrs_post_init__"):
-            for field in class_def.__attrs_attrs__:
-                setattr(obj, field.name, None)
+            for f in class_def.__attrs_attrs__:
+                setattr(obj, f.name, None)
 
-        for attr_name in group.attrs:
-            if attr_name == "_class_def" or attr_name in skip:
+        # 1) scalar attrs
+        for attr_name, raw in group.attrs.items():
+            if attr_name == "_class_def" or attr_name in skip_names:
                 continue
-            try:
-                compressed = base64.b16decode(group.attrs[attr_name])
-                deserialized = dill.loads(gzip.decompress(compressed))
-                setattr(obj, attr_name, deserialized)
-            except Exception:
-                setattr(obj, attr_name, group.attrs[attr_name])
+            val = raw
+            if isinstance(val, str):
+                try:
+                    dec = gzip.decompress(base64.b16decode(val))
+                    val = dill.loads(dec)
+                except Exception:
+                    pass
+            setattr(obj, attr_name, val)
 
+        # 2) array datasets
         for ds_name in group.array_keys():
-            if ds_name in skip:
+            if ds_name in skip_names:
                 continue
+            arr = group[ds_name][:]
             try:
-                ds = group[ds_name][:]
-                deserialized = dill.loads(gzip.decompress(ds.tobytes()))
-                setattr(obj, ds_name, deserialized)
+                val = dill.loads(gzip.decompress(arr.tobytes()))
             except Exception:
-                setattr(obj, ds_name, ds)
+                val = arr
+            setattr(obj, ds_name, val)
 
+        # 3) sub-groups
         for subgroup_name, subgroup in group.groups():
-            if subgroup_name not in skip:
-                setattr(obj, subgroup_name, cls._recursive_load(subgroup, skip))
+            # skip by name
+            if subgroup_name in skip_names:
+                continue
+            # peek at its class, skip by type
+            sub_cls = dill.loads(bytes.fromhex(subgroup.attrs["_class_def"]))
+            if issubclass(sub_cls, skip_types):
+                continue
+            # otherwise recurse
+            setattr(
+                obj,
+                subgroup_name,
+                cls._recursive_load(subgroup, skip_names, skip_types),
+            )
 
+        # post-init hook
         if hasattr(obj, "__attrs_post_init__"):
             obj.__attrs_post_init__()
 
@@ -219,20 +246,29 @@ class AutoSerialize:
 
 
 # Load an autoserialized class
-def load(path, skip: Sequence[str] = ()) -> Any:
-    # Make sure skip is a list
-    if isinstance(skip, str):
+def load(
+    path: str | Path,
+    skip: Union[str, type, Sequence[Union[str, type]]] = (),
+) -> Any:
+    """
+    Load an AutoSerialize object from disk, optionally skipping attributes
+    by name or by type.
+    """
+    # normalize skip into names vs types
+    if isinstance(skip, (str, type)):
         skip = [skip]
+    skip_names = {s for s in skip if isinstance(s, str)}
+    skip_types = tuple(s for s in skip if isinstance(s, type))
 
     if os.path.isdir(path):
         store = LocalStore(path)
         root = zarr.group(store=store)
         if "_class_def" not in root.attrs:
-            raise KeyError(
-                "Missing '_class_def' in Zarr root attributes. This directory may not have been saved using AutoSerialize."
-            )
+            raise KeyError("Missing '_class_def' in Zarr root attrs.")
         class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-        return class_def._recursive_load(root, skip=set(skip))
+        return class_def._recursive_load(
+            root, skip_names=skip_names, skip_types=skip_types
+        )
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, "r") as zf:
@@ -240,10 +276,11 @@ def load(path, skip: Sequence[str] = ()) -> Any:
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
             class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-            return class_def._recursive_load(root, skip=set(skip))
+            return class_def._recursive_load(
+                root, skip_names=skip_names, skip_types=skip_types
+            )
 
 
-@staticmethod
 def print_file(path: str | Path) -> None:
     """Print the saved structure of a serialized object (dir or zip) without loading."""
     if os.path.isdir(path):
