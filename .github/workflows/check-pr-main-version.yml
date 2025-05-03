@@ -85,11 +85,9 @@ jobs:
 
             echo "Bumped version to $NEXT_VERSION"
 
-            # Commit the bump
-            git commit -am "Bump version to $NEXT_VERSION"
-
-            # Create a new release branch from the updated PR branch
+            # Create a new release branch and commit bump
             git checkout -b release/$NEXT_VERSION
+            git commit -am "Bump version to $NEXT_VERSION"
             git push origin release/$NEXT_VERSION
 
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
