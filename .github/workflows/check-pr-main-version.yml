@@ -57,6 +57,9 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          echo "bump_pr_required=false" >> $GITHUB_OUTPUT
+          echo "action_should_fail=false" >> $GITHUB_OUTPUT
+
           if [[ "$RESULT" -eq 1 ]]; then
             echo "New version is greater — creating release branch"
             git checkout -b release/$PR_VERSION
@@ -89,13 +92,11 @@ jobs:
             # Expose outputs
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
-
-            # Fail the original PR
-            exit 1
+            echo "action_should_fail=true" >> $GITHUB_OUTPUT
 
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
-            exit 1
+            echo "action_should_fail=true" >> $GITHUB_OUTPUT
           fi
 
       - name: Create version bump PR
@@ -110,3 +111,21 @@ jobs:
             It bumps the patch version and starts a new release process.
           base: main
           token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Comment on original PR
+        if: steps.release_branch.outputs.bump_pr_required == 'true'
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            🚧 This pull request was closed automatically because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
+
+            🔄 A patch bump has been created and submitted as a new pull request:
+            [`release/${{ steps.release_branch.outputs.next_version }}`](https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3Arelease%2F${{ steps.release_branch.outputs.next_version }})
+
+            Please review and merge as appropriate.
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fail original PR
+        if: steps.release_branch.outputs.action_should_fail == 'true'
+        run: exit 1
