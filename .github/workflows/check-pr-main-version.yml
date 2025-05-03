@@ -60,6 +60,7 @@ jobs:
         env:
           RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
           PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
+          HEAD_BRANCH: ${{ github.head_ref }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           GH_TOKEN: ${{ secrets.QUANTEM_BOT_PAT }}
           REPO: ${{ github.repository }}
@@ -71,13 +72,24 @@ jobs:
           echo "bump_pr_required=false" >> $GITHUB_OUTPUT
           echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
+          # Exit early if this PR is from a release/* branch to avoid loops
+          if [[ "$HEAD_BRANCH" == release/* ]]; then
+            echo "PR already comes from a release branch — skipping."
+            exit 0
+          fi
+
           # Checkout the PR branch to include its changes
           git checkout $HEAD_SHA
 
           if [[ "$RESULT" -eq 1 ]]; then
-            echo "New version is greater — creating release branch"
-            git checkout -b release/$PR_VERSION
-            git push origin release/$PR_VERSION
+            # Check if release branch already exists
+            if git ls-remote --exit-code --heads origin "release/$PR_VERSION" > /dev/null; then
+              echo "Release branch release/$PR_VERSION already exists — skipping creation."
+            else
+              echo "New version is greater — creating release branch"
+              git checkout -b release/$PR_VERSION
+              git push origin release/$PR_VERSION
+            fi
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
