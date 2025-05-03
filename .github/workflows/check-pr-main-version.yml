@@ -62,6 +62,9 @@ jobs:
           RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
           PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
@@ -79,7 +82,7 @@ jobs:
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
-            # Apply the version bump on the current PR branch
+
             uv version --bump patch
             uv sync
             NEXT_VERSION=$(uv version --short)
@@ -93,7 +96,6 @@ jobs:
             echo "Bumped version to $NEXT_VERSION"
             git commit -am "Bump version to $NEXT_VERSION"
 
-            # Create the release branch from the updated PR branch
             git checkout -b release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
@@ -101,37 +103,29 @@ jobs:
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
 
+            # Create the pull request using the GitHub CLI
+            gh pr create \
+              --repo "$REPO" \
+              --head "release/$NEXT_VERSION" \
+              --base "main" \
+              --title "Bump version to $NEXT_VERSION" \
+              --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
+
+            # Comment on the original PR
+            gh pr comment "$PR_NUMBER" --body "$(cat <<EOF
+            🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.
+
+            🔄 A patch bump has been created and submitted as a new pull request:
+            [\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)
+
+            Please review and merge as appropriate.
+            EOF
+            )"
+
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
           fi
-
-      - name: Create version bump PR
-        if: steps.release_branch.outputs.bump_pr_required == 'true'
-        uses: peter-evans/create-pull-request@v6
-        with:
-          commit-message: "Bump version to ${{ steps.release_branch.outputs.next_version }}"
-          branch: release/${{ steps.release_branch.outputs.next_version }}
-          title: Bump version to ${{ steps.release_branch.outputs.next_version }}
-          body: |
-            This PR was automatically created because the submitted version matched the current release.
-            It bumps the patch version and starts a new release process.
-          base: main
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Comment on original PR
-        if: steps.release_branch.outputs.bump_pr_required == 'true'
-        uses: peter-evans/create-or-update-comment@v4
-        with:
-          issue-number: ${{ github.event.pull_request.number }}
-          body: |
-            🚧 This pull request cannot be merged because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
-
-            🔄 A patch bump has been created and submitted as a new pull request:
-            [`release/${{ steps.release_branch.outputs.next_version }}`](https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3Arelease%2F${{ steps.release_branch.outputs.next_version }})
-
-            Please review and merge as appropriate.
-          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Fail original PR
         if: steps.release_branch.outputs.action_should_fail == 'true'
