@@ -34,18 +34,17 @@ jobs:
       - name: Fetch main and get version
         id: main_version
         run: |
-          # Stash any changes (if any) to pyproject.toml
-          git stash --include-untracked
 
           # Fetch main without changing the working directory
           git fetch origin main
 
-          # Get version from main branch (pyproject.toml remains unchanged)
+          # Get version from main branch pyproject.toml
+          git checkout origin/main -- pyproject.toml
           MAIN_VERSION=$(uv version --short)
           echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
 
           # Restore any stashed changes (if any)
-          git stash pop || echo "No changes to restore"
+          git restore pyproject.toml
 
       - name: Compare versions
         id: version_comparison
@@ -103,17 +102,17 @@ jobs:
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
 
-            # Create the pull request using the GitHub CLI
-            gh pr create \
-              --repo "$REPO" \
-              --head "release/$NEXT_VERSION" \
-              --base "main" \
-              --title "Bump version to $NEXT_VERSION" \
-              --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
+            # # Create the pull request using the GitHub CLI
+            # gh pr create \
+            #   --repo "$REPO" \
+            #   --head "release/$NEXT_VERSION" \
+            #   --base "main" \
+            #   --title "Bump version to $NEXT_VERSION" \
+            #   --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
 
-            # Comment on PR
-            gh pr comment "$PR_NUMBER" --body \
-              "🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n[\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)\n\nPlease review and merge as appropriate."
+            # # Comment on PR
+            # gh pr comment "$PR_NUMBER" --body \
+            #   "🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n[\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)\n\nPlease review and merge as appropriate."
 
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
