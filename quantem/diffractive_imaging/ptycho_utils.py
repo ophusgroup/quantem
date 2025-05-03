@@ -1,9 +1,17 @@
-from typing import Any, Generator
+from typing import TYPE_CHECKING, Any, Generator
 
-import cupy as cp
 import numpy as np
-import torch
-from torch import Tensor
+
+from quantem.core import config
+
+if TYPE_CHECKING:
+    import cupy as cp
+    import torch
+else:
+    if config.get("has_cupy"):
+        import cupy as cp
+    if config.get("has_torch"):
+        import torch
 
 
 def subdivide_into_batches(
@@ -64,20 +72,22 @@ def generate_batches(
         start = end
 
 
-def get_array_module(array: Tensor | np.ndarray | cp.ndarray):
-    if isinstance(array, Tensor):
-        return torch
-    elif isinstance(array, np.ndarray):
+def get_array_module(array: "torch.Tensor | np.ndarray | cp.ndarray"):
+    if config.get("has_torch"):
+        if isinstance(array, torch.Tensor):
+            return torch
+    if config.get("has_cupy"):
+        if isinstance(array, cp.ndarray):
+            return cp
+    if isinstance(array, np.ndarray):
         return np
-    elif isinstance(array, cp.ndarray):
-        return cp
     else:
         raise NotImplementedError
 
 
 def fourier_shift(
-    array: Tensor | np.ndarray | cp.ndarray, positions: Tensor | np.ndarray | cp.ndarray
-) -> Tensor | np.ndarray | cp.ndarray:
+    array: "torch.Tensor | np.ndarray | cp.ndarray", positions: "torch.Tensor | np.ndarray | cp.ndarray"
+) -> "torch.Tensor | np.ndarray | cp.ndarray":
     """Fourier-shift array by flat array of positions."""
     xp = get_array_module(array)
     phase = fourier_translation_operator(positions, array.shape, device=array.device)
@@ -88,10 +98,10 @@ def fourier_shift(
 
 
 def fourier_translation_operator(
-    positions: Tensor | np.ndarray,
+    positions: "torch.Tensor | np.ndarray",
     shape: tuple | np.ndarray,
-    device: str | torch.device = "cpu",
-) -> Tensor:
+    device: "str | torch.device" = "cpu",
+) -> "torch.Tensor":
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
 
     xp = get_array_module(positions)

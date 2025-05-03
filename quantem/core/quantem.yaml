@@ -3,9 +3,8 @@
 
 # The device can be either 'cpu', "gpu", or "cuda:<x>". "gpu" defaults to "cuda:0"
 device: cpu
-# The float precision to use. Options are 'float32' or 'float64' 
-# ?? will this control both real and complex? 
-precision: float32
+dtype_real: float32
+dtype_complex: complex64
 # global verbosity, ?? unecessary 
 verbose: 1
 cupy:
