@@ -1,4 +1,7 @@
 name: Check PR version
+permissions:
+  contents: write
+  pull-requests: write
 
 on:
   pull_request:
@@ -73,7 +76,7 @@ jobs:
               echo "Version bump had no effect — maybe it was already bumped?"
               exit 1
             fi
-            
+
             echo "Bumped version to $NEXT_VERSION"
 
             # Commit the bumped version
