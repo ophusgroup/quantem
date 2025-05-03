@@ -35,8 +35,8 @@ jobs:
         id: main_version
         run: |
           git fetch origin main
-          git checkout origin/main -- pyproject.toml
-          MAIN_VERSION=$(uv version --short)
+          git show origin/main:pyproject.toml > pyproject_main.toml
+          MAIN_VERSION=$(uv version --short --project pyproject_main.toml)
           echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
 
       - name: Compare versions
