@@ -57,39 +57,40 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
 
+          # Default outputs
           echo "bump_pr_required=false" >> $GITHUB_OUTPUT
           echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
           if [[ "$RESULT" -eq 1 ]]; then
             echo "New version is greater — creating release branch"
+            git checkout "$HEAD_BRANCH"
             git checkout -b release/$PR_VERSION
             git push origin release/$PR_VERSION
 
           elif [[ "$RESULT" -eq 0 ]]; then
             echo "Version matches — bumping version and creating new release branch"
 
-            # Checkout the PR branch
             git checkout "$HEAD_BRANCH"
 
-            # Bump version using uv
+            # Bump the version
             uv version --bump patch
             NEXT_VERSION=$(uv version --short)
 
             if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
               echo "Version bump had no effect — maybe it was already bumped?"
-              exit 1
+              echo "action_should_fail=true" >> $GITHUB_OUTPUT
+              exit 0
             fi
 
             echo "Bumped version to $NEXT_VERSION"
 
-            # Commit the bumped version
+            # Commit the bump
             git commit -am "Bump version to $NEXT_VERSION"
 
-            # Create a new release branch from the updated branch
+            # Create a new release branch from the updated PR branch
             git checkout -b release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
-            # Expose outputs
             echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
             echo "bump_pr_required=true" >> $GITHUB_OUTPUT
             echo "action_should_fail=true" >> $GITHUB_OUTPUT
@@ -118,7 +119,7 @@ jobs:
         with:
           issue-number: ${{ github.event.pull_request.number }}
           body: |
-            🚧 This pull request was closed automatically because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
+            🚧 This pull request cannot be merged because the submitted version (`${{ steps.pr_version.outputs.pr_version }}`) matches the current version on `main`.
 
             🔄 A patch bump has been created and submitted as a new pull request:
             [`release/${{ steps.release_branch.outputs.next_version }}`](https://github.com/${{ github.repository }}/pulls?q=is%3Apr+head%3Arelease%2F${{ steps.release_branch.outputs.next_version }})
