@@ -21,12 +21,6 @@ jobs:
           GH_TOKEN: ${{ secrets.QUANTEM_BOT_PAT }}
           REPO: ${{ github.repository }}
         run: |
-          # Check if PR already exists
-          if gh pr list --head main --base dev --repo "$REPO" --json number --jq '.[0]'; then
-            echo "PR from main to dev already exists. Skipping."
-            exit 0
-          fi
-
           # Create the pull request
           gh pr create \
             --repo "$REPO" \
