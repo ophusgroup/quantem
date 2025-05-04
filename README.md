@@ -12,9 +12,9 @@ You can install it using `pip install quantem`.
 
 We use [uv](https://docs.astral.sh/uv/) to manage the package.
 
-The following should get you started:
+Getting started:
 
-- [install uv](https://docs.astral.sh/uv/getting-started/installation/),
+- [install uv](https://docs.astral.sh/uv/getting-started/installation/)
 - `git clone` the repo and `cd` into the directory
 - run `uv sync` to install all the dependencies in an editable environment
 
