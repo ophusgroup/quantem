@@ -29,7 +29,7 @@ Running python/scripts in environment:
 
 - use `uv run python`, `uv run jupyterlab` etc. to automatically activate the environment and run your command
 - alternatively use `source .venv/bin/activate` to explicitly activate environment and use `python`, `jupyterlab` etc. as usual
-  - note that if you're using an IDE like VS Code, it probably automatically activates the environment for you
+  - note that if you're using an IDE like VS Code, it probably activates the environment automatically
 
 ## License
 
