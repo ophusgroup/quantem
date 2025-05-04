@@ -25,7 +25,7 @@ Dependency management:
 - use `uv add dev_package_name --dev` to add a dev dependency, i.e. that devs need (e.g. pytest) but you don't want shipped to users
 - use `uv pip install testing_package_name` to install a package you think you might need, but don't want to add to dependencies just yet
 
-Running python/scripts inside environment:
+Running python/scripts in environment:
 
 - use `uv run python`, `uv run jupyterlab` etc. to automatically activate the environment and run your command
 - alternatively use `source .venv/bin/activate` to explicitly activate environment and use `python`, `jupyterlab` etc. as usual
