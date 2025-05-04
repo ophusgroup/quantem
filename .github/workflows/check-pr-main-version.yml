@@ -66,11 +66,11 @@ jobs:
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
+
+          set -e # Exit on errors
+
           git config user.name "quantem-bot"
           git config user.email "quantembot@gmail.com"
-
-          echo "bump_pr_required=false" >> $GITHUB_OUTPUT
-          echo "action_should_fail=false" >> $GITHUB_OUTPUT
 
           # Exit early if this PR is from a release/* branch to avoid loops
           if [[ "$HEAD_BRANCH" == release/* ]]; then
@@ -78,7 +78,6 @@ jobs:
             exit 0
           fi
 
-          # Checkout the PR branch to include its changes
           git checkout $HEAD_SHA
 
           if [[ "$RESULT" -eq 1 ]]; then
@@ -100,7 +99,6 @@ jobs:
 
             if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
               echo "Version bump had no effect — maybe it was already bumped?"
-              echo "action_should_fail=true" >> $GITHUB_OUTPUT
               exit 0
             fi
 
@@ -110,27 +108,18 @@ jobs:
             git checkout -b release/$NEXT_VERSION
             git push origin release/$NEXT_VERSION
 
-            echo "next_version=$NEXT_VERSION" >> $GITHUB_OUTPUT
-            echo "bump_pr_required=true" >> $GITHUB_OUTPUT
-            echo "action_should_fail=true" >> $GITHUB_OUTPUT
-
-            # Create the pull request using the GitHub CLI
+            PR_BODY=$(printf "This PR was automatically created because the submitted version \`%s\` matched the current release on \`main\`.\n\nIt bumps the patch version to \`%s\` and starts a new release process." "$PR_VERSION" "$NEXT_VERSION")
             gh pr create \
               --repo "$REPO" \
               --head "release/$NEXT_VERSION" \
               --base "main" \
               --title "Bump version to $NEXT_VERSION" \
-              --body "This PR was automatically created because the submitted version matched the current release.\nIt bumps the patch version and starts a new release process."
+              --body "$PR_BODY"
 
-            # Comment on PR
-            gh pr comment "$PR_NUMBER" --body \
-              "🚧 This pull request cannot be merged because the submitted version (\`$PR_VERSION\`) matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n[\`release/$NEXT_VERSION\`](https://github.com/$REPO/pulls?q=is%3Apr+head%3Arelease%2F$NEXT_VERSION)\n\nPlease review and merge as appropriate."
+            CLOSE_COMMENT=$(printf "❌ **This pull request has been automatically closed** because the submitted version \`%s\` matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n\n➡️ [\`release/%s\`](https://github.com/%s/pulls?q=is%%3Apr+head%%3Arelease%%2F%s)\n\nPlease review and merge as appropriate." "$PR_VERSION" "$NEXT_VERSION" "$REPO" "$NEXT_VERSION")
+            gh pr close "$PR_NUMBER" --comment "$CLOSE_COMMENT"
 
           elif [[ "$RESULT" -eq -1 ]]; then
             echo "Error: New version is less than main — rejecting."
-            echo "action_should_fail=true" >> $GITHUB_OUTPUT
+            exit 1
           fi
-
-      - name: Fail original PR
-        if: steps.release_branch.outputs.action_should_fail == 'true'
-        run: exit 1
