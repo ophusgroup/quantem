@@ -275,7 +275,9 @@ class Dataset(AutoSerialize):
 
     def pad(
         self,
-        pad_width: Union[int, tuple[int, int], tuple[tuple[int, int], ...]],
+        pad_width: Union[int, tuple[int, int], tuple[tuple[int, int], ...]]
+        | None = None,
+        output_shape: tuple[int, ...] | None = None,
         modify_in_place: bool = False,
         **kwargs: Any,
     ) -> Optional["Dataset"]:
@@ -297,7 +299,26 @@ class Dataset(AutoSerialize):
         Dataset or None
             Padded Dataset if modify_in_place is False, otherwise None.
         """
-        padded_array = np.pad(self.array, pad_width=pad_width, **kwargs)
+        if pad_width is not None:
+            if output_shape is not None:
+                raise ValueError("pad_width and output_shape cannot both be specified.")
+            padded_array = np.pad(self.array, pad_width=pad_width, **kwargs)
+        elif output_shape is not None:
+            if np.ndim(output_shape) != self.ndim:
+                raise ValueError("output_shape must be a tuple of length ndim.")
+            padded_array = np.pad(
+                self.array,
+                pad_width=[
+                    (
+                        max(0, int(np.floor((output_shape[i] - self.shape[i]) / 2))),
+                        max(0, int(np.ceil((output_shape[i] - self.shape[i]) / 2))),
+                    )
+                    for i in range(self.ndim)
+                ],
+                **kwargs,
+            )
+        else:
+            raise ValueError("pad_width or output_shape must be specified.")
 
         if modify_in_place:
             self._array = padded_array

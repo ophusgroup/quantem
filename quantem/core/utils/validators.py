@@ -1,13 +1,10 @@
-import array
 from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 from warnings import warn
 
 import numpy as np
-from numpy import ndarray
 from numpy.typing import DTypeLike
 
 from quantem.core import config
-from quantem.core.utils.utils import as_numpy
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -112,7 +109,9 @@ def validate_ndinfo(
             raise ValueError(f"{name} must contain numeric values")
         return arr
     elif not isinstance(value, (np.ndarray, tuple, list)):
-        raise TypeError(f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}")
+        raise TypeError(
+            f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}"
+        )
 
     try:
         arr = np.array(value, dtype=dtype).flatten()
@@ -156,7 +155,9 @@ def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List
     elif not isinstance(value, (list, tuple)):
         raise TypeError(f"Units must be a list, tuple, or string, got {type(value)}")
     elif len(value) != ndim:
-        raise ValueError(f"Length of units ({len(value)}) must match data ndim ({ndim})")
+        raise ValueError(
+            f"Length of units ({len(value)}) must match data ndim ({ndim})"
+        )
 
     return [str(unit) for unit in value]
 
@@ -243,7 +244,9 @@ def validate_vector_units(units: Optional[List[str]], num_fields: int) -> List[s
     if not isinstance(units, (list, tuple)):
         raise TypeError(f"units must be a list or tuple, got {type(units)}")
     if len(units) != num_fields:
-        raise ValueError(f"Length of units ({len(units)}) must match num_fields ({num_fields})")
+        raise ValueError(
+            f"Length of units ({len(units)}) must match num_fields ({num_fields})"
+        )
     return [str(unit) for unit in units]
 
 
@@ -271,7 +274,9 @@ def validate_vector_data_for_inference(data: List[Any]) -> Tuple[Tuple[int, ...]
     return shape, inferred_num_fields
 
 
-def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: int) -> List[Any]:
+def validate_vector_data(
+    data: List[Any], shape: Tuple[int, ...], num_fields: int
+) -> List[Any]:
     """
     Validate that the data structure matches the expected shape and number of fields.
 
@@ -331,7 +336,7 @@ def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: in
 
 # --- Miscellaneous Validation Functions ---
 ### for now just adding all the validator cases, can combine later as necessary
-### currently doing a mix of converting and validating, probably should make that explicit 
+### currently doing a mix of converting and validating, probably should make that explicit
 def validate_gt(value: float | int, cutoff: float | int, name: str) -> float | int:
     if value <= cutoff:
         raise ValueError(f"{name} must be greater than {cutoff}, got {value}")
@@ -367,9 +372,12 @@ def validate_arraylike(value: Any, name: str):
         try:
             return np.array(value)
         except Exception as e:
-            raise TypeError(f"{name} must be array or tensorlike, got type {type(value)}: {e}")
+            raise TypeError(
+                f"{name} must be array or tensorlike, got type {type(value)}: {e}"
+            )
 
-def validate_xplike(value: Any, name: str):
+
+def validate_xplike(value: Any, name: str) -> np.ndarray:
     if isinstance(value, np.ndarray):
         return value
     if config.get("has_cupy"):
@@ -378,18 +386,20 @@ def validate_xplike(value: Any, name: str):
     if config.get("has_torch"):
         if isinstance(value, torch.Tensor):
             return value.cpu().detach().numpy()
-    else: 
-        try:
-            return np.array(value)
-        except Exception as e:
-            raise TypeError(f"{name} must be array like, got type {type(value)}: {e}")
+    try:
+        return np.array(value)
+    except Exception as e:
+        raise TypeError(f"{name} must be array like, got type {type(value)}: {e}")
+
 
 def canonical_dtype_str(dtype):
     """
     Converts a dtype (NumPy, CuPy, torch, or string) to a canonical string for comparison.
     """
     if isinstance(dtype, str):
-        return dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
+        return (
+            dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
+        )
     elif hasattr(dtype, "name"):
         return dtype.name.lower()
     elif config.get("has_torch"):
@@ -426,7 +436,9 @@ def validate_array(
     return value
 
 
-def validate_np_len(value: np.ndarray | float | int, length: int, name: str = "") -> np.ndarray:
+def validate_np_len(
+    value: np.ndarray | float | int, length: int, name: str = ""
+) -> np.ndarray:
     if isinstance(value, np.ndarray):
         pass
     elif isinstance(value, (float, int)):
@@ -449,13 +461,22 @@ def validate_arr_gt(
 
 
 def validate_tens_shape(
-    value: "np.ndarray | cp.ndarray | torch.Tensor", shape: np.ndarray | tuple, name: str
+    value: "np.ndarray | cp.ndarray | torch.Tensor",
+    shape: np.ndarray | tuple,
+    name: str,
 ) -> "np.ndarray | cp.ndarray | torch.Tensor":
     if not isinstance(value, (np.ndarray, cp.ndarray, torch.Tensor)):
         raise TypeError(f"{name} must be a numpy array, cupy array, or torch tensor")
     if not np.array_equal(value.shape, shape):
         raise ValueError(f"{name} must have shape {shape}, got {value.shape}")
     return value
+
+
+def validate_dict_keys(dict: dict, valid_keys: list):
+    keys = list(dict.keys())
+    invalid_keys = list(set(keys) - set(valid_keys))
+    if invalid_keys:
+        raise ValueError(f"Invalid keys: {invalid_keys}")
 
 
 # def validate_dtype(value: Any, dtype: DTypeLike, name: str) -> DTypeLike:

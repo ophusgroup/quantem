@@ -1,7 +1,9 @@
+import math
+from itertools import product
 from typing import TYPE_CHECKING
 
 import numpy as np
-import math 
+from tqdm import tqdm
 
 from quantem.core import config
 from quantem.core.config import (
@@ -18,7 +20,8 @@ else:
         import torch
 
 
-#region --- array module stuff ---
+# region --- array module stuff ---
+
 
 def get_array_module(array: "np.ndarray | cp.ndarray"):
     """Returns np or cp depending on the array type."""
@@ -58,24 +61,43 @@ def as_numpy(array: np.ndarray | cp.ndarray | torch.Tensor) -> np.ndarray:
             return array.cpu().detach().numpy()
     if isinstance(array, np.ndarray):
         return array
-    try:    
+    try:
         return np.asarray(array)
-    except (ValueError, TypeError): 
-        raise TypeError(f"Input is not a numpy array or convertible to one: {type(array)}")
+    except (ValueError, TypeError):
+        raise TypeError(
+            f"Input is not a numpy array or convertible to one: {type(array)}"
+        )
 
-#endregion
+
+# endregion
 
 
-#region --- TEM ---
+# region --- TEM ---
 
-def electron_wavelength_angstrom(E_eV:float):
+
+def electron_wavelength_angstrom(E_eV: float):
     m = 9.109383 * 10**-31
     e = 1.602177 * 10**-19
     c = 299792458
     h = 6.62607 * 10**-34
 
-    lam = h / math.sqrt(2 * m * e * E_eV) / math.sqrt(1 + e * E_eV / 2 / m / c**2) * 10**10
+    lam = (
+        h
+        / math.sqrt(2 * m * e * E_eV)
+        / math.sqrt(1 + e * E_eV / 2 / m / c**2)
+        * 10**10
+    )
     return lam
 
-#endregion
 
+# endregion
+
+
+# region --- generally useful bits ---
+
+
+def tqdmnd(*iterables, **kwargs):
+    return tqdm(list(product(*iterables)), **kwargs)
+
+
+# endregion
