@@ -853,8 +853,8 @@ class PtychographyBase(AutoSerialize):
 
             intensities = get_shifted_array(
                 diff_intensities[rh, rw],
-                -com_fitted_h[rh, rw],
-                -com_fitted_w[rh, rw],
+                -(com_fitted_h[rh, rw] + 0.5),
+                -(com_fitted_w[rh, rw] + 0.5),
                 bilinear=bilinear,
             )
 
@@ -1155,10 +1155,10 @@ class PtychographyBase(AutoSerialize):
                 name="propagators",
                 dtype=config.get("dtype_complex"),
                 ndim=3,
-                shape=(self.num_probes - 1, *self.roi_shape),
+                shape=(self.num_slices - 1, *self.roi_shape),
                 expand_dims=False,
             )
-            self._propagators = prop
+            self._propagators = self._to_xp(prop)
 
     @property
     def num_probes(self) -> int:
@@ -1203,7 +1203,9 @@ class PtychographyBase(AutoSerialize):
             arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
             self._slice_thicknesses = arr
 
-        if not hasattr(self, "_propagators"):
+        if hasattr(
+            self, "_propagators"
+        ):  # propagators already set, update with new slices
             self._compute_propagator_arrays()
 
     @property
@@ -1626,6 +1628,20 @@ class PtychographyBase(AutoSerialize):
         if self.verbose:
             print(*args, **kwargs)
 
+    def _to_xp(
+        self, arr: "np.ndarray|cp.ndarray|list|tuple"
+    ) -> "np.ndarray|cp.ndarray":
+        """returns a copy of arr as a np or cp array"""
+        if "cuda" in self.device:  # this should only be possible if "has_cupy"
+            return cp.asarray(arr)
+        elif self.device == "cpu":
+            if config.get("has_cupy"):
+                if isinstance(arr, cp.ndarray):
+                    return cp.to_numpy(arr)
+            return np.asarray(arr)
+        else:
+            raise NotImplementedError(f"Unknown config device {self.device}")
+
     def _check_dset(self):
         if not hasattr(self, "_dset"):
             raise AttributeError(
@@ -1665,21 +1681,24 @@ class PtychographyBase(AutoSerialize):
         self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
     ):
         shifted_input_probes = fourier_shift(probe, fract_positions)
-        # shifted_input probe shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        shifted_input_probes = np.swapaxes(shifted_input_probes, 0, 1)[None]
-        print("shifted input_probes shape: ", shifted_input_probes.shape)
+        # initial shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        print("shifted input_probes shape1 : ", shifted_input_probes.shape)
+        # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+        shifted_input_probes = np.repeat(
+            np.swapaxes(shifted_input_probes, 0, 1)[None], self.num_slices, 0
+        )
+        print("shifted input_probes shape2: ", shifted_input_probes.shape)
         obj_patches = self._get_object_patches(obj, patch_row, patch_col)
-        # obj_patches shape: (batch_size, num_slices, roi_shape[0], roi_shape[1])
-        obj_patches = obj_patches[None]
+        # obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
         print("obj patches shape: ", obj_patches.shape)
-        print("shifted input_probes shape: ", shifted_input_probes.shape)
         propagated_probes, overlap = self.overlap_projection(
             obj_patches, shifted_input_probes, descan_shifts
         )
-        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        # propagated_probes shape: (batch_size, nprobes, nslices, roi_shape[0], roi_shape[1])
-        # same propagated_probes shape as shifted_input_probes # TODO this is wrong, should be each slice
-        overlap = overlap[:, 0]
+        # same propagated_probes shape as shifted_input_probes
+        # ov shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+        # print("overlap shape0: ", overlap.shape)
+        # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+        # overlap = overlap[0] # remove the num_slices channel
         print(
             "propagated_probes shape: ",
             propagated_probes.shape,
@@ -1687,6 +1706,7 @@ class PtychographyBase(AutoSerialize):
             overlap.shape,
         )
         if descan_shifts is not None:
+            # TODO move applying plane wave descan shift here
             ### applying plane wave shift here to overlap, reduce need for extra FFT
             #     shifts = fourier_translation_operator(
             #         descan_shifts, self.roi_shape, device=self.device
@@ -1741,27 +1761,18 @@ class PtychographyBase(AutoSerialize):
         return patches
 
     def overlap_projection(self, obj_patches, input_probes, descan_shifts=None):
-        """Multiplies `input_probes` with roi-shaped patches from `obj_array`."""
+        """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
+        This version is for GD only -- AD does not require all the propagated probe
+        slices and trying to store them causes in-place issues
+        """
+        # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+        # obj_patches shape: (nslices, batch_size, roi_shape[0], roi_shape[1])
+        overlap = obj_patches[0] * input_probes[0]
+        for s in range(1, self.num_slices):
+            input_probes[s] = self._propagate_array(overlap, self._propagators[s - 1])
+            overlap = obj_patches[s] * input_probes[s]
+        propagated_probes = input_probes
 
-        # # shifted_input probe shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        # # obj_patches shape: (batch_size, num_slices, roi_shape[0], roi_shape[1])
-        # obj_patches = obj_patches[:, None]
-        # input_probes = input_probes[:, :, None]
-        # # shape now: (batch_size, nprobes, num_slices, roi_shape[0], roi_shape[1])
-
-        if self.num_slices == 1:
-            overlap = obj_patches * input_probes
-            propagated_probes = input_probes
-        else:
-            # input_probes_slices = self.xp.ones_like(obj_patches)
-            # input_probes_slices[0] = input_probes
-            # overlap = None
-            # for s in range(self.num_slices):
-            #     overlap = obj_patches[s] * input_probes_slices[s]
-            #     if s+1 < self.num_slices:
-            #         input_probes_slices[s+1] = self._propagate_array(overlap, self._propagators[s])
-            # propagated_probes = input_probes_slices
-            raise NotImplementedError
         return propagated_probes, overlap
 
     def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):

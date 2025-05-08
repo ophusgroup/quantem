@@ -92,11 +92,6 @@ class PtychographyGD(PtychographyBase):
                     patch_col[batch_indices],
                     pos_frac[batch_indices],
                 )
-
-                print(
-                    "overlap max min std: ", overlap.max(), overlap.min(), overlap.std()
-                )
-
                 obj, probe = self.adjoint_operator(
                     obj,
                     probe,
@@ -109,7 +104,6 @@ class PtychographyGD(PtychographyBase):
                     step_size,
                     fix_probe=fix_probe,
                 )
-                print("obj2 max min std: ", obj.max(), obj.min(), obj.std())
 
                 error += self.error_estimate(
                     obj,
@@ -150,11 +144,13 @@ class PtychographyGD(PtychographyBase):
         fix_probe: bool = False,
     ):
         """Single-pass adjoint operator."""
-        # print("amplitudes max min std: ", amplitudes.max(), amplitudes.min(), amplitudes.std())
+        print(f"amp {amplitudes.shape} overlap: {overlap.shape}")
         modified_overlap = self.fourier_projection(amplitudes, overlap)
-        # print("modified overlap max min std: ", modified_overlap.max(), modified_overlap.min(), modified_overlap.std())
+        # mod_overlap shape same as overlap: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+        print("modified overlap shape: ", modified_overlap.shape)
         gradient = self.gradient_step(overlap, modified_overlap)
-        print("gradient max min std: ", gradient.max(), gradient.min(), gradient.std())
+        # grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+        print("gradient shape: ", gradient.shape)
         obj_array, probe_array = self.update_object_and_probe(
             obj_array,
             probe_array,
@@ -172,7 +168,6 @@ class PtychographyGD(PtychographyBase):
         """Replaces the Fourier amplitude of overlap with the measured data."""
         xp = self.xp
         fourier_overlap = xp.fft.fft2(overlap_array)
-        # print("f_overlap max/min/mean: ", fourier_overlap.max(), fourier_overlap.min(), fourier_overlap.mean())
         if self.num_probes == 1:
             fourier_modified_overlap = measured_amplitudes * xp.exp(
                 1.0j * xp.angle(fourier_overlap)
@@ -181,7 +176,7 @@ class PtychographyGD(PtychographyBase):
             farfield_amplitudes = self.estimate_amplitudes(overlap_array)
             farfield_amplitudes[farfield_amplitudes == 0] = xp.inf
             amplitude_modification = measured_amplitudes / farfield_amplitudes
-            fourier_modified_overlap = amplitude_modification[:, None] * fourier_overlap
+            fourier_modified_overlap = amplitude_modification * fourier_overlap
 
         return xp.fft.ifft2(fourier_modified_overlap)
 
@@ -206,19 +201,22 @@ class PtychographyGD(PtychographyBase):
         """
         obj_shape = obj_array.shape[-2:]
 
+        print("\tupd obj_patches.shape: ", obj_patches.shape)
+
         for s in reversed(range(self.num_slices)):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
-            probe_normalization = self.xp.zeros_like(obj_array[s])
-            object_update = self.xp.zeros_like(obj_array[s])
+            probe_normalization = self._to_xp(np.zeros_like(obj_array[s]))
+            object_update = self._to_xp(np.zeros_like(obj_array[s]))
+            print("\tobj slice: ", obj_slice.shape)
 
             for a0 in range(self.num_probes):
                 probe = probe_slice[a0]
-                obj = obj_slice[a0]
+                obj = obj_slice
                 grad = gradient[a0]
                 # object-update
                 probe_normalization += sum_patches(
-                    self.xp.abs(probe) ** 2,
+                    np.abs(probe) ** 2,
                     patch_row,
                     patch_col,
                     obj_shape,
@@ -226,16 +224,14 @@ class PtychographyGD(PtychographyBase):
 
                 if self.object_type == "potential":
                     object_update += step_size * sum_patches(
-                        self.xp.real(
-                            -1j * self.xp.conj(obj) * self.xp.conj(probe) * grad
-                        ),
+                        np.real(-1j * np.conj(obj) * np.conj(probe) * grad),
                         patch_row,
                         patch_col,
                         obj_shape,
                     )
                 else:
                     object_update += step_size * sum_patches(
-                        self.xp.conj(probe) * grad,
+                        np.conj(probe) * grad,
                         patch_row,
                         patch_col,
                         obj_shape,
@@ -244,22 +240,17 @@ class PtychographyGD(PtychographyBase):
                 obj_array[s] += object_update / probe_normalization
 
                 # back-transmit
-                gradient *= self.xp.conj(obj_slice)
+                gradient *= np.conj(obj_slice)
 
                 if s > 0:
-                    raise NotImplementedError
                     # back-propagate
                     gradient = self._propagate_array(
-                        gradient, self.xp.conj(self._propagators[s - 1])
+                        gradient, np.conj(self._propagators[s - 1])
                     )
                 elif not fix_probe:
-                    obj_normalization = self.xp.sum(
-                        self.xp.abs(obj_slice) ** 2, axis=(0, 1)
-                    ).max()
+                    obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
                     probe_array = probe_array + (
-                        step_size
-                        * self.xp.sum(gradient, axis=(0, 1))
-                        / obj_normalization
+                        step_size * np.sum(gradient, axis=(0, 1)) / obj_normalization
                     )
         return obj_array, probe_array
 
