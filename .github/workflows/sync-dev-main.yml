@@ -1,0 +1,30 @@
+name: Sync dev with main
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-pr-main-to-dev:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Open PR from main to dev
+        env:
+          GH_TOKEN: ${{ secrets.QUANTEM_BOT_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          # Create the pull request
+          gh pr create \
+            --repo "$REPO" \
+            --head main \
+            --base dev \
+            --title "Sync main to dev" \
+            --body "This PR syncs \`dev\` with \`main\` following a release."
