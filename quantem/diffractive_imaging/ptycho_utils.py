@@ -107,20 +107,20 @@ def fourier_translation_operator(
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
 
     xp = get_array_module(positions)
-    nx, ny = shape[-2:]
-    x = positions[..., 0][:, None, None]
-    y = positions[..., 1][:, None, None]
+    nh, nw = shape[-2:]
+    h = positions[..., 0][:, None, None]
+    w = positions[..., 1][:, None, None]
     if xp is torch:
-        kx = torch.fft.fftfreq(nx, d=1.0, device=device)
-        ky = torch.fft.fftfreq(ny, d=1.0, device=device)
-        ramp_x = torch.exp(-2.0j * torch.pi * kx[None, :, None] * x)
-        ramp_y = torch.exp(-2.0j * torch.pi * ky[None, None, :] * y)
+        kx = torch.fft.fftfreq(nh, d=1.0, device=device)
+        ky = torch.fft.fftfreq(nw, d=1.0, device=device)
+        ramp_x = torch.exp(-2.0j * torch.pi * kx[None, :, None] * h)
+        ramp_y = torch.exp(-2.0j * torch.pi * ky[None, None, :] * w)
     else:
         assert xp in [cp, np]
-        kx = xp.fft.fftfreq(nx, d=1.0)
-        ky = xp.fft.fftfreq(ny, d=1.0)
-        ramp_x = xp.exp(-2.0j * xp.pi * kx[None, :, None] * x)
-        ramp_y = xp.exp(-2.0j * xp.pi * ky[None, None, :] * y)
+        kx = xp.fft.fftfreq(nh, d=1.0)
+        ky = xp.fft.fftfreq(nw, d=1.0)
+        ramp_x = xp.exp(-2.0j * xp.pi * kx[None, :, None] * h)
+        ramp_y = xp.exp(-2.0j * xp.pi * ky[None, None, :] * w)
 
     ramp = ramp_x * ramp_y
     if len(shape) == 2:

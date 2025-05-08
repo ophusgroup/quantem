@@ -27,13 +27,18 @@ from quantem.diffractive_imaging.complexprobe import (
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
     fit_origin,
+    fourier_shift,
     generate_batches,
+    get_array_module,
     get_shifted_array,
     sum_patches,
 )
 
 if TYPE_CHECKING:
     import cupy as cp
+else:
+    if config.get("has_cupy"):
+        import cupy as cp
 
 """
 large scale design patterns:
@@ -53,7 +58,6 @@ large scale design patterns:
 """
 
 # TODO
-# preprocess
 # forward pass (be sure to have multislice and mixed state intrinsic)
 # ptychoAD
 # ptychoGD
@@ -334,8 +338,8 @@ class PtychographyBase(AutoSerialize):
                 dp_mask = np.asarray(dp_mask, dtype=config.get("dtype_real"))
 
             # Coordinates
-            kw = np.arange(intensities.shape[-2], dtype=config.get("dtype_real"))
-            kh = np.arange(intensities.shape[-1], dtype=config.get("dtype_real"))
+            kh = np.arange(intensities.shape[-2], dtype=config.get("dtype_real"))
+            kw = np.arange(intensities.shape[-1], dtype=config.get("dtype_real"))
             kha, kwa = np.meshgrid(kh, kw, indexing="ij")
 
             if vectorized_calculation:
@@ -348,11 +352,11 @@ class PtychographyBase(AutoSerialize):
                 intensities_sum = np.sum(intensities_mask, axis=(-2, -1))
 
                 com_measured_h = (
-                    np.sum(intensities_mask * kwa[None, None], axis=(-2, -1))
+                    np.sum(intensities_mask * kha[None, None], axis=(-2, -1))
                     / intensities_sum
                 )
                 com_measured_w = (
-                    np.sum(intensities_mask * kha[None, None], axis=(-2, -1))
+                    np.sum(intensities_mask * kwa[None, None], axis=(-2, -1))
                     / intensities_sum
                 )
 
@@ -1023,7 +1027,7 @@ class PtychographyBase(AutoSerialize):
         return
 
     def _set_patch_indices(self):
-        x0 = np.round(self.positions_px[:, 0]).astype(np.int32)
+        x0 = np.round(self.positions_px[:, 0]).astype(np.int32)  # can fix here
         y0 = np.round(self.positions_px[:, 1]).astype(np.int32)
 
         x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(
@@ -1244,7 +1248,10 @@ class PtychographyBase(AutoSerialize):
             shape=self.object_shape_full,
             expand_dims=True,
         )
-        masked_obj = np.abs(obj) * np.exp(1.0j * np.angle(obj) * self._object_fov_mask)
+        xp = get_array_module(obj)
+        masked_obj = np.abs(obj) * np.exp(
+            1.0j * np.angle(obj) * xp.asarray(self._object_fov_mask)
+        )
         self._object = masked_obj.astype(self._object_dtype)
 
     # @property
@@ -1643,6 +1650,156 @@ class PtychographyBase(AutoSerialize):
         if hasattr(self, name):
             if getattr(self, name) != new_val:
                 self._preprocessed = False
+
+    def _to_numpy(self, array: "np.ndarray | cp.ndarray"):
+        if self.device == "gpu":
+            if isinstance(array, cp.ndarray):
+                return cp.asnumpy(array)
+        return array
+
+    # endregion
+
+    # region --- forward model ---
+
+    def forward_operator(
+        self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
+    ):
+        shifted_input_probes = fourier_shift(probe, fract_positions)
+        # shifted_input probe shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        shifted_input_probes = np.swapaxes(shifted_input_probes, 0, 1)[None]
+        print("shifted input_probes shape: ", shifted_input_probes.shape)
+        obj_patches = self._get_object_patches(obj, patch_row, patch_col)
+        # obj_patches shape: (batch_size, num_slices, roi_shape[0], roi_shape[1])
+        obj_patches = obj_patches[None]
+        print("obj patches shape: ", obj_patches.shape)
+        print("shifted input_probes shape: ", shifted_input_probes.shape)
+        propagated_probes, overlap = self.overlap_projection(
+            obj_patches, shifted_input_probes, descan_shifts
+        )
+        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        # propagated_probes shape: (batch_size, nprobes, nslices, roi_shape[0], roi_shape[1])
+        # same propagated_probes shape as shifted_input_probes # TODO this is wrong, should be each slice
+        overlap = overlap[:, 0]
+        print(
+            "propagated_probes shape: ",
+            propagated_probes.shape,
+            " overlap: ",
+            overlap.shape,
+        )
+        if descan_shifts is not None:
+            ### applying plane wave shift here to overlap, reduce need for extra FFT
+            #     shifts = fourier_translation_operator(
+            #         descan_shifts, self.roi_shape, device=self.device
+            #     )
+            #     shifts = shifts[:, None]
+            #     overlap *= shifts
+            raise NotImplementedError("move descan shift stuff to here")
+
+        return obj_patches, propagated_probes, overlap
+
+    def error_estimate(
+        self,
+        obj,
+        probe,
+        patch_row,
+        patch_col,
+        fract_positions,
+        true_amplitudes,
+        descan_shifts=None,
+    ):
+        obj_patches, propagated_probes, overlap = self.forward_operator(
+            obj,
+            probe,
+            patch_row,
+            patch_col,
+            fract_positions,
+        )
+        if descan_shifts is not None:
+            ### applying plane wave shift here to overlap, reduce need for extra FFT
+            #     shifts = fourier_translation_operator(
+            #         descan_shifts, self.roi_shape, device=self.device
+            #     )
+            #     shifts = shifts[:, None]
+            #     overlap *= shifts
+            raise NotImplementedError("move descan shift stuff to here")
+
+        farfield_amplitudes = self.estimate_amplitudes(overlap)
+        mse = np.mean(np.abs(true_amplitudes - farfield_amplitudes) ** 2)
+
+        return mse
+
+        return obj_patches, propagated_probes, overlap
+
+    def _get_object_patches(self, obj_array, patch_row, patch_col):
+        """Extracts complex-valued roi-shaped patches from `obj_array`."""
+        if (
+            self.object_type == "potential"
+        ):  # TODO - should potential be pure_phase + positivity?
+            obj_array = np.exp(1j * obj_array)
+        patches = obj_array[..., patch_row, patch_col]
+        # reshape to (batch_size, num_slices, roi_shape[0], roi_shape[1])
+        return patches
+
+    def overlap_projection(self, obj_patches, input_probes, descan_shifts=None):
+        """Multiplies `input_probes` with roi-shaped patches from `obj_array`."""
+
+        # # shifted_input probe shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        # # obj_patches shape: (batch_size, num_slices, roi_shape[0], roi_shape[1])
+        # obj_patches = obj_patches[:, None]
+        # input_probes = input_probes[:, :, None]
+        # # shape now: (batch_size, nprobes, num_slices, roi_shape[0], roi_shape[1])
+
+        if self.num_slices == 1:
+            overlap = obj_patches * input_probes
+            propagated_probes = input_probes
+        else:
+            # input_probes_slices = self.xp.ones_like(obj_patches)
+            # input_probes_slices[0] = input_probes
+            # overlap = None
+            # for s in range(self.num_slices):
+            #     overlap = obj_patches[s] * input_probes_slices[s]
+            #     if s+1 < self.num_slices:
+            #         input_probes_slices[s+1] = self._propagate_array(overlap, self._propagators[s])
+            # propagated_probes = input_probes_slices
+            raise NotImplementedError
+        return propagated_probes, overlap
+
+    def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):
+        """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
+        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        overlap_fft = np.fft.fft2(overlap_array)
+
+        # incoherent sum of all probe components
+        return np.sqrt(np.sum(np.abs(overlap_fft) ** 2, axis=0))
+
+    def _error_from_overlap(
+        self,
+        overlap_array: "np.ndarray | cp.ndarray",
+        true_amplitudes: "np.ndarray | cp.ndarray",
+    ):
+        farfield_amplitudes = self.estimate_amplitudes(overlap_array)
+        return np.mean((farfield_amplitudes - true_amplitudes) ** 2)
+
+    def _propagate_array(
+        self, array: "np.ndarray|cp.ndarray", propagator_array: "np.ndarray|cp.ndarray"
+    ) -> "np.ndarray|cp.ndarray":
+        """
+        Propagates array by Fourier convolving array with propagator_array.
+
+        Parameters
+        ----------
+        array: np.ndarray
+            Wavefunction array to be convolved
+        propagator_array: np.ndarray
+            Propagator array to convolve array with
+
+        Returns
+        -------
+        propagated_array: np.ndarray
+            Fourier-convolved array
+        """
+        propagated = np.fft.ifft2(np.fft.fft2(array) * propagator_array)
+        return propagated
 
     # endregion
 
