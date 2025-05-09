@@ -304,7 +304,7 @@ class Dataset(AutoSerialize):
                 raise ValueError("pad_width and output_shape cannot both be specified.")
             padded_array = np.pad(self.array, pad_width=pad_width, **kwargs)
         elif output_shape is not None:
-            if np.ndim(output_shape) != self.ndim:
+            if len(output_shape) != self.ndim:
                 raise ValueError("output_shape must be a tuple of length ndim.")
             padded_array = np.pad(
                 self.array,

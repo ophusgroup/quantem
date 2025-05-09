@@ -500,3 +500,37 @@ class AffineTransform:
             f"  t0 = {self.t0:.4f}, t1 = {self.t1:.4f}, \n"
             ")"
         )
+
+
+def center_crop_arr(arr: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
+    """
+    Crop an array to a given shape, centered along all axes.
+
+    Parameters
+    ----------
+    arr : np.ndarray
+        The input n-dimensional array to be cropped.
+    shape : tuple[int, ...]
+        The desired output shape. Must have the same number of dimensions as arr,
+        and each dimension must be less than or equal to the corresponding dimension of arr.
+    """
+    if len(shape) != arr.ndim:
+        raise ValueError(
+            f"Shape must have the same number of dimensions as arr. "
+            f"Got shape with {len(shape)} dimensions and arr with {arr.ndim} dimensions."
+        )
+
+    for i, (s, a) in enumerate(zip(shape, arr.shape)):
+        if s > a:
+            raise ValueError(
+                f"Dimension {i} of shape ({s}) is larger than dimension {i} of arr ({a})."
+            )
+
+    slices = []
+    for i, (s, a) in enumerate(zip(shape, arr.shape)):
+        start = (a - s) // 2
+        end = start + s
+        slices.append(slice(start, end))
+
+    # Return the cropped array
+    return arr[tuple(slices)]

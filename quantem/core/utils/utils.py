@@ -1,6 +1,6 @@
 import math
 from itertools import product
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Sequence
 
 import numpy as np
 from tqdm import tqdm
@@ -51,8 +51,9 @@ def get_tensor_module(tensor: "np.ndarray | cp.ndarray | torch.Tensor"):
     )
 
 
-def as_numpy(array: np.ndarray | cp.ndarray | torch.Tensor) -> np.ndarray:
-    """Convert a torch.Tensor or cupy.ndarray to a numpy.ndarray."""
+def as_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
+    """Convert a torch.Tensor or cupy.ndarray to a numpy.ndarray. Always returns
+    a copy for consistency."""
     if config.get("has_cupy"):
         if isinstance(array, cp.ndarray):
             return cp.asnumpy(array)
@@ -60,13 +61,39 @@ def as_numpy(array: np.ndarray | cp.ndarray | torch.Tensor) -> np.ndarray:
         if isinstance(array, torch.Tensor):
             return array.cpu().detach().numpy()
     if isinstance(array, np.ndarray):
-        return array
+        return np.array(array)
+    if isinstance(array, (list, tuple)):
+        try:
+            return np.array(array)
+        except (ValueError, TypeError):
+            ar2 = [as_numpy(i) for i in array]
+            try:
+                return np.array(ar2)
+            except (ValueError, TypeError):
+                pass
     try:
-        return np.asarray(array)
+        return np.array(array)
     except (ValueError, TypeError):
         raise TypeError(
             f"Input is not a numpy array or convertible to one: {type(array)}"
         )
+
+
+def to_cpu(arrs: Any) -> np.ndarray | Sequence:
+    if config.get("has_cupy"):
+        if isinstance(arrs, cp.ndarray):
+            return cp.asnumpy(arrs)
+    if config.get("has_torch"):
+        if isinstance(arrs, torch.Tensor):
+            return arrs.cpu().detach().numpy()
+    if isinstance(arrs, np.ndarray):
+        return np.array(arrs)
+    elif isinstance(arrs, list):
+        return [to_cpu(i) for i in arrs]
+    elif isinstance(arrs, tuple):
+        return tuple([to_cpu(i) for i in arrs])
+    else:
+        raise NotImplementedError(f"Unkown type: {type(arrs)}")
 
 
 # endregion

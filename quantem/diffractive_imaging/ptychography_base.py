@@ -26,6 +26,7 @@ from quantem.diffractive_imaging.complexprobe import (
 )
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
+    center_crop_arr,
     fit_origin,
     fourier_shift,
     generate_batches,
@@ -104,7 +105,7 @@ class PtychographyBase(AutoSerialize):
         self.rng = rng
 
         # initializing attributes
-        self.probe_params = self.DEFAULT_PROBE_PARAMS
+        self._probe_params = self.DEFAULT_PROBE_PARAMS
         self._preprocessed: bool = False
         self._losses: list[float] = []  # losses/errors across epochs
         self._recon_types: list[
@@ -161,13 +162,13 @@ class PtychographyBase(AutoSerialize):
                 sampling=tuple(self.sampling),
                 energy=self.probe_params["energy"],
                 semiangle_cutoff=self.probe_params["semiangle_cutoff"],
+                defocus=self.probe_params["defocus"],
                 rolloff=self.probe_params["rolloff"],
                 vacuum_probe_intensity=self.vacuum_probe_intensity,
                 parameters=self.probe_params["polar_parameters"],
                 device="cpu",
             )
             probes = prb.build()._array
-            print("probes shape from ComplexProbe: ", probes.shape)
             pass
         elif probe is not None:
             if isinstance(probe, ComplexProbe):
@@ -184,8 +185,6 @@ class PtychographyBase(AutoSerialize):
         else:
             raise ValueError("must provide either probe_params or probe")
 
-        print("setting probes with shape: ", probes.shape)
-        print("Not sure if this respects ROI or padded_diffraction_shape")
         if probes.ndim != 3:
             probes = probes[None]
         if probes.shape[0] != self.num_probes:
@@ -194,10 +193,16 @@ class PtychographyBase(AutoSerialize):
         # apply random phase shifts for initializing mixed state
         for a0 in range(1, self.num_probes):
             shift_y = np.exp(
-                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[0])
+                -2j
+                * np.pi
+                * (self.rng.random() - 0.5)
+                * np.fft.fftfreq(self.roi_shape[0])
             ).astype(config.get("dtype_complex"))
             shift_x = np.exp(
-                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[1])
+                -2j
+                * np.pi
+                * (self.rng.random() - 0.5)
+                * np.fft.fftfreq(self.roi_shape[1])
             ).astype(config.get("dtype_complex"))
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
@@ -1193,7 +1198,7 @@ class PtychographyBase(AutoSerialize):
             if self.num_slices == 1:
                 warn("Single slice reconstruction so not setting slice_thicknesses")
             arr = validate_array(
-                as_numpy(val),
+                self._as_numpy(val),
                 name="slice_thicknesses",
                 dtype=config.get("dtype_real"),
                 ndim=1,
@@ -1236,7 +1241,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def object(self) -> np.ndarray:
-        return as_numpy(self._object)
+        return self._as_numpy(self._object)
 
     @object.setter
     def object(self, obj: "np.ndarray | cp.ndarray") -> None:
@@ -1268,7 +1273,7 @@ class PtychographyBase(AutoSerialize):
     @object_padding_px.setter
     def object_padding_px(self, pad: np.ndarray | tuple[int, int]):
         p2 = validate_xplike(pad, "object_padding_px")
-        p2 = as_numpy(
+        p2 = self._as_numpy(
             validate_array(
                 validate_np_len(p2, 2, name="object_padding_px"),
                 dtype="int16",
@@ -1290,7 +1295,7 @@ class PtychographyBase(AutoSerialize):
 
     @object_fov_mask.setter
     def object_fov_mask(self, mask: np.ndarray):
-        mask = as_numpy(
+        mask = self._as_numpy(
             validate_array(
                 mask,
                 dtype=config.get("dtype_real"),
@@ -1425,11 +1430,7 @@ class PtychographyBase(AutoSerialize):
         return self._probe_params
 
     @probe_params.setter
-    def probe_params(self, params: dict[str, Any] | None):
-        if params is None:
-            self._probe_params = self.DEFAULT_PROBE_PARAMS.copy()
-            return
-
+    def probe_params(self, params: dict[str, Any] = {}):
         validate_dict_keys(
             params,
             [*self.DEFAULT_PROBE_PARAMS.keys(), *POLAR_SYMBOLS, *POLAR_ALIASES.keys()],
@@ -1460,7 +1461,9 @@ class PtychographyBase(AutoSerialize):
 
         process_polar_params(params)
         params["polar_parameters"] = polar_parameters
-        self._probe_params = params  # Store the original input
+        self._probe_params = (
+            self.DEFAULT_PROBE_PARAMS | self._probe_params | params
+        )  # prioritize new values
 
     @property
     def rng(self) -> np.random.Generator:
@@ -1499,6 +1502,16 @@ class PtychographyBase(AutoSerialize):
             return config.get("dtype_real")
         else:
             return config.get("dtype_complex")
+
+    @property
+    def object_cropped(self) -> np.ndarray:
+        cropped = self._crop_rotate_object_fov(self.object)
+        if self.object_type == "pure_phase":
+            cropped = np.exp(1j * np.angle(cropped))
+        cropped = center_crop_arr(
+            cropped, tuple(self.object_shape_crop)
+        )  # sometimes 1 pixel off
+        return cropped
 
     @property
     def roi_shape(self) -> np.ndarray:
@@ -1635,10 +1648,7 @@ class PtychographyBase(AutoSerialize):
         if "cuda" in self.device:  # this should only be possible if "has_cupy"
             return cp.asarray(arr)
         elif self.device == "cpu":
-            if config.get("has_cupy"):
-                if isinstance(arr, cp.ndarray):
-                    return cp.to_numpy(arr)
-            return np.asarray(arr)
+            return self._as_numpy(arr)
         else:
             raise NotImplementedError(f"Unknown config device {self.device}")
 
@@ -1667,11 +1677,51 @@ class PtychographyBase(AutoSerialize):
             if getattr(self, name) != new_val:
                 self._preprocessed = False
 
-    def _to_numpy(self, array: "np.ndarray | cp.ndarray"):
-        if self.device == "gpu":
-            if isinstance(array, cp.ndarray):
-                return cp.asnumpy(array)
-        return array
+    def _as_numpy(self, array: "np.ndarray | cp.ndarray"):
+        return as_numpy(array)
+
+    def _crop_rotate_object_fov(
+        self,
+        array: "np.ndarray|cp.ndarray",
+        positions_px: np.ndarray | None = None,
+        com_rotation_rad: float | None = None,
+        transpose: bool | None = None,
+        padding: int = 0,
+    ) -> np.ndarray:
+        """
+        Crops and rotated object to FOV bounded by current pixel positions.
+        """
+        array = self._as_numpy(array).copy()
+        com_rotation_rad = (
+            self.com_rotation_rad if com_rotation_rad is None else com_rotation_rad
+        )
+        transpose = self.com_transpose if transpose is None else transpose
+
+        angle = (
+            self.com_rotation_rad if self.com_transpose else -1 * self.com_rotation_rad
+        )
+
+        if positions_px is None:
+            positions = self.positions_px
+        else:
+            positions = positions_px
+
+        tf = AffineTransform(angle=angle)
+        rotated_points = tf(positions, origin=positions.mean(0))
+
+        min_x, min_y = np.floor(np.amin(rotated_points, axis=0) - padding).astype("int")
+        min_x = min_x if min_x > 0 else 0
+        min_y = min_y if min_y > 0 else 0
+        max_x, max_y = np.ceil(np.amax(rotated_points, axis=0) + padding).astype("int")
+
+        rotated_array = ndi.rotate(
+            array, np.rad2deg(-angle), order=1, reshape=False, axes=(-2, -1)
+        )[..., min_x:max_x, min_y:max_y]
+
+        if transpose:
+            rotated_array = rotated_array.swapaxes(-2, -1)
+
+        return rotated_array
 
     # endregion
 

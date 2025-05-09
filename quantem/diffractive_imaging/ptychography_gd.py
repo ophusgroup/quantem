@@ -51,6 +51,7 @@ class PtychographyGD(PtychographyBase):
         constraints: dict | None = None,
         device: str = "cpu",
     ):
+        # self.device = device
         if device == "gpu" and config.get("has_cupy"):
             xp = cp
         else:
@@ -105,6 +106,9 @@ class PtychographyGD(PtychographyBase):
                     fix_probe=fix_probe,
                 )
 
+                print("identical slices")
+                obj = np.repeat(np.mean(obj, axis=0)[None], self.num_slices, 0)
+
                 error += self.error_estimate(
                     obj,
                     probe,
@@ -118,9 +122,9 @@ class PtychographyGD(PtychographyBase):
 
         if self.device == "gpu":
             if isinstance(obj, cp.ndarray):
-                obj = self._to_numpy(obj)
+                obj = self._as_numpy(obj)
             if isinstance(probe, cp.ndarray):
-                probe = self._to_numpy(probe)
+                probe = self._as_numpy(probe)
 
         self.object = obj
         self.probe = probe
@@ -201,14 +205,11 @@ class PtychographyGD(PtychographyBase):
         """
         obj_shape = obj_array.shape[-2:]
 
-        print("\tupd obj_patches.shape: ", obj_patches.shape)
-
         for s in reversed(range(self.num_slices)):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
             probe_normalization = self._to_xp(np.zeros_like(obj_array[s]))
             object_update = self._to_xp(np.zeros_like(obj_array[s]))
-            print("\tobj slice: ", obj_slice.shape)
 
             for a0 in range(self.num_probes):
                 probe = probe_slice[a0]
@@ -250,7 +251,7 @@ class PtychographyGD(PtychographyBase):
                 elif not fix_probe:
                     obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
                     probe_array = probe_array + (
-                        step_size * np.sum(gradient, axis=(0, 1)) / obj_normalization
+                        step_size * np.sum(gradient, axis=1) / obj_normalization
                     )
         return obj_array, probe_array
 
