@@ -1,0 +1,129 @@
+from typing import Any, Self
+
+import numpy as np
+from numpy.typing import NDArray
+
+from quantem.core.datastructures.dataset import Dataset
+from quantem.core.utils.validators import ensure_valid_array
+from quantem.core.visualization.visualization import show_2d
+from quantem.core.visualization.visualization_utils import ScalebarConfig
+
+
+class Dataset3d(Dataset):
+    """3D dataset class that inherits from Dataset.
+
+    This class represents 3D stacks of 2D datasets, such as image sequences.
+
+    Attributes
+    ----------
+    None beyond base Dataset.
+    """
+
+    def __init__(
+        self,
+        array: NDArray | Any,
+        name: str,
+        origin: NDArray | tuple | list | float | int,
+        sampling: NDArray | tuple | list | float | int,
+        units: list[str] | tuple | list,
+        signal_units: str = "arb. units",
+        _token: object | None = None,
+    ):
+        """Initialize a 3D dataset.
+
+        Parameters
+        ----------
+        array : NDArray | Any
+            The underlying 3D array data
+        name : str
+            A descriptive name for the dataset
+        origin : NDArray | tuple | list | float | int
+            The origin coordinates for each dimension
+        sampling : NDArray | tuple | list | float | int
+            The sampling rate/spacing for each dimension
+        units : list[str] | tuple | list
+            Units for each dimension
+        signal_units : str, optional
+            Units for the array values, by default "arb. units"
+        _token : object | None, optional
+            Token to prevent direct instantiation, by default None
+        """
+        super().__init__(
+            array=array,
+            name=name,
+            origin=origin,
+            sampling=sampling,
+            units=units,
+            signal_units=signal_units,
+            _token=_token,
+        )
+
+    @classmethod
+    def from_array(
+        cls,
+        array: NDArray | Any,
+        name: str | None = None,
+        origin: NDArray | tuple | list | float | int | None = None,
+        sampling: NDArray | tuple | list | float | int | None = None,
+        units: list[str] | tuple | list | None = None,
+        signal_units: str = "arb. units",
+    ) -> Self:
+        array = ensure_valid_array(array, ndim=3)
+        return cls(
+            array=array,
+            name=name if name is not None else "3D dataset",
+            origin=origin if origin is not None else np.zeros(3),
+            sampling=sampling if sampling is not None else np.ones(3),
+            units=units if units is not None else ["index", "pixels", "pixels"],
+            signal_units=signal_units,
+            _token=cls._token,
+        )
+
+    def show_image(
+        self,
+        index: int = 0,
+        title: str | None = None,
+        figax=None,
+        axsize=(4, 4),
+        scalebar: ScalebarConfig | bool = True,
+        tight_layout: bool = True,
+        combine_images: bool = False,
+        **kwargs,
+    ):
+        """
+        Display a 2D slice of the 3D dataset using the `show_2d` visualization function.
+
+        Parameters
+        ----------
+        index : int
+            Index of the 2D slice to display (along axis 0).
+        title : str | None, optional
+            Title for the plot.
+        figax : tuple or None
+            Optionally pass (fig, ax). Otherwise, a new figure is created.
+        axsize : tuple
+            Size of the figure in inches.
+        scalebar : ScalebarConfig | bool, optional
+            If True, show default scalebar. If False, disable. If ScalebarConfig, customize.
+        tight_layout : bool, default=True
+            Whether to call tight_layout on the resulting figure.
+        combine_images : bool, default=False
+            Combine multiple images into one color-encoded image, if applicable.
+        **kwargs : dict
+            Additional keyword arguments passed to `imshow`.
+
+        Returns
+        -------
+        tuple
+            (fig, ax)
+        """
+        return show_2d(
+            arrays=self.array[index],
+            figax=figax,
+            axsize=axsize,
+            tight_layout=tight_layout,
+            combine_images=combine_images,
+            title=title or f"{self.name} [{index}]",
+            scalebar=scalebar,
+            **kwargs,
+        )
