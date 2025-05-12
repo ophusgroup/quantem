@@ -50,7 +50,7 @@ class PtychographyGD(PtychographyBase):
         step_size: float = 0.5,
         constraints: dict | None = None,
         device: str = "cpu",
-    ):
+    ) -> None:
         # self.device = device
         if device == "gpu" and config.get("has_cupy"):
             xp = cp
@@ -81,7 +81,7 @@ class PtychographyGD(PtychographyBase):
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in tqdm(range(num_iter)):
-            error = np.float32(0)
+            error = xp.float32(0)
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
@@ -128,7 +128,7 @@ class PtychographyGD(PtychographyBase):
 
         self.object = obj
         self.probe = probe
-        return obj, probe
+        return
 
     # endregion
 
@@ -215,7 +215,6 @@ class PtychographyGD(PtychographyBase):
                 probe = probe_slice[a0]
                 obj = obj_slice
                 grad = gradient[a0]
-                # object-update
                 probe_normalization += sum_patches(
                     np.abs(probe) ** 2,
                     patch_row,

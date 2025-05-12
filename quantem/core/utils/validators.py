@@ -378,6 +378,8 @@ def validate_arraylike(value: Any, name: str):
 
 
 def validate_xplike(value: Any, name: str) -> np.ndarray:
+    """for np.ndarray and cp.ndarray, returns the array as is. For a torch.Tensor or any other type
+    (including list, tuple, etc.) tries to convert and return a np.ndarray."""
     if isinstance(value, np.ndarray):
         return value
     if config.get("has_cupy"):

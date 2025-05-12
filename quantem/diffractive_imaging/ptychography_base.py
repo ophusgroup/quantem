@@ -37,9 +37,12 @@ from quantem.diffractive_imaging.ptycho_utils import (
 
 if TYPE_CHECKING:
     import cupy as cp
+    import torch
 else:
     if config.get("has_cupy"):
         import cupy as cp
+    if config.get("has_torch"):
+        import torch
 
 """
 large scale design patterns:
@@ -1078,11 +1081,7 @@ class PtychographyBase(AutoSerialize):
             )
         return probe_overlap
 
-    # endregion
-
-    # region --- ptychography forward ---
-
-    # endregion
+    # endregion --- preprocessing ---
 
     # region --- explicit class properties ---
     @property
@@ -1244,7 +1243,7 @@ class PtychographyBase(AutoSerialize):
         return self._as_numpy(self._object)
 
     @object.setter
-    def object(self, obj: "np.ndarray | cp.ndarray") -> None:
+    def object(self, obj: "np.ndarray | cp.ndarray | torch.Tensor") -> None:
         """Shape [num_slices, height, width]"""
         obj = validate_xplike(obj, "object")
         obj = validate_array(
@@ -1284,7 +1283,7 @@ class PtychographyBase(AutoSerialize):
         if self._object_padding_force_power2_level > 0:
             p2 = adjust_padding_power2(
                 p2,
-                self.object_shape_full,
+                self.object_shape_crop,
                 self._object_padding_force_power2_level,
             )
         self._object_padding_px = p2
@@ -1481,7 +1480,49 @@ class PtychographyBase(AutoSerialize):
             )
         self._rng = rng
 
-    # endregion
+    @property
+    def constraints(self) -> dict[str, Any]:
+        return self._constraints
+
+    @constraints.setter
+    def constraints(self, constraints: dict[str, Any]):
+        """
+        Set constraints for the object reconstruction.
+        """
+        if not isinstance(constraints, dict):
+            raise TypeError("Constraints should be a dictionary.")
+        # TODO add validation for constraints
+        # move this to a mixin
+        self._constraints = constraints
+
+    @property
+    def store_iterations(self) -> bool:
+        return self._store_iterations
+
+    @store_iterations.setter
+    def store_iterations(self, val: bool) -> None:
+        self._store_iterations = bool(val)
+
+    @property
+    def store_iterations_every(self) -> int:
+        return self._store_iterations_every
+
+    @store_iterations_every.setter
+    def store_iterations_every(self, val: int) -> None:
+        self._store_iterations_every = int(val)
+
+    @property
+    def recon_iterations(self) -> list[dict[str, np.ndarray]]:
+        return self._recon_iterations
+
+    def get_recon_by_iter(self, iteration: int):
+        iteration = int(iteration)
+        for snapshot in self.recon_iterations:
+            if snapshot["iteration"] == iteration:
+                return snapshot
+        raise ValueError(f"No snapshot found at iteration: {iteration}")
+
+    # endregion --- explicit class properties ---
 
     # region --- implicit class properties ---
 
@@ -1494,6 +1535,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def device(self) -> str:
+        """This should be of form 'cuda:X' or 'cpu', as defined by quantem.config"""
         return config.get("device")
 
     @property
@@ -1633,7 +1675,7 @@ class PtychographyBase(AutoSerialize):
         shape = np.concatenate([[self.num_slices], rotshape])
         return shape.astype("int")
 
-    # endregion
+    # endregion --- implicit class properties ---
 
     # region --- class methods ---
     def vprint(self, *args, **kwargs) -> None:
@@ -1723,9 +1765,61 @@ class PtychographyBase(AutoSerialize):
 
         return rotated_array
 
+    def _repeat_arr(
+        self, arr: "np.ndarray|cp.ndarray|torch.Tensor", repeats: int, axis: int
+    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
+        """repeat the input array along the desired axis."""
+        if config.get("has_torch"):
+            if isinstance(arr, torch.Tensor):
+                return torch.repeat_interleave(arr, repeats, dim=axis)
+        return np.repeat(arr, repeats, axis=axis)
+
+    def reset_recon(self) -> None:
+        self._losses = []
+        self._recon_types = []
+        self._recon_iterations = []
+        self._lrs = []
+
+    def append_recon_iteration(
+        self,
+        object: "torch.Tensor | np.ndarray | None" = None,
+        probe: "torch.Tensor | np.ndarray | None" = None,
+    ) -> None:
+        if probe is None:
+            prb = self.probe
+        else:
+            prb = self._as_numpy(probe)
+        if object is None:
+            obj = self.object
+        else:
+            obj = self._as_numpy(object)
+        self._recon_iterations.append(
+            {
+                "iteration": self.num_epochs,
+                "object": obj,
+                "probe": prb,
+            }
+        )
+        return
+
+    def _mse(
+        self,
+        pred: "np.ndarray|cp.ndarray|torch.Tensor",
+        truth: "np.ndarray|cp.ndarray|torch.Tensor",
+    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
+        """Calculate the mean squared error between two arrays."""
+        if type(pred) is not type(truth):
+            raise TypeError(
+                f"pred and truth should be of the same type, got {type(pred)} and {type(truth)}"
+            )
+        if config.get("has_torch"):
+            if isinstance(pred, torch.Tensor) and isinstance(truth, torch.Tensor):
+                return torch.mean(torch.abs(truth - pred) ** 2)
+        return np.mean(np.abs(truth - pred) ** 2)
+
     # endregion
 
-    # region --- forward model ---
+    # region --- ptychography forward model ---
 
     def forward_operator(
         self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
@@ -1734,9 +1828,12 @@ class PtychographyBase(AutoSerialize):
         # initial shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
         print("shifted input_probes shape1 : ", shifted_input_probes.shape)
         # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
-        shifted_input_probes = np.repeat(
-            np.swapaxes(shifted_input_probes, 0, 1)[None], self.num_slices, 0
+        shifted_input_probes = self._repeat_arr(
+            shifted_input_probes.swapaxes(0, 1)[None], self.num_slices, 0
         )
+        # shifted_input_probes = np.repeat(
+        #     np.swapaxes(shifted_input_probes, 0, 1)[None], self.num_slices, 0
+        # )
         print("shifted input_probes shape2: ", shifted_input_probes.shape)
         obj_patches = self._get_object_patches(obj, patch_row, patch_col)
         # obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
@@ -1776,7 +1873,7 @@ class PtychographyBase(AutoSerialize):
         fract_positions,
         true_amplitudes,
         descan_shifts=None,
-    ):
+    ) -> "float":
         obj_patches, propagated_probes, overlap = self.forward_operator(
             obj,
             probe,
@@ -1794,11 +1891,7 @@ class PtychographyBase(AutoSerialize):
             raise NotImplementedError("move descan shift stuff to here")
 
         farfield_amplitudes = self.estimate_amplitudes(overlap)
-        mse = np.mean(np.abs(true_amplitudes - farfield_amplitudes) ** 2)
-
-        return mse
-
-        return obj_patches, propagated_probes, overlap
+        return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
 
     def _get_object_patches(self, obj_array, patch_row, patch_col):
         """Extracts complex-valued roi-shaped patches from `obj_array`."""
@@ -1828,10 +1921,14 @@ class PtychographyBase(AutoSerialize):
     def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
         # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        overlap_fft = np.fft.fft2(overlap_array)
-
         # incoherent sum of all probe components
-        return np.sqrt(np.sum(np.abs(overlap_fft) ** 2, axis=0))
+        eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
+        if config.get("has_torch"):
+            if isinstance(overlap_array, torch.Tensor):
+                overlap_fft = torch.fft.fft2(overlap_array)
+                return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
+        overlap_fft = np.fft.fft2(overlap_array)
+        return np.sqrt(np.sum(np.abs(overlap_fft + eps) ** 2, axis=0))
 
     def _error_from_overlap(
         self,

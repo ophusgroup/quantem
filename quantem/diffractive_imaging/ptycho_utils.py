@@ -501,6 +501,15 @@ class AffineTransform:
             ")"
         )
 
+    def __repr__(self):
+        return (
+            "AffineTransform( \n"
+            f"  scale0 = {self.scale0:.4f}, scale1 = {self.scale1:.4f}, \n"
+            f"  shear1 = {self.shear1:.4f}, angle = {self.angle:.4f}, \n"
+            f"  t0 = {self.t0:.4f}, t1 = {self.t1:.4f}, \n"
+            ")"
+        )
+
 
 def center_crop_arr(arr: np.ndarray, shape: tuple[int, ...]) -> np.ndarray:
     """
