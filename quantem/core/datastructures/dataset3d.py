@@ -127,3 +127,25 @@ class Dataset3d(Dataset):
             scalebar=scalebar,
             **kwargs,
         )
+
+    @classmethod
+    def from_shape(
+        cls,
+        shape: tuple[int, int, int],
+        name: str = "empty 3D dataset",
+        fill_value: float = 0.0,
+        origin: NDArray = None,
+        sampling: NDArray = None,
+        units: list[str] = None,
+        signal_units: str = "arb. units",
+    ) -> Self:
+        """Create a new Dataset3d filled with a constant value."""
+        array = np.full(shape, fill_value, dtype=np.float32)
+        return cls.from_array(
+            array=array,
+            name=name,
+            origin=origin if origin is not None else np.zeros(3),
+            sampling=sampling if sampling is not None else np.ones(3),
+            units=units if units is not None else ["pixels"] * 3,
+            signal_units=signal_units,
+        )

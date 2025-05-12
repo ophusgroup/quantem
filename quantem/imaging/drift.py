@@ -1,10 +1,12 @@
-# from typing import Union, Sequence
 import numbers
 from collections.abc import Sequence
 from typing import List, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
+from scipy.interpolate import CloughTocher2DInterpolator, interp1d
 
+# from scipy.interpolate import interpn
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
 
@@ -66,7 +68,11 @@ class DriftCorrection:
         # Construct Drift instance
         self = object.__new__(cls)
         self._initialize(
-            image_list, scan_direction_degrees, pad_fraction, pad_value, number_knots
+            image_list,
+            scan_direction_degrees,
+            pad_fraction,
+            pad_value,
+            number_knots,
         )
         return self
 
@@ -86,27 +92,19 @@ class DriftCorrection:
 
         # Derived data
         self.scan_direction = np.deg2rad(self.scan_direction_degrees)
-        self.scan_fast = np.array(
+        self.scan_fast = np.stack(
             [
-                np.array(
-                    (
-                        np.sin(phi),
-                        np.cos(phi),
-                    )
-                )
-                for phi in self.scan_direction
-            ]
+                np.sin(self.scan_direction),
+                np.cos(self.scan_direction),
+            ],
+            axis=1,
         )
-        self.scan_slow = np.array(
+        self.scan_slow = np.stack(
             [
-                np.array(
-                    (
-                        np.cos(phi),
-                        -np.sin(phi),
-                    )
-                )
-                for phi in self.scan_direction
-            ]
+                -np.cos(self.scan_direction),
+                np.sin(self.scan_direction),
+            ],
+            axis=1,
         )
         self.shape = (
             len(self.images),
@@ -122,7 +120,6 @@ class DriftCorrection:
                 self.pad_value = [np.min(im.array) for im in self.images]
             elif pad_value == "max":
                 self.pad_value = [np.max(im.array) for im in self.images]
-
         elif isinstance(pad_value, numbers.Number):
             if pad_value < 0.0:
                 raise ValueError(f"pad_value of {pad_value} is < 0.0")
@@ -134,25 +131,148 @@ class DriftCorrection:
                 f"pad_value must be a 0.0 < float < 1.0, or one of ['median', 'mean', 'min', 'max'], got {type(pad_value)}"
             )
 
-        # Initialize Bezier knots for scanlines
+        # Initialize Bezier knots and scan vectors for scanlines
         self.knots = []
         for a0 in range(self.shape[0]):
             shape = self.images[a0].shape
 
-            v_slow = np.arange(shape[0])[:, None]
-            v_fast = np.linspace(0, shape[1], self.number_knots)[None, :]
+            v_slow = np.linspace(-(shape[0] - 1) / 2, (shape[0] - 1) / 2, shape[0])
+            u_fast = np.linspace(
+                -(shape[1] - 1) / 2, (shape[1] - 1) / 2, self.number_knots
+            )
 
-            rows = v_fast * self.scan_fast[a0][a0, 0] + v_slow * self.scan_slow[a0, 0]
-            # cols = v_fast * self.scan_fast[a0,1] \
-            #     + v_slow * self.scan_slow[a0,1]
+            rows = (
+                (self.shape[1] - 1) / 2
+                + u_fast[None, :] * self.scan_fast[a0, 0]
+                + v_slow[:, None] * self.scan_slow[a0, 0]
+            )
+            cols = (
+                (self.shape[2] - 1) / 2
+                + u_fast[None, :] * self.scan_fast[a0, 1]
+                + v_slow[:, None] * self.scan_slow[a0, 1]
+            )
 
-            # print(rows.shape)
+            self.knots.append(np.stack([rows, cols], axis=0))
 
-            self.knots.append(rows)
+        # Precompute the interpolator for all images
+        self.interpolator = []
+        for a0 in range(self.shape[0]):
+            self.interpolator.append(
+                DriftInterpolator(
+                    input_shape=self.images[a0].shape,
+                    output_shape=self.shape[1:],
+                    scan_fast=self.scan_fast[a0],
+                    scan_slow=self.scan_slow[a0],
+                    pad_value=self.pad_value[a0],
+                )
+            )
 
         # Generate initial resampled images
+        self.images_transform = Dataset3d.from_shape(self.shape)
+        for a0 in range(self.shape[0]):
+            im = self.images[a0]
+            interpolator = self.interpolator[a0]
+            self.images_transform.array[a0] = interpolator.warp_image(
+                im.array,
+                self.knots[a0],
+            )
 
-    def image_resample(
+        # Test plotting
+        # im = np.zeros()
+        for a0 in range(self.shape[0]):
+            fig, ax = plt.subplots(figsize=(8, 8))
+            ax.imshow(
+                self.images_transform.array[a0],
+            )
+            x = self.knots[a0][0]
+            y = self.knots[a0][1]
+            ax.scatter(
+                y,
+                x,
+                marker=".",
+                color="r",
+            )
+            ax.set_axis_off()
+
+
+class DriftInterpolator:
+    def __init__(
         self,
+        input_shape,
+        output_shape,
+        scan_fast,
+        scan_slow,
+        pad_value,
     ):
-        pass
+        self.input_shape = input_shape
+        self.output_shape = output_shape
+        self.scan_fast = scan_fast
+        self.scan_slow = scan_slow
+        self.pad_value = pad_value
+
+        self.rows_input = np.arange(input_shape[0])
+        self.cols_input = np.arange(input_shape[1])
+
+        self.u = np.linspace(0, 1, input_shape[1])
+
+        # Output grid
+        self.rows_output = np.arange(output_shape[0])
+        self.cols_output = np.arange(output_shape[1])
+
+    def warp_image(
+        self,
+        image: np.ndarray,
+        knots: np.ndarray,  # shape: (2, rows, num_knots)
+    ) -> np.ndarray:
+        num_knots = knots.shape[-1]
+        basis = np.linspace(0, 1, num_knots)
+
+        # Interpolate each scanline separately
+        rows_interp = np.zeros((self.input_shape[0], self.input_shape[1]))
+        cols_interp = np.zeros((self.input_shape[0], self.input_shape[1]))
+
+        if num_knots == 1:
+            # Simple linear mapping from single knot
+            for i in range(self.input_shape[0]):
+                row_center, col_center = knots[:, i, 0]
+                rows_interp[i, :] = row_center + self.u * self.scan_fast[0]
+                cols_interp[i, :] = col_center + self.u * self.scan_fast[1]
+
+        elif num_knots == 2:
+            # Linear interpolation between two knots
+            for i in range(self.input_shape[0]):
+                rows_interp[i, :] = interp1d(basis, knots[0, i], kind="linear")(self.u)
+                cols_interp[i, :] = interp1d(basis, knots[1, i], kind="linear")(self.u)
+
+        else:
+            # Quadratic (3 knots) or cubic (4+ knots) interpolation
+            kind = "quadratic" if num_knots == 3 else "cubic"
+            for i in range(self.input_shape[0]):
+                rows_interp[i, :] = interp1d(
+                    basis, knots[0, i], kind=kind, fill_value="extrapolate"
+                )(self.u)
+                cols_interp[i, :] = interp1d(
+                    basis, knots[1, i], kind=kind, fill_value="extrapolate"
+                )(self.u)
+
+        # Flatten the arrays and stack into points
+        points = np.column_stack([rows_interp.ravel(), cols_interp.ravel()])
+
+        # Flatten the image into a vector
+        values = image.ravel()
+
+        # Interpolation onto the output grid:
+        interp = CloughTocher2DInterpolator(
+            points=points,
+            values=values,
+            fill_value=self.pad_value,
+        )
+
+        # Prepare output grid coordinates:
+        cols_output_grid, rows_output_grid = np.meshgrid(
+            self.cols_output, self.rows_output
+        )
+
+        warped_image = interp(rows_output_grid, cols_output_grid)
+
+        return warped_image

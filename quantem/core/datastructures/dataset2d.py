@@ -122,51 +122,24 @@ class Dataset2d(Dataset):
             _token=cls._token,
         )
 
-    # The below doesn't work:
-    # def show(
-    #     self,
-    #     title: str | None = None,
-    #     figax=None,
-    #     axsize=(4, 4),
-    #     scalebar: ScalebarConfig | bool = True,
-    #     tight_layout: bool = True,
-    #     combine_images: bool = False,
-    #     **kwargs,
-    # ):
-    #     """
-    #     Display the 2D dataset using the central `show_2d` visualization function.
-
-    #     Parameters
-    #     ----------
-    #     title : str | None, optional
-    #         Title for the plot.
-    #     figax : tuple or None
-    #         Optionally pass (fig, ax). Otherwise, a new figure is created.
-    #     axsize : tuple
-    #         Size of the figure in inches.
-    #     scalebar : ScalebarConfig | bool, optional
-    #         If True, show default scalebar. If False, disable. If ScalebarConfig, customize.
-    #     tight_layout : bool, default=True
-    #         Whether to call tight_layout on the resulting figure.
-    #     combine_images : bool, default=False
-    #         Combine multiple images into one color-encoded image, if applicable.
-    #     **kwargs : dict
-    #         Additional keyword arguments passed to `imshow`.
-
-    #     Returns
-    #     -------
-    #     tuple
-    #         (fig, ax)
-    #     """
-    #     return show_2d(
-    #         arrays=self.array,
-    #         figax=figax,
-    #         axsize=axsize,
-    #         tight_layout=tight_layout,
-    #         combine_images=combine_images,
-    #         sampling=self.sampling,
-    #         units=self.units,
-    #         title=title or self.name,
-    #         scalebar=scalebar,
-    #         **kwargs,
-    #     )
+    @classmethod
+    def from_shape(
+        cls,
+        shape: tuple[int, int],
+        name: str = "empty 2D dataset",
+        fill_value: float = 0.0,
+        origin: NDArray = None,
+        sampling: NDArray = None,
+        units: list[str] = None,
+        signal_units: str = "arb. units",
+    ) -> Self:
+        """Create a new Dataset2d filled with a constant value."""
+        array = np.full(shape, fill_value, dtype=np.float32)
+        return cls.from_array(
+            array=array,
+            name=name,
+            origin=origin if origin is not None else np.zeros(2),
+            sampling=sampling if sampling is not None else np.ones(2),
+            units=units if units is not None else ["pixels", "pixels"],
+            signal_units=signal_units,
+        )
