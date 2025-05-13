@@ -2,13 +2,15 @@ import numbers
 from collections.abc import Sequence
 from typing import List, Union
 
-import matplotlib.pyplot as plt
 import numpy as np
-from scipy.interpolate import CloughTocher2DInterpolator, interp1d
+
+# from scipy.interpolate import CloughTocher2DInterpolator, interp1d
+from scipy.interpolate import interp1d
 
 # from scipy.interpolate import interpn
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
+from quantem.core.utils.utils_imaging import bilinear_kde
 
 
 class DriftCorrection:
@@ -177,22 +179,27 @@ class DriftCorrection:
                 self.knots[a0],
             )
 
-        # Test plotting
-        # im = np.zeros()
-        for a0 in range(self.shape[0]):
-            fig, ax = plt.subplots(figsize=(8, 8))
-            ax.imshow(
-                self.images_transform.array[a0],
-            )
-            x = self.knots[a0][0]
-            y = self.knots[a0][1]
-            ax.scatter(
-                y,
-                x,
-                marker=".",
-                color="r",
-            )
-            ax.set_axis_off()
+        # # Test plotting
+        # # im = np.zeros()
+        # for a0 in range(self.shape[0]):
+        #     fig, ax = plt.subplots(figsize=(8, 8))
+        #     ax.imshow(
+        #         self.images_transform.array[a0],
+        #     )
+        #     x = self.knots[a0][0]
+        #     y = self.knots[a0][1]
+        #     # ax.scatter(
+        #     #     y,
+        #     #     x,
+        #     #     marker=".",
+        #     #     color="r",
+        #     # )
+        #     ax.plot(
+        #         y,
+        #         x,
+        #         color = 'r',
+        #     )
+        #     ax.set_axis_off()
 
 
 class DriftInterpolator:
@@ -215,14 +222,11 @@ class DriftInterpolator:
 
         self.u = np.linspace(0, 1, input_shape[1])
 
-        # Output grid
-        self.rows_output = np.arange(output_shape[0])
-        self.cols_output = np.arange(output_shape[1])
-
     def warp_image(
         self,
         image: np.ndarray,
         knots: np.ndarray,  # shape: (2, rows, num_knots)
+        kde_sigma: float = 0.5,
     ) -> np.ndarray:
         num_knots = knots.shape[-1]
         basis = np.linspace(0, 1, num_knots)
@@ -234,45 +238,49 @@ class DriftInterpolator:
         if num_knots == 1:
             # Simple linear mapping from single knot
             for i in range(self.input_shape[0]):
-                row_center, col_center = knots[:, i, 0]
-                rows_interp[i, :] = row_center + self.u * self.scan_fast[0]
-                cols_interp[i, :] = col_center + self.u * self.scan_fast[1]
+                rows_interp[i, :] = knots[0, i] + self.u * self.scan_fast[0] * (
+                    self.input_shape[0] - 1
+                )
+                cols_interp[i, :] = knots[1, i] + self.u * self.scan_fast[1] * (
+                    self.input_shape[1] - 1
+                )
 
         elif num_knots == 2:
             # Linear interpolation between two knots
             for i in range(self.input_shape[0]):
-                rows_interp[i, :] = interp1d(basis, knots[0, i], kind="linear")(self.u)
-                cols_interp[i, :] = interp1d(basis, knots[1, i], kind="linear")(self.u)
+                rows_interp[i, :] = interp1d(
+                    basis, knots[0, i], kind="linear", assume_sorted=True
+                )(self.u)
+                cols_interp[i, :] = interp1d(
+                    basis, knots[1, i], kind="linear", assume_sorted=True
+                )(self.u)
 
         else:
             # Quadratic (3 knots) or cubic (4+ knots) interpolation
             kind = "quadratic" if num_knots == 3 else "cubic"
             for i in range(self.input_shape[0]):
                 rows_interp[i, :] = interp1d(
-                    basis, knots[0, i], kind=kind, fill_value="extrapolate"
+                    basis,
+                    knots[0, i],
+                    kind=kind,
+                    fill_value="extrapolate",
+                    assume_sorted=True,
                 )(self.u)
                 cols_interp[i, :] = interp1d(
-                    basis, knots[1, i], kind=kind, fill_value="extrapolate"
+                    basis,
+                    knots[1, i],
+                    kind=kind,
+                    fill_value="extrapolate",
+                    assume_sorted=True,
                 )(self.u)
 
-        # Flatten the arrays and stack into points
-        points = np.column_stack([rows_interp.ravel(), cols_interp.ravel()])
-
-        # Flatten the image into a vector
-        values = image.ravel()
-
-        # Interpolation onto the output grid:
-        interp = CloughTocher2DInterpolator(
-            points=points,
-            values=values,
-            fill_value=self.pad_value,
+        image_interp = bilinear_kde(
+            xa=rows_interp,
+            ya=cols_interp,
+            intensities=image,
+            output_shape=self.output_shape,
+            kde_sigma=kde_sigma,
+            pad_value=self.pad_value,
         )
 
-        # Prepare output grid coordinates:
-        cols_output_grid, rows_output_grid = np.meshgrid(
-            self.cols_output, self.rows_output
-        )
-
-        warped_image = interp(rows_output_grid, cols_output_grid)
-
-        return warped_image
+        return image_interp
