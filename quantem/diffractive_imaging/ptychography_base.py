@@ -6,6 +6,7 @@ import numpy as np
 import scipy.ndimage as ndi
 from mpl_toolkits.axes_grid1 import ImageGrid
 
+import quantem.core.utils.array_funcs as arr
 from quantem.core import config
 from quantem.core.datastructures import Dataset, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
@@ -19,6 +20,7 @@ from quantem.core.utils.validators import (
     validate_np_len,
     validate_xplike,
 )
+from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.complexprobe import (
     POLAR_ALIASES,
     POLAR_SYMBOLS,
@@ -30,7 +32,6 @@ from quantem.diffractive_imaging.ptycho_utils import (
     fit_origin,
     fourier_shift,
     generate_batches,
-    get_array_module,
     get_shifted_array,
     sum_patches,
 )
@@ -60,12 +61,6 @@ large scale design patterns:
     - just going to store the initial probe as a numpy array, if giving the probe params then will 
       create the ComplexProbe and only keep the np array 
 """
-
-# TODO
-# forward pass (be sure to have multislice and mixed state intrinsic)
-# ptychoAD
-# ptychoGD
-# testing for cases
 
 
 class PtychographyBase(AutoSerialize):
@@ -293,6 +288,8 @@ class PtychographyBase(AutoSerialize):
 
         # initialize object
         self._set_object_fov_mask(batch_size=max_batch_size)
+
+        show_2d(self._object_fov_mask.squeeze(), title="Object FOV Mask")
         self.initial_object = np.ones(self.object_shape_full, dtype=self._object_dtype)
         self.object = self.initial_object.copy()
 
@@ -315,16 +312,16 @@ class PtychographyBase(AutoSerialize):
 
         Parameters
         ----------
-        intensities: (Rh,Rw,Qh,Qw) np.ndarray
+        intensities: (Rr,Rc,Qr,Qc) np.ndarray
             Raw intensities array stored on device, with dtype np.float32
         dp_mask: ndarray
             If not None, apply mask to datacube intensities
         fit_function: str, optional
             2D fitting function for CoM fitting. One of 'plane','parabola','bezier_two'
-        com_shifts, tuple of ndarrays (CoMx measured, CoMy measured)
+        com_shifts, tuple of ndarrays (CoMr measured, CoMc measured)
             If not None, com_shifts are fitted on the measured CoM values.
-        com_measured: tuple of ndarrays (CoMx measured, CoMy measured)
-            If not None, com_measured are passed as com_measured_x, com_measured_w
+        com_measured: tuple of ndarrays (CoMr measured, CoMc measured)
+            If not None, com_measured are passed as com_measured_r, com_measured_c
         vectorized_calculation: bool, optional
             If True (default), the calculation is vectorized
 
@@ -333,14 +330,14 @@ class PtychographyBase(AutoSerialize):
         None
         """
         if com_measured is not None:
-            com_measured_h = np.asarray(com_measured[0], dtype=config.get("dtype_real"))
-            com_measured_w = np.asarray(com_measured[1], dtype=config.get("dtype_real"))
+            com_measured_r = np.asarray(com_measured[0], dtype=config.get("dtype_real"))
+            com_measured_c = np.asarray(com_measured[1], dtype=config.get("dtype_real"))
         else:
             if dp_mask is not None:
                 if dp_mask.shape != intensities.shape[-2:]:
                     raise ValueError(
                         (
-                            f"Mask shape should be (Qh,Qw):{intensities.shape[-2:]}, got {dp_mask.shape}"
+                            f"Mask shape should be (Qr,Qc):{intensities.shape[-2:]}, got {dp_mask.shape}"
                         )
                     )
                 dp_mask = np.asarray(dp_mask, dtype=config.get("dtype_real"))
@@ -359,79 +356,83 @@ class PtychographyBase(AutoSerialize):
 
                 intensities_sum = np.sum(intensities_mask, axis=(-2, -1))
 
-                com_measured_h = (
+                com_measured_r = (
                     np.sum(intensities_mask * kha[None, None], axis=(-2, -1))
                     / intensities_sum
                 )
-                com_measured_w = (
+                com_measured_c = (
                     np.sum(intensities_mask * kwa[None, None], axis=(-2, -1))
                     / intensities_sum
                 )
 
             else:
-                sh, sw = intensities.shape[:2]
-                com_measured_h = np.zeros((sh, sw), dtype=config.get("dtype_real"))
-                com_measured_w = np.zeros((sh, sw), dtype=config.get("dtype_real"))
+                shape_r, shape_c = intensities.shape[:2]
+                com_measured_r = np.zeros(
+                    (shape_r, shape_c), dtype=config.get("dtype_real")
+                )
+                com_measured_c = np.zeros(
+                    (shape_r, shape_c), dtype=config.get("dtype_real")
+                )
 
                 # loop of dps
-                for rh, rw in tqdmnd(
-                    range(sh),
-                    range(sw),
+                for Rr, Rc in tqdmnd(
+                    range(shape_r),
+                    range(shape_c),
                     desc="Calculating center of mass",
                     unit="probe position",
                     disable=not self._verbose,
                 ):
-                    masked_intensity = intensities[rh, rw]
+                    masked_intensity = intensities[Rr, Rc]
                     if dp_mask is not None:
                         masked_intensity *= dp_mask
                     summed_intensity = masked_intensity.sum()
-                    com_measured_h[rh, rw] = (
+                    com_measured_r[Rr, Rc] = (
                         np.sum(masked_intensity * kwa) / summed_intensity
                     )
-                    com_measured_w[rh, rw] = (
+                    com_measured_c[Rr, Rc] = (
                         np.sum(masked_intensity * kha) / summed_intensity
                     )
 
         if com_shifts is None:
             if fit_function != "none":
-                finite_mask = np.isfinite(com_measured_h)
-                com_shifts_h, com_shifts_w, _com_res_h, _com_res_w = fit_origin(
-                    data=(com_measured_h, com_measured_w),
+                finite_mask = np.isfinite(com_measured_r)
+                com_shifts_r, com_shifts_c, _com_res_r, _com_res_c = fit_origin(
+                    data=(com_measured_r, com_measured_c),
                     fit_function=fit_function,
                     mask=finite_mask,
                 )
 
-                com_fitted_h = np.asarray(com_shifts_h, dtype=config.get("dtype_real"))
-                com_fitted_w = np.asarray(com_shifts_w, dtype=config.get("dtype_real"))
+                com_fitted_r = np.asarray(com_shifts_r, dtype=config.get("dtype_real"))
+                com_fitted_c = np.asarray(com_shifts_c, dtype=config.get("dtype_real"))
             else:
-                com_fitted_h = np.asarray(
-                    com_measured_h, dtype=config.get("dtype_real")
+                com_fitted_r = np.asarray(
+                    com_measured_r, dtype=config.get("dtype_real")
                 )
-                com_fitted_w = np.asarray(
-                    com_measured_w, dtype=config.get("dtype_real")
+                com_fitted_c = np.asarray(
+                    com_measured_c, dtype=config.get("dtype_real")
                 )
         else:
-            com_fitted_h = np.asarray(com_shifts[0], dtype=config.get("dtype_real"))
-            com_fitted_w = np.asarray(com_shifts[1], dtype=config.get("dtype_real"))
+            com_fitted_r = np.asarray(com_shifts[0], dtype=config.get("dtype_real"))
+            com_fitted_c = np.asarray(com_shifts[1], dtype=config.get("dtype_real"))
 
         # fix CoM units
-        com_normalized_h = (
-            np.nan_to_num(com_measured_h - com_fitted_h) * self.reciprocal_sampling[0]
+        com_normalized_r = (
+            np.nan_to_num(com_measured_r - com_fitted_r) * self.reciprocal_sampling[0]
         )
-        com_normalized_w = (
-            np.nan_to_num(com_measured_w - com_fitted_w) * self.reciprocal_sampling[1]
+        com_normalized_c = (
+            np.nan_to_num(com_measured_c - com_fitted_c) * self.reciprocal_sampling[1]
         )
 
         self._com_measured: tuple[np.ndarray, np.ndarray] = (
-            com_measured_h,
-            com_measured_w,
+            com_measured_r,
+            com_measured_c,
         )  # raw measured pixels
         self._com_fitted: tuple[np.ndarray, np.ndarray] = (
-            com_fitted_h,
-            com_fitted_w,
+            com_fitted_r,
+            com_fitted_c,
         )  # fitted for descan, pixels
         # (measured - fitted) / reciprocal_sampling
-        self._com_normalized = (com_normalized_h, com_normalized_w)
+        self._com_normalized = (com_normalized_r, com_normalized_c)
         return
 
     def _solve_for_center_of_mass_relative_rotation(
@@ -450,13 +451,13 @@ class PtychographyBase(AutoSerialize):
 
         Parameters
         ----------
-        _com_measured_x: (Rx,Ry) xp.ndarray
+        _com_measured_r: (Rr,Ry) xp.ndarray
             Measured horizontal center of mass gradient
-        _com_measured_y: (Rx,Ry) xp.ndarray
+        _com_measured_y: (Rr,Ry) xp.ndarray
             Measured vertical center of mass gradient
-        _com_normalized_x: (Rx,Ry) xp.ndarray
+        _com_normalized_x: (Rr,Ry) xp.ndarray
             Normalized horizontal center of mass gradient
-        _com_normalized_y: (Rx,Ry) xp.ndarray
+        _com_normalized_y: (Rr,Ry) xp.ndarray
             Normalized vertical center of mass gradient
         rotation_angles_deg: ndarray, optional
             Array of angles in degrees to perform curl minimization over
@@ -498,52 +499,52 @@ class PtychographyBase(AutoSerialize):
             transpose: bool = False,
         ) -> tuple[np.ndarray, np.ndarray]:
             """Rotate CoM vectors by angle_rad with optional transpose"""
-            com_h, com_w = com
+            com_r, com_c = com
             if transpose:
-                rotated_h = np.cos(angle_rad) * com_w - np.sin(angle_rad) * com_h
-                rotated_w = np.sin(angle_rad) * com_w + np.cos(angle_rad) * com_h
+                rotated_r = np.cos(angle_rad) * com_c - np.sin(angle_rad) * com_r
+                rotated_c = np.sin(angle_rad) * com_c + np.cos(angle_rad) * com_r
             else:
-                rotated_h = np.cos(angle_rad) * com_h - np.sin(angle_rad) * com_w
-                rotated_w = np.sin(angle_rad) * com_h + np.cos(angle_rad) * com_w
-            return rotated_h, rotated_w
+                rotated_r = np.cos(angle_rad) * com_r - np.sin(angle_rad) * com_c
+                rotated_c = np.sin(angle_rad) * com_r + np.cos(angle_rad) * com_c
+            return rotated_r, rotated_c
 
-        def calculate_curl(com_h: np.ndarray, com_w: np.ndarray) -> float:
+        def calculate_curl(com_r: np.ndarray, com_c: np.ndarray) -> float:
             """Calculate curl of CoM gradient vector field"""
-            grad_h_w = com_h[1:-1, 2:] - com_h[1:-1, :-2]  # dVh/dw
-            grad_w_h = com_w[2:, 1:-1] - com_w[:-2, 1:-1]  # dVw/dh
-            return float(np.mean(np.abs(grad_w_h - grad_h_w)))
+            grad_r_c = com_r[1:-1, 2:] - com_r[1:-1, :-2]  # dVh/dw
+            grad_c_r = com_c[2:, 1:-1] - com_c[:-2, 1:-1]  # dVw/dh
+            return float(np.mean(np.abs(grad_c_r - grad_r_c)))
 
         def calculate_curl_for_angles(
             angles_rad: np.ndarray,
-            com_h: np.ndarray,
-            com_w: np.ndarray,
+            com_r: np.ndarray,
+            com_c: np.ndarray,
             transpose: bool = False,
         ) -> np.ndarray:
             """Calculate curl for multiple angles"""
             angles_rad_expanded = angles_rad[:, None, None]
 
             if transpose:
-                rotated_h = (
-                    np.cos(angles_rad_expanded) * com_w[None]
-                    - np.sin(angles_rad_expanded) * com_h[None]
+                rotated_r = (
+                    np.cos(angles_rad_expanded) * com_c[None]
+                    - np.sin(angles_rad_expanded) * com_r[None]
                 )
-                rotated_w = (
-                    np.sin(angles_rad_expanded) * com_w[None]
-                    + np.cos(angles_rad_expanded) * com_h[None]
+                rotated_c = (
+                    np.sin(angles_rad_expanded) * com_c[None]
+                    + np.cos(angles_rad_expanded) * com_r[None]
                 )
             else:
-                rotated_h = (
-                    np.cos(angles_rad_expanded) * com_h[None]
-                    - np.sin(angles_rad_expanded) * com_w[None]
+                rotated_r = (
+                    np.cos(angles_rad_expanded) * com_r[None]
+                    - np.sin(angles_rad_expanded) * com_c[None]
                 )
-                rotated_w = (
-                    np.sin(angles_rad_expanded) * com_h[None]
-                    + np.cos(angles_rad_expanded) * com_w[None]
+                rotated_c = (
+                    np.sin(angles_rad_expanded) * com_r[None]
+                    + np.cos(angles_rad_expanded) * com_c[None]
                 )
 
-            grad_h_w = rotated_h[:, 1:-1, 2:] - rotated_h[:, 1:-1, :-2]
-            grad_w_h = rotated_w[:, 2:, 1:-1] - rotated_w[:, :-2, 1:-1]
-            return np.mean(np.abs(grad_w_h - grad_h_w), axis=(-2, -1))
+            grad_r_c = rotated_r[:, 1:-1, 2:] - rotated_r[:, 1:-1, :-2]
+            grad_c_r = rotated_c[:, 2:, 1:-1] - rotated_c[:, :-2, 1:-1]
+            return np.mean(np.abs(grad_c_r - grad_r_c), axis=(-2, -1))
 
         def plot_curl_results(
             angles_deg: np.ndarray,
@@ -599,8 +600,8 @@ class PtychographyBase(AutoSerialize):
             fig = plt.figure(figsize=figsize)
             grid = ImageGrid(fig, 111, nrows_ncols=(nrows, ncols), axes_pad=(0.25, 0.5))  # type:ignore
 
-            for ax, arr, title in zip(grid, com_arrays, titles):  # type:ignore
-                ax.imshow(arr, extent=extent, cmap=cmap, **plot_kwargs)
+            for ax, com_arr, title in zip(grid, com_arrays, titles):  # type:ignore
+                ax.imshow(com_arr, extent=extent, cmap=cmap, **plot_kwargs)
                 ax.set_ylabel(f"x [{self.scan_units[0]}]")
                 ax.set_xlabel(f"y [{self.scan_units[1]}]")
                 ax.set_title(title)
@@ -631,15 +632,15 @@ class PtychographyBase(AutoSerialize):
             # Case 1.2: Known rotation, unknown transpose
             else:
                 # Calculate curl for both transpose options
-                rotated_h, rotated_w = rotate_com_vectors(
+                rotated_r, rotated_c = rotate_com_vectors(
                     self._com_normalized, _rotation_best_rad, transpose=False
                 )
-                rotation_curl = calculate_curl(rotated_h, rotated_w)
+                rotation_curl = calculate_curl(rotated_r, rotated_c)
 
-                rotated_h, rotated_w = rotate_com_vectors(
+                rotated_r, rotated_c = rotate_com_vectors(
                     self._com_normalized, _rotation_best_rad, transpose=True
                 )
-                rotation_curl_transpose = calculate_curl(rotated_h, rotated_w)
+                rotation_curl_transpose = calculate_curl(rotated_r, rotated_c)
 
                 # Choose the option with minimum curl
                 _rotation_best_transpose = rotation_curl_transpose < rotation_curl
@@ -729,7 +730,7 @@ class PtychographyBase(AutoSerialize):
                         **kwargs,
                     )
 
-        _com_h, _com_w = rotate_com_vectors(
+        _com_r, _com_c = rotate_com_vectors(
             self._com_normalized,
             _rotation_best_rad,
             transpose=_rotation_best_transpose,
@@ -747,16 +748,16 @@ class PtychographyBase(AutoSerialize):
                 [
                     *self._com_measured,
                     *self._com_normalized,
-                    _com_h,
-                    _com_w,
+                    _com_r,
+                    _com_c,
                 ],
                 [
-                    "CoM_h",
-                    "CoM_w",
-                    "Normalized CoM_h",
-                    "Normalized CoM_w",
-                    "Corrected CoM_h",
-                    "Corrected CoM_w",
+                    "CoM_r",
+                    "CoM_c",
+                    "Normalized CoM_r",
+                    "Normalized CoM_c",
+                    "Corrected CoM_r",
+                    "Corrected CoM_c",
                 ],
                 extent,
                 **kwargs,
@@ -764,20 +765,20 @@ class PtychographyBase(AutoSerialize):
         elif plot_center_of_mass == "default" or plot_center_of_mass is True:
             extent = [
                 0,
-                self.scan_sampling[1] * _com_h.shape[1],
-                self.scan_sampling[0] * _com_h.shape[0],
+                self.scan_sampling[1] * _com_r.shape[1],
+                self.scan_sampling[0] * _com_r.shape[0],
                 0,
             ]
             plot_com_images(
-                [_com_h, _com_w],
-                ["Corrected CoM_h", "Corrected CoM_w"],
+                [_com_r, _com_c],
+                ["Corrected CoM_r", "Corrected CoM_c"],
                 extent,
                 **kwargs,
             )
 
         self.com_rotation_rad = _rotation_best_rad
         self.com_transpose = _rotation_best_transpose
-        self._com = _com_h, _com_w  # com_normalized rotated by com_rotation_rad
+        self._com = _com_r, _com_c  # com_normalized rotated by com_rotation_rad
         return
 
     def _normalize_diffraction_intensities(
@@ -792,11 +793,11 @@ class PtychographyBase(AutoSerialize):
 
         Parameters
         ----------
-        diffraction_intensities: (Rx,Ry,Sx,Sy) np.ndarray
+        diffraction_intensities: (Rr,Rc,Sr,Sc) np.ndarray
             Zero-padded diffraction intensities
-        com_fitted_h: (Rx,Ry) xp.ndarray
+        com_fitted_r: (Rr,Rc) xp.ndarray
             Best fit horizontal center of mass gradient
-        com_fitted_w: (Rx,Ry) xp.ndarray
+        com_fitted_c: (Rr,Rc) xp.ndarray
             Best fit vertical center of mass gradient
         positions_mask: np.ndarray
             Boolean real space mask to select positions in datacube to skip for reconstruction
@@ -805,7 +806,7 @@ class PtychographyBase(AutoSerialize):
 
         Returns
         -------
-        diffraction_intensities: (Rx * Ry, Sx, Sy) np.ndarray
+        diffraction_intensities: (Rr * Rc, Sr, Sc) np.ndarray
             Flat array of normalized diffraction amplitudes
         mean_intensity: float
             Mean intensity value
@@ -817,24 +818,24 @@ class PtychographyBase(AutoSerialize):
 
         diff_intensities = self.raw_intensities.copy().astype(config.get("dtype_real"))
 
-        com_fitted_h, com_fitted_w = self._com_fitted
+        com_fitted_r, com_fitted_c = self._com_fitted
 
         # Aggressive cropping for when off-centered high scattering angle data was recorded
         if crop_patterns:
-            crop_h = int(
+            crop_r = int(
                 np.minimum(
-                    diff_intensities.shape[2] - com_fitted_h.max(),
-                    com_fitted_h.min(),
+                    diff_intensities.shape[2] - com_fitted_r.max(),
+                    com_fitted_r.min(),
                 )
             )
-            crop_w = int(
+            crop_c = int(
                 np.minimum(
-                    diff_intensities.shape[3] - com_fitted_w.max(),
-                    com_fitted_w.min(),
+                    diff_intensities.shape[3] - com_fitted_c.max(),
+                    com_fitted_c.min(),
                 )
             )
 
-            crop_m = np.minimum(crop_w, crop_h)
+            crop_m = np.minimum(crop_c, crop_r)
 
             crop_mask = np.zeros(self.roi_shape, dtype="bool")
             crop_mask[:crop_m, :crop_m] = True
@@ -848,7 +849,7 @@ class PtychographyBase(AutoSerialize):
             crop_mask = None
             crop_mask_shape = self.roi_shape
 
-        for rh, rw in tqdmnd(
+        for Rr, Rc in tqdmnd(
             range(diff_intensities.shape[0]),
             range(diff_intensities.shape[1]),
             desc="Normalizing intensities",
@@ -856,27 +857,27 @@ class PtychographyBase(AutoSerialize):
             disable=not self._verbose,
         ):
             if positions_mask is not None:
-                if not positions_mask[rh, rw]:
+                if not positions_mask[Rr, Rc]:
                     continue
 
             intensities = get_shifted_array(
-                diff_intensities[rh, rw],
-                -(com_fitted_h[rh, rw] + 0.5),
-                -(com_fitted_w[rh, rw] + 0.5),
+                diff_intensities[Rr, Rc],
+                -(com_fitted_r[Rr, Rc] + 0.5),
+                -(com_fitted_c[Rr, Rc] + 0.5),
                 bilinear=bilinear,
             )
 
             mean_intensity += np.sum(intensities)
             if return_intensities_instead:
-                diff_intensities[rh, rw] = np.maximum(intensities, 0)
+                diff_intensities[Rr, Rc] = np.maximum(intensities, 0)
             else:
-                diff_intensities[rh, rw] = np.sqrt(np.maximum(intensities, 0))
+                diff_intensities[Rr, Rc] = np.sqrt(np.maximum(intensities, 0))
 
         if positions_mask is not None:
             diff_intensities = diff_intensities[positions_mask]
         else:
-            qh, qw = self.roi_shape
-            diff_intensities = diff_intensities.reshape((-1, qh, qw))
+            Qr, Qc = self.roi_shape
+            diff_intensities = diff_intensities.reshape((-1, Qr, Qc))
 
         if crop_patterns:
             diff_intensities = diff_intensities[:, crop_mask].reshape(
@@ -939,21 +940,21 @@ class PtychographyBase(AutoSerialize):
             object_padding_px = np.array([0, 0])
 
         if positions is None:
-            nx, ny = self.gpts
-            sx, sy = self.scan_sampling
-            x = np.arange(nx) * sx
-            y = np.arange(ny) * sy
+            nr, nc = self.gpts
+            Sr, Sc = self.scan_sampling
+            r = np.arange(nr) * Sr
+            c = np.arange(nc) * Sc
 
-            x, y = np.meshgrid(x, y, indexing="ij")
+            r, c = np.meshgrid(r, c, indexing="ij")
             if positions_offset_ang is not None:
-                x += positions_offset_ang[0]
-                y += positions_offset_ang[1]
+                r += positions_offset_ang[0]
+                c += positions_offset_ang[1]
 
             if positions_mask is not None:
-                x = x[positions_mask]
-                y = y[positions_mask]
+                r = r[positions_mask]
+                c = c[positions_mask]
 
-            positions = np.stack((x.ravel(), y.ravel()), axis=-1)
+            positions = np.stack((r.ravel(), c.ravel()), axis=-1)
         else:
             positions = np.array(positions)
 
@@ -983,8 +984,8 @@ class PtychographyBase(AutoSerialize):
 
     def _compute_propagator_arrays(
         self,
-        theta_x: float | None = None,
-        theta_y: float | None = None,
+        theta_r: float | None = None,
+        theta_c: float | None = None,
     ):
         """
         Precomputes propagator arrays complex wave-function will be convolved by,
@@ -992,51 +993,51 @@ class PtychographyBase(AutoSerialize):
 
         Parameters
         ----------
-        theta_x: float, optional
-            x tilt of propagator in mrad
-        theta_y: float, optional
-            y tilt of propagator in mrad
+        theta_r: float, optional
+            tilt of propagator in mrad around the row-axis
+        theta_c: float, optional
+            tilt of propagator in mrad around the column-axis
 
         Returns
         -------
         propagator_arrays: np.ndarray
-            (T,Sx,Sy) shape array storing propagator arrays
+            (T,Sr,Sc) shape array storing propagator arrays
         """
 
         if self.num_slices == 1:
             self.propagators = np.array([])
             return
 
-        kh, kw = tuple(
+        kr, kc = tuple(
             np.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling)
         )
 
         wavelength = electron_wavelength_angstrom(self.probe_params["energy"])
         propagators = np.empty(
-            (self.num_slices - 1, kh.shape[0], kw.shape[0]), dtype=np.complex64
+            (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=np.complex64
         )
 
         for i, dz in enumerate(self.slice_thicknesses):
             propagators[i] = np.exp(
-                1.0j * (-(kh**2)[:, None] * np.pi * wavelength * dz)
+                1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz)
             )
-            propagators[i] *= np.exp(1.0j * (-(kw**2)[None] * np.pi * wavelength * dz))
+            propagators[i] *= np.exp(1.0j * (-(kc**2)[None] * np.pi * wavelength * dz))
 
-            if theta_x is not None:
+            if theta_r is not None:
                 propagators[i] *= np.exp(
-                    1.0j * (-2 * kh[:, None] * np.pi * dz * np.tan(theta_x / 1e3))
+                    1.0j * (-2 * kr[:, None] * np.pi * dz * np.tan(theta_r / 1e3))
                 )
 
-            if theta_y is not None:
+            if theta_c is not None:
                 propagators[i] *= np.exp(
-                    1.0j * (-2 * kw[None] * np.pi * dz * np.tan(theta_y / 1e3))
+                    1.0j * (-2 * kc[None] * np.pi * dz * np.tan(theta_c / 1e3))
                 )
         self.propagators = propagators
         return
 
     def _set_patch_indices(self):
-        x0 = np.round(self.positions_px[:, 0]).astype(np.int32)  # can fix here
-        y0 = np.round(self.positions_px[:, 1]).astype(np.int32)
+        r0 = np.round(self.positions_px[:, 0]).astype(np.int32)  # can fix here
+        c0 = np.round(self.positions_px[:, 1]).astype(np.int32)
 
         x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(
             np.int32
@@ -1044,8 +1045,8 @@ class PtychographyBase(AutoSerialize):
         y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(
             np.int32
         )
-        row = (x0[:, None, None] + x_ind[None, :, None]) % self.object_shape_full[-2]
-        col = (y0[:, None, None] + y_ind[None, None, :]) % self.object_shape_full[-1]
+        row = (r0[:, None, None] + x_ind[None, :, None]) % self.object_shape_full[-2]
+        col = (c0[:, None, None] + y_ind[None, None, :]) % self.object_shape_full[-1]
 
         self.patch_row = row
         self.patch_col = col
@@ -1053,8 +1054,10 @@ class PtychographyBase(AutoSerialize):
     def _set_object_fov_mask(self, gaussian_sigma: float = 5.0, batch_size=None):
         overlap = self._get_probe_overlap(batch_size)
         ov = overlap > overlap.max() * 0.3
-        ov = ndi.binary_closing(ov, iterations=10)
-        ov = ndi.binary_dilation(ov, iterations=min(32, np.min(self.object_padding_px)))
+        ov = ndi.binary_dilation(
+            ov, iterations=min(32, np.min(self.object_padding_px) // 4)
+        )
+        ov = ndi.binary_closing(ov, iterations=5)
         # dont want mask too small
         # small mask is especially problematic with smaller batch sizes because applied more often
         ov = ndi.gaussian_filter(
@@ -1064,7 +1067,7 @@ class PtychographyBase(AutoSerialize):
         return
 
     def _get_probe_overlap(self, max_batch_size: int | None = None) -> np.ndarray:
-        prb: np.ndarray = self.probe[0]
+        prb = self._as_numpy(self.probe[0])
         num_dps = int(np.prod(self.gpts))
         shifted_probes = np.broadcast_to(prb, (num_dps, *self.roi_shape))
 
@@ -1099,7 +1102,7 @@ class PtychographyBase(AutoSerialize):
     def shifted_amplitudes(self) -> np.ndarray:
         """
         gives the amplitudes that have had descan corrected and which are corner centered
-        shaped as (rx*ry, qx, qy)
+        shaped as (rr*ry, qx, qy)
         """
         return self._shifted_amplitudes
 
@@ -1142,18 +1145,19 @@ class PtychographyBase(AutoSerialize):
         self._num_slices = validate_int(validate_gt(val, 0, "num_slices"), "num_slices")
 
     @property
-    def propagators(self) -> np.ndarray:
+    def propagators(self) -> "np.ndarray|cp.ndarray|torch.Tensor":
         if self.num_slices == 1:
             return np.array([])
         else:
             return self._propagators
 
     @propagators.setter
-    def propagators(self, prop: np.ndarray | list[np.ndarray]) -> None:
+    def propagators(
+        self, prop: "np.ndarray | list[np.ndarray] | torch.Tensor | list[torch.Tensor]"
+    ) -> None:
         if self.num_slices == 1:
             self._propagators = np.array([])
         else:
-            prop = validate_xplike(prop, "propagators")
             prop = validate_array(
                 prop,
                 name="propagators",
@@ -1243,7 +1247,7 @@ class PtychographyBase(AutoSerialize):
         return self._as_numpy(self._object)
 
     @object.setter
-    def object(self, obj: "np.ndarray | cp.ndarray | torch.Tensor") -> None:
+    def object(self, obj: "np.ndarray | cp.ndarray") -> None:
         """Shape [num_slices, height, width]"""
         obj = validate_xplike(obj, "object")
         obj = validate_array(
@@ -1254,11 +1258,16 @@ class PtychographyBase(AutoSerialize):
             shape=self.object_shape_full,
             expand_dims=True,
         )
-        xp = get_array_module(obj)
+        xp = arr.get_array_module(obj)
         masked_obj = np.abs(obj) * np.exp(
             1.0j * np.angle(obj) * xp.asarray(self._object_fov_mask)
         )
-        self._object = masked_obj.astype(self._object_dtype)
+        # normalize phase to 0 mean
+        amp = arr.abs(masked_obj)
+        ph = arr.angle(masked_obj)
+        ph -= ph.mean()
+        new_obj = amp * arr.exp(1.0j * ph)
+        self._object = arr.as_type(new_obj, self._object_dtype)
 
     # @property
     # def _initial_object(self) -> np.ndarray:
@@ -1389,7 +1398,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def probe(self) -> np.ndarray:
-        """Complex valued probe(s). Shape [num_probes, roi_height, roi_width]"""
+        """Complex valued probe(s). Shape [num_probes, roi_reight, roi_width]"""
         self._check_probe()
         return self._probe
 
@@ -1479,21 +1488,6 @@ class PtychographyBase(AutoSerialize):
                 f"rng should be a np.random.Generator or a seed, got {type(rng)}"
             )
         self._rng = rng
-
-    @property
-    def constraints(self) -> dict[str, Any]:
-        return self._constraints
-
-    @constraints.setter
-    def constraints(self, constraints: dict[str, Any]):
-        """
-        Set constraints for the object reconstruction.
-        """
-        if not isinstance(constraints, dict):
-            raise TypeError("Constraints should be a dictionary.")
-        # TODO add validation for constraints
-        # move this to a mixin
-        self._constraints = constraints
 
     @property
     def store_iterations(self) -> bool:
@@ -1688,6 +1682,9 @@ class PtychographyBase(AutoSerialize):
     ) -> "np.ndarray|cp.ndarray":
         """returns a copy of arr as a np or cp array"""
         if "cuda" in self.device:  # this should only be possible if "has_cupy"
+            if config.get("has_torch"):
+                if isinstance(arr, torch.Tensor):
+                    return arr
             return cp.asarray(arr)
         elif self.device == "cpu":
             return self._as_numpy(arr)
@@ -1819,7 +1816,7 @@ class PtychographyBase(AutoSerialize):
 
     # endregion
 
-    # region --- ptychography forward model ---
+    # region --- ptychography foRcard model ---
 
     def forward_operator(
         self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
@@ -1841,6 +1838,7 @@ class PtychographyBase(AutoSerialize):
         propagated_probes, overlap = self.overlap_projection(
             obj_patches, shifted_input_probes, descan_shifts
         )
+
         # same propagated_probes shape as shifted_input_probes
         # ov shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         # print("overlap shape0: ", overlap.shape)
@@ -1910,13 +1908,33 @@ class PtychographyBase(AutoSerialize):
         """
         # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         # obj_patches shape: (nslices, batch_size, roi_shape[0], roi_shape[1])
-        overlap = obj_patches[0] * input_probes[0]
-        for s in range(1, self.num_slices):
-            input_probes[s] = self._propagate_array(overlap, self._propagators[s - 1])
-            overlap = obj_patches[s] * input_probes[s]
-        propagated_probes = input_probes
+        ml = False
+        if config.get("has_torch"):
+            if isinstance(input_probes, torch.Tensor):
+                ml = True
 
-        return propagated_probes, overlap
+        if not ml:
+            overlap = obj_patches[0] * input_probes[0]
+            for s in range(1, self.num_slices):
+                input_probes[s] = self._propagate_array(
+                    overlap, self._propagators[s - 1]
+                )  # type:ignore
+                overlap = obj_patches[s] * input_probes[s]
+            propagated_probes = input_probes
+
+        # TODO make a separate forward function for ML vs GD -- the inputs/outputs are different shapes
+        # so it maybe makes sense to have them be distinct
+        # really hard to make typing work with just one function also
+        if ml:
+            input_probes = input_probes[0]
+            overlap = obj_patches[0] * input_probes
+            for s in range(self.num_slices):
+                overlap = obj_patches[s] * input_probes
+                if s + 1 < self.num_slices:
+                    input_probes = self._propagate_array(overlap, self._propagators[s])
+            propagated_probes = input_probes[None]
+
+        return propagated_probes, overlap  # type:ignore
 
     def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
@@ -1956,7 +1974,8 @@ class PtychographyBase(AutoSerialize):
         propagated_array: np.ndarray
             Fourier-convolved array
         """
-        propagated = np.fft.ifft2(np.fft.fft2(array) * propagator_array)
+        xp = arr.get_array_module(array)
+        propagated = xp.fft.ifft2(xp.fft.fft2(array) * propagator_array)
         return propagated
 
     # endregion

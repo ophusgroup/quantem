@@ -10,6 +10,7 @@ from quantem.diffractive_imaging.ptycho_utils import (
     sum_patches,
 )
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
+from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -18,7 +19,7 @@ else:
         import cupy as cp
 
 
-class PtychographyGD(PtychographyBase):
+class PtychographyGD(PtychographyConstraints, PtychographyBase):
     def __init__(
         self,
         dset: Dataset4dstem,
@@ -48,7 +49,7 @@ class PtychographyGD(PtychographyBase):
         fix_probe: bool = False,
         batch_size: int | None = None,
         step_size: float = 0.5,
-        constraints: dict | None = None,
+        constraints: dict = {},
         device: str = "cpu",
     ) -> None:
         # self.device = device
@@ -72,12 +73,18 @@ class PtychographyGD(PtychographyBase):
             obj = self.object
             probe = self.probe
 
+        self.constraints = constraints  # doesn't overwrite if not reset
+
         obj = xp.asarray(obj)
         probe = xp.asarray(probe)
         pos_frac = xp.asarray(self.positions_px_fractional)
         patch_row = xp.asarray(self.patch_row)
         patch_col = xp.asarray(self.patch_col)
         amplitudes = xp.asarray(self.shifted_amplitudes)
+        if self.constraints["object"]["apply_fov_mask"]:
+            fov_mask = xp.asarray(self.object_fov_mask).astype(self._object_dtype)
+        else:
+            fov_mask = None
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in tqdm(range(num_iter)):
@@ -106,8 +113,10 @@ class PtychographyGD(PtychographyBase):
                     fix_probe=fix_probe,
                 )
 
-                print("identical slices")
-                obj = np.repeat(np.mean(obj, axis=0)[None], self.num_slices, 0)
+                # obj, probe = self.apply_constraints(obj, probe)
+                obj, probe = self.apply_constraints(
+                    obj, probe, object_fov_mask=fov_mask
+                )
 
                 error += self.error_estimate(
                     obj,

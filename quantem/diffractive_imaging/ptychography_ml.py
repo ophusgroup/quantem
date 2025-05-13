@@ -8,17 +8,19 @@ from quantem.core import config
 from quantem.core.datastructures import Dataset4dstem
 from quantem.diffractive_imaging.ptycho_utils import generate_batches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
+from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
 
 if TYPE_CHECKING:
+    import cupy as cp
     import torch
 else:
     if config.get("has_torch"):
         import torch
-    else:
-        pass
+    if config.get("has_cupy"):
+        import cupy as cp
 
 
-class PtychographyML(PtychographyBase):
+class PtychographyML(PtychographyConstraints, PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
     """
@@ -26,7 +28,7 @@ class PtychographyML(PtychographyBase):
     OPTIMIZABLE_VALS = ["object", "probe", "descan", "positions"]
     DEFAULT_LRS = {
         "object": 5e-3,
-        "probe": 5e-3,
+        "probe": 1e-3,
         "descan": 1e-3,
         "positions": 1e-3,  # TODO change to scan_positions
         "tv_weight_z": 0,
@@ -136,7 +138,6 @@ class PtychographyML(PtychographyBase):
         [p.requires_grad_(True) for p in params]
         opt_params = self.optimizer_params[key]
         opt_type = opt_params.pop("type")
-        print("opt_params: ", opt_params)
         if opt_type == "adam":
             opt = torch.optim.Adam(params, **opt_params)
         elif opt_type == "adamw":
@@ -491,6 +492,7 @@ class PtychographyML(PtychographyBase):
         self._lrs = []
         self._optimizers = {}
         self._schedulers = {}
+        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     def _to_torch(
         self, arr: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
@@ -522,6 +524,8 @@ class PtychographyML(PtychographyBase):
 
         if isinstance(arr, np.ndarray):
             t = torch.tensor(arr.copy(), device=self.device, dtype=dt)
+        elif isinstance(arr, cp.ndarray):
+            t = torch.tensor(arr, device=self.device, dtype=dt)
         elif isinstance(arr, torch.Tensor):
             t = arr.to(self.device)
             if dt is not None:
@@ -563,13 +567,6 @@ class PtychographyML(PtychographyBase):
         if mode is not None:
             self.mode = mode
 
-        # self.base_lrs = lrs # merging with defaults
-
-        # TODO currently here
-        # write this as a single reconstruction method, for setting up optimizers just put the
-        # pixelwwise methods here, tbd how to rewrite set_optimizers
-        # similaly for schedulers and get_prediction
-
         if reset:
             self.reset_recon()
             obj = self._to_torch(self.initial_object)
@@ -597,7 +594,7 @@ class PtychographyML(PtychographyBase):
                     )
                 self.object_type = object_type
 
-        self.constraints = constraints
+        self.constraints = constraints  # doesn't overwrite if not reset
 
         if verbose is not None:
             self.verbose = verbose
@@ -614,9 +611,6 @@ class PtychographyML(PtychographyBase):
             num_batches = 1
         else:
             num_batches = 1 + ((self.gpts[0] * self.gpts[1]) // batch_size)
-
-        obj2 = obj  # to avoid in-place operations with constraints # TODO remove
-        probe2 = probe  # to avoid in-place operations with constraints
 
         if new_optimizers:
             self._add_optimizer(key="object", params=obj)
@@ -673,13 +667,26 @@ class PtychographyML(PtychographyBase):
         t_patch_row = self._to_torch(self.patch_row)
         t_patch_col = self._to_torch(self.patch_col)
         t_position_px_fractional = self._to_torch(self.positions_px_fractional)
-        # t_mask = self._to_torch(self._object_fov_mask) # for constraints
+        self.propagators = self._to_torch(self.propagators)
+        t_mask = self._to_torch(self._object_fov_mask)  # for constraints
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         # TODO add pbar with loss printout
         for a0 in trange(num_iter, disable=not pbar):
             np.random.shuffle(shuffled_indices)
             loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
+
+            if self.mode == "pixelwise":
+                pred_obj = obj
+                pred_probe = probe
+            else:
+                raise NotImplementedError(f"mode {self.mode} not implemented")
+
+            ### apply constraints here after prediction
+            pred_obj, pred_probe = self.apply_constraints(
+                object=pred_obj, probe=pred_probe, object_fov_mask=t_mask
+            )
+
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
@@ -688,12 +695,6 @@ class PtychographyML(PtychographyBase):
                     batch_descan_shifts = t_descan_shifts[batch_indices]
                 else:
                     batch_descan_shifts = None
-
-                if self.mode == "pixelwise":
-                    pred_obj = obj2
-                    pred_probe = probe2
-                else:
-                    raise NotImplementedError(f"mode {self.mode} not implemented")
 
                 loss += (
                     self.error_estimate(
@@ -707,13 +708,12 @@ class PtychographyML(PtychographyBase):
                     )
                     / num_batches
                 )
-                print("loss: ", loss)
 
             if (
                 self.constraints["object"]["tv_weight_z"] > 0
                 or self.constraints["object"]["tv_weight_yx"] > 0
             ):
-                loss += self.get_tv_loss(obj2)
+                loss += self.get_tv_loss(pred_obj)
 
             loss.backward()
             for opt in self.optimizers.values():
@@ -726,18 +726,23 @@ class PtychographyML(PtychographyBase):
                 elif sch is not None:
                     sch.step()
 
-            # TODO add constraints
-            # pred_obj, pred_probe = self.apply_constraints(
-            #     object=obj, probe=probe, object_fov_mask=t_mask
-            # )
-
             self._lrs.append(self.optimizers["object"].param_groups[0]["lr"])
             self._losses.append(loss.item())
             self._recon_types.append("pixelwise")
             if self.store_iterations and (
                 (a0 + 1) % self.store_iterations_every == 0 or a0 == 0
             ):
-                self.append_recon_iteration(obj2, probe2)
+                self.append_recon_iteration(pred_obj, pred_probe)
+
+        # final constraints application
+        if self.mode == "pixelwise":
+            pred_obj = obj
+            pred_probe = probe
+        else:
+            raise NotImplementedError
+        obj, probe = self.apply_constraints(
+            object=pred_obj.detach(), probe=pred_probe.detach(), object_fov_mask=t_mask
+        )
 
         if "descan" in self.optimizer_params.keys():
             assert isinstance(t_descan_shifts, torch.Tensor)  # TODO improve/fix this
@@ -745,13 +750,7 @@ class PtychographyML(PtychographyBase):
         else:
             self._descan_shifts = None
 
-        obj = obj2.detach()
-        probe = probe2.detach()
-
-        amp = obj.abs()
-        ph = obj.angle()
-        ph -= ph.mean()
-        self.object = amp * torch.exp(1.0j * ph)
+        self.object = obj
         self.probe = probe
         return
 

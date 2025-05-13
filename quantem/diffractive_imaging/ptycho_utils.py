@@ -1,9 +1,13 @@
-from typing import TYPE_CHECKING, Any, Generator, Literal
+from typing import TYPE_CHECKING, Any, Generator, Literal, Union, overload
 
 import numpy as np
 from scipy.optimize import curve_fit
 
 from quantem.core import config
+from quantem.core.utils import array_funcs as arr
+
+ArrayLike = Union[np.ndarray, "cp.ndarray", "torch.Tensor"]
+
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -13,6 +17,8 @@ else:
         import cupy as cp
     if config.get("has_torch"):
         import torch
+
+# TODO: figure out what here should be put into ptycho base vs kept in a utilities file
 
 
 def subdivide_into_batches(
@@ -73,56 +79,45 @@ def generate_batches(
         start = end
 
 
-def get_array_module(array: "torch.Tensor | np.ndarray | cp.ndarray"):
-    if config.get("has_torch"):
-        if isinstance(array, torch.Tensor):
-            return torch
-    if config.get("has_cupy"):
-        if isinstance(array, cp.ndarray):
-            return cp
-    if isinstance(array, np.ndarray):
-        return np
-    else:
-        raise NotImplementedError
-
-
+@overload
+def fourier_shift(array: np.ndarray, positions: np.ndarray) -> np.ndarray: ...
+@overload
 def fourier_shift(
-    array: "torch.Tensor | np.ndarray | cp.ndarray",
-    positions: "torch.Tensor | np.ndarray | cp.ndarray",
-) -> "torch.Tensor | np.ndarray | cp.ndarray":
+    array: "torch.Tensor", positions: "torch.Tensor"
+) -> "torch.Tensor": ...
+def fourier_shift(
+    array: ArrayLike,
+    positions: ArrayLike,
+) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
-    xp = get_array_module(array)
-    phase = fourier_translation_operator(positions, array.shape, device=array.device)
+    xp = arr.get_array_module(array)
+    phase = fourier_translation_operator(positions, array.shape)
     fourier_array = xp.fft.fft2(array)
     shifted_fourier_array = fourier_array * phase
 
     return xp.fft.ifft2(shifted_fourier_array)
 
 
+@overload
+def fourier_translation_operator(positions: np.ndarray, shape: tuple) -> np.ndarray: ...
+@overload
 def fourier_translation_operator(
-    positions: "torch.Tensor | np.ndarray",
-    shape: tuple | np.ndarray,
-    device: "str | torch.device" = "cpu",
-) -> "torch.Tensor":
+    positions: "torch.Tensor", shape: tuple
+) -> "torch.Tensor": ...
+def fourier_translation_operator(
+    positions: ArrayLike,
+    shape: tuple,
+) -> ArrayLike:
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
+    nr, nc = shape[-2:]
+    r = positions[..., 0][:, None, None]
+    c = positions[..., 1][:, None, None]
+    kr = arr.match_device(np.fft.fftfreq(nr, d=1.0), positions)
+    kc = arr.match_device(np.fft.fftfreq(nc, d=1.0), positions)
+    ramp_r = arr.exp(-2.0j * np.pi * kr[None, :, None] * r)
+    ramp_c = arr.exp(-2.0j * np.pi * kc[None, None, :] * c)
+    ramp = ramp_r * ramp_c
 
-    xp = get_array_module(positions)
-    nh, nw = shape[-2:]
-    h = positions[..., 0][:, None, None]
-    w = positions[..., 1][:, None, None]
-    if xp is torch:
-        kx = torch.fft.fftfreq(nh, d=1.0, device=device)
-        ky = torch.fft.fftfreq(nw, d=1.0, device=device)
-        ramp_x = torch.exp(-2.0j * torch.pi * kx[None, :, None] * h)
-        ramp_y = torch.exp(-2.0j * torch.pi * ky[None, None, :] * w)
-    else:
-        assert xp in [cp, np]
-        kx = xp.fft.fftfreq(nh, d=1.0)
-        ky = xp.fft.fftfreq(nw, d=1.0)
-        ramp_x = xp.exp(-2.0j * xp.pi * kx[None, :, None] * h)
-        ramp_y = xp.exp(-2.0j * xp.pi * ky[None, None, :] * w)
-
-    ramp = ramp_x * ramp_y
     if len(shape) == 2:
         return ramp
     elif len(shape) == 3:
@@ -133,7 +128,7 @@ def fourier_translation_operator(
 
 def sum_patches_base(
     patches: np.ndarray, patch_row: np.ndarray, patch_col: np.ndarray, obj_shape: tuple
-):
+) -> np.ndarray:
     """Sums overlapping patches corner-centered at `positions`."""
 
     flat_weights = patches.ravel()
@@ -146,7 +141,7 @@ def sum_patches_base(
 
 def sum_patches(
     patches: np.ndarray, patch_row: np.ndarray, patch_col: np.ndarray, obj_shape: tuple
-):
+) -> np.ndarray:
     """Sums overlapping patches corner-centered at `positions`."""
     if np.any(np.iscomplex(patches)):
         real = sum_patches_base(patches.real, patch_row, patch_col, obj_shape)
@@ -156,86 +151,89 @@ def sum_patches(
         return sum_patches_base(patches, patch_row, patch_col, obj_shape)
 
 
-def get_shifted_array(ar, hshift, wshift, periodic=True, bilinear=False, device="cpu"):
+def get_shifted_array(
+    ar: np.ndarray,
+    rshift: np.ndarray,
+    cshift: np.ndarray,
+    periodic: bool = True,
+    bilinear: bool = False,
+):
     """
-        Shifts array ar by the shift vector (hshift,wshift), using the either
+        Shifts array ar by the shift vector (rshift, cshift), using the either
     the Fourier shift theorem (i.e. with sinc interpolation), or bilinear
     resampling. Boundary conditions can be periodic or not.
 
     Args:
             ar (float): input array
-            hshift (float): shift along axis 0 (x) in pixels
-            wshift (float): shift along axis 1 (y) in pixels
+            rshift (float): shift along axis 0 (rows) in pixels
+            cshift (float): shift along axis 1 (columns) in pixels
             periodic (bool): flag for periodic boundary conditions
             bilinear (bool): flag for bilinear image shifts
             device(str): calculation device will be perfomed on. Must be 'cpu' or 'gpu'
         Returns:
             (array) the shifted array
     """
-    if device == "gpu":
-        xp = cp
-    else:
-        xp = np
-
-    ar = xp.asarray(ar)
+    xp = arr.get_xp_module(ar)
 
     # Apply image shift
     if bilinear is False:
-        nh, nw = xp.shape(ar)
-        qh, qw = make_Fourier_coords2D(nh, nw, 1)
-        qh = xp.asarray(qh)
-        qw = xp.asarray(qw)
+        nr, nc = xp.shape(ar)
+        qr, qc = make_Fourier_coords2D(nr, nc, 1)
+        qr = xp.asarray(qr)
+        qc = xp.asarray(qc)
 
-        p = xp.exp(-(2j * xp.pi) * ((wshift * qw) + (hshift * qh)))
+        p = xp.exp(-(2j * xp.pi) * ((cshift * qc) + (rshift * qr)))
         shifted_ar = xp.real(xp.fft.ifft2((xp.fft.fft2(ar)) * p))
 
     else:
-        xF = xp.floor(hshift).astype(int).item()
-        yF = xp.floor(wshift).astype(int).item()
-        wx = hshift - xF
-        wy = wshift - yF
+        rF = xp.floor(rshift).astype(int).item()
+        cF = xp.floor(cshift).astype(int).item()
+        wr = rshift - rF
+        wc = cshift - cF
 
         shifted_ar = (
-            xp.roll(ar, (xF, yF), axis=(0, 1)) * ((1 - wx) * (1 - wy))
-            + xp.roll(ar, (xF + 1, yF), axis=(0, 1)) * ((wx) * (1 - wy))
-            + xp.roll(ar, (xF, yF + 1), axis=(0, 1)) * ((1 - wx) * (wy))
-            + xp.roll(ar, (xF + 1, yF + 1), axis=(0, 1)) * ((wx) * (wy))
+            xp.roll(ar, (rF, cF), axis=(0, 1)) * ((1 - wr) * (1 - wc))
+            + xp.roll(ar, (rF + 1, cF), axis=(0, 1)) * ((wr) * (1 - wc))
+            + xp.roll(ar, (rF, cF + 1), axis=(0, 1)) * ((1 - wr) * (wc))
+            + xp.roll(ar, (rF + 1, cF + 1), axis=(0, 1)) * ((wr) * (wc))
         )
 
     if periodic is False:
         # Rounded coordinates for boundaries
-        xR = (xp.round(hshift)).astype(int)
-        yR = (xp.round(wshift)).astype(int)
+        rR = (xp.round(rshift)).astype(int)
+        cR = (xp.round(cshift)).astype(int)
 
-        if xR > 0:
-            shifted_ar[0:xR, :] = 0
-        elif xR < 0:
-            shifted_ar[xR:, :] = 0
-        if yR > 0:
-            shifted_ar[:, 0:yR] = 0
-        elif yR < 0:
-            shifted_ar[:, yR:] = 0
+        if rR > 0:
+            shifted_ar[0:rR, :] = 0
+        elif rR < 0:
+            shifted_ar[rR:, :] = 0
+        if cR > 0:
+            shifted_ar[:, 0:cR] = 0
+        elif cR < 0:
+            shifted_ar[:, cR:] = 0
 
     return shifted_ar
 
 
-def make_Fourier_coords2D(Nx: int, Ny: int, pixelSize: float | tuple[float, float] = 1):
+def make_Fourier_coords2D(
+    Nr: int, Nc: int, pixelSize: float | tuple[float, float] = 1
+) -> tuple[np.ndarray, np.ndarray]:
     """
-    Generates Fourier coordinates for a (Nx,Ny)-shaped 2D array.
+    Generates Fourier coordinates for a (Nr,Nc)-shaped 2D array.
         Specifying the pixelSize argument sets a unit size.
     """
     if isinstance(pixelSize, (tuple, list)):
         assert len(pixelSize) == 2, "pixelSize must either be a scalar or have length 2"
-        pixelSize_x = pixelSize[0]
-        pixelSize_y = pixelSize[1]
+        pixelSize_r = pixelSize[0]
+        pixelSize_c = pixelSize[1]
     else:
-        pixelSize_x = pixelSize
-        pixelSize_y = pixelSize
+        pixelSize_r = pixelSize
+        pixelSize_c = pixelSize
 
-    qh = np.fft.fftfreq(Nx, pixelSize_x)
-    qw = np.fft.fftfreq(Ny, pixelSize_y)
-    qw, qh = np.meshgrid(qw, qh)
-    return qh, qw
+    qr = np.fft.fftfreq(Nr, pixelSize_r)
+    qc = np.fft.fftfreq(Nc, pixelSize_c)
+    qc, qr = np.meshgrid(qc, qr)
+    return qr, qc
 
 
 ######## Fitting
@@ -281,7 +279,7 @@ def fit_origin(
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """Fits the origin of diffraction space using the specified method."""
 
-    qh0_meas, qw0_meas = data
+    qr0_meas, qc0_meas = data
 
     if fit_function == "plane":
         f = _plane
@@ -290,67 +288,67 @@ def fit_origin(
     elif fit_function == "bezier_two":
         f = _bezier_two
     elif fit_function == "constant":
-        qh0_fit = np.mean(qh0_meas) * np.ones_like(qh0_meas)
-        qw0_fit = np.mean(qw0_meas) * np.ones_like(qw0_meas)
-        qh0_residuals = qh0_meas - qh0_fit
-        qw0_residuals = qw0_meas - qw0_fit
-        return qh0_fit, qw0_fit, qh0_residuals, qw0_residuals
+        qr0_fit = np.mean(qr0_meas) * np.ones_like(qr0_meas)
+        qc0_fit = np.mean(qc0_meas) * np.ones_like(qc0_meas)
+        qr0_residuals = qr0_meas - qr0_fit
+        qc0_residuals = qc0_meas - qc0_fit
+        return qr0_fit, qc0_fit, qr0_residuals, qc0_residuals
     else:
         raise ValueError(
             "fit_function must be one of 'plane', 'parabola', 'bezier_two', 'constant'"
         )
-    shape = qh0_meas.shape
-    h, w = np.indices(shape)
-    h1D = h.reshape(1, np.prod(shape))
-    w1D = w.reshape(1, np.prod(shape))
-    hw = np.vstack((h1D, w1D))
+    shape = qr0_meas.shape
+    r, c = np.indices(shape)
+    r1D = r.reshape(1, np.prod(shape))
+    c1D = c.reshape(1, np.prod(shape))
+    rc = np.vstack((r1D, c1D))
 
     if mask is not None:
-        qh0_meas_masked = qh0_meas[mask]
-        qw0_meas_masked = qw0_meas[mask]
+        qr0_meas_masked = qr0_meas[mask]
+        qc0_meas_masked = qc0_meas[mask]
         mask1D = mask.reshape(1, np.prod(shape))
-        hw_masked = np.vstack((h1D * mask1D, w1D * mask1D))
+        rc_masked = np.vstack((r1D * mask1D, c1D * mask1D))
 
-        popt_x, _ = curve_fit(f, hw_masked, qh0_meas_masked)
-        popt_y, _ = curve_fit(f, hw_masked, qw0_meas_masked)
+        popt_r, _ = curve_fit(f, rc_masked, qr0_meas_masked)
+        popt_c, _ = curve_fit(f, rc_masked, qc0_meas_masked)
 
         if robust:
-            popt_x = perform_robust_fitting(
-                f, hw_masked, qh0_meas_masked, popt_x, robust_steps, robust_thresh
+            popt_r = perform_robust_fitting(
+                f, rc_masked, qr0_meas_masked, popt_r, robust_steps, robust_thresh
             )
-            popt_y = perform_robust_fitting(
-                f, hw_masked, qw0_meas_masked, popt_y, robust_steps, robust_thresh
+            popt_c = perform_robust_fitting(
+                f, rc_masked, qc0_meas_masked, popt_c, robust_steps, robust_thresh
             )
     else:
-        popt_x, _ = curve_fit(f, hw, qh0_meas)
-        popt_y, _ = curve_fit(f, hw, qw0_meas)
+        popt_r, _ = curve_fit(f, rc, qr0_meas)
+        popt_c, _ = curve_fit(f, rc, qc0_meas)
 
         if robust:
-            popt_x = perform_robust_fitting(
-                f, hw, qh0_meas, popt_x, robust_steps, robust_thresh
+            popt_r = perform_robust_fitting(
+                f, rc, qr0_meas, popt_r, robust_steps, robust_thresh
             )
-            popt_y = perform_robust_fitting(
-                f, hw, qw0_meas, popt_y, robust_steps, robust_thresh
+            popt_c = perform_robust_fitting(
+                f, rc, qc0_meas, popt_c, robust_steps, robust_thresh
             )
 
-    qh0_fit = f(hw, *popt_x).reshape(shape)
-    qw0_fit = f(hw, *popt_y).reshape(shape)
-    qh0_residuals = qh0_meas - qh0_fit
-    qw0_residuals = qw0_meas - qw0_fit
+    qr0_fit = f(rc, *popt_r).reshape(shape)
+    qc0_fit = f(rc, *popt_c).reshape(shape)
+    qr0_residuals = qr0_meas - qr0_fit
+    qc0_residuals = qc0_meas - qc0_fit
 
-    return qh0_fit, qw0_fit, qh0_residuals, qw0_residuals
+    return qr0_fit, qc0_fit, qr0_residuals, qc0_residuals
 
 
-def perform_robust_fitting(func, hw, data, initial_guess, robust_steps, robust_thresh):
+def perform_robust_fitting(func, rc, data, initial_guess, robust_steps, robust_thresh):
     """Performs robust fitting by iteratively rejecting outliers."""
     popt = initial_guess
     for k in range(robust_steps):
-        fit_vals = func(hw, *popt)
+        fit_vals = func(rc, *popt)
         rmse = np.sqrt(np.mean((fit_vals - data) ** 2))
         mask = np.abs(fit_vals - data) <= robust_thresh * rmse
-        hw = np.vstack((hw[0][mask], hw[1][mask]))
+        rc = np.vstack((rc[0][mask], rc[1][mask]))
         data = data[mask]
-        popt, _ = curve_fit(func, hw, data, p0=popt)
+        popt, _ = curve_fit(func, rc, data, p0=popt)
     return popt
 
 
