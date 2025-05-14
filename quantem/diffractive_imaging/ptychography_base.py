@@ -1263,15 +1263,20 @@ class PtychographyBase(AutoSerialize):
             expand_dims=True,
         )
         xp = arr.get_array_module(obj)
-        masked_obj = np.abs(obj) * np.exp(
-            1.0j * np.angle(obj) * xp.asarray(self._object_fov_mask)
-        )
-        # normalize phase to 0 mean
-        amp = arr.abs(masked_obj)
-        ph = arr.angle(masked_obj)
-        ph -= ph.mean()
-        new_obj = amp * arr.exp(1.0j * ph)
-        self._object = arr.as_type(new_obj, self._object_dtype)
+        if self.object_type in ["complex", "pure_phase"]:
+            masked_obj = np.abs(obj) * np.exp(
+                1.0j * np.angle(obj) * xp.asarray(self._object_fov_mask)
+            )
+            # normalize phase to 0 mean
+            amp = arr.abs(masked_obj)
+            ph = arr.angle(masked_obj)
+            ph -= ph.mean()
+            new_obj = amp * arr.exp(1.0j * ph)
+            self._object = arr.as_type(new_obj, self._object_dtype)
+        else:
+            masked_obj = obj * xp.asarray(self._object_fov_mask)
+            masked_obj -= masked_obj.min()
+            self._object = arr.as_type(masked_obj, self._object_dtype)
 
     # @property
     # def _initial_object(self) -> np.ndarray:
@@ -1685,10 +1690,10 @@ class PtychographyBase(AutoSerialize):
         self, arr: "np.ndarray|cp.ndarray|list|tuple"
     ) -> "np.ndarray|cp.ndarray":
         """returns a copy of arr as a np or cp array"""
+        if config.get("has_torch"):  # strictly could be torch cpu or cuda, so pass
+            if isinstance(arr, torch.Tensor):
+                return arr
         if "cuda" in self.device:  # this should only be possible if "has_cupy"
-            if config.get("has_torch"):
-                if isinstance(arr, torch.Tensor):
-                    return arr
             return cp.asarray(arr)
         elif self.device == "cpu":
             return self._as_numpy(arr)
@@ -1818,6 +1823,18 @@ class PtychographyBase(AutoSerialize):
                 return torch.mean(torch.abs(truth - pred) ** 2)
         return np.mean(np.abs(truth - pred) ** 2)
 
+    def get_probe_intensities(
+        self, probe: "torch.Tensor | np.ndarray | None" = None
+    ) -> np.ndarray:
+        if probe is None:
+            probe = self.probe
+        if probe.ndim == 2:
+            return np.array([1.0])
+        else:
+            probe = self._as_numpy(probe)
+            intensities = np.abs(probe) ** 2
+            return intensities.sum(axis=(-2, -1)) / intensities.sum()
+
     # endregion
 
     # region --- ptychography foRcard model ---
@@ -1827,7 +1844,7 @@ class PtychographyBase(AutoSerialize):
     ):
         shifted_input_probes = fourier_shift(probe, fract_positions)
         # initial shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        print("shifted input_probes shape1 : ", shifted_input_probes.shape)
+        # print("fw: shifted input_probes shape1 : ", shifted_input_probes.shape)
         # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         shifted_input_probes = self._repeat_arr(
             shifted_input_probes.swapaxes(0, 1)[None], self.num_slices, 0
@@ -1835,25 +1852,14 @@ class PtychographyBase(AutoSerialize):
         # shifted_input_probes = np.repeat(
         #     np.swapaxes(shifted_input_probes, 0, 1)[None], self.num_slices, 0
         # )
-        print("shifted input_probes shape2: ", shifted_input_probes.shape)
+        # print("fw: shifted input_probes shape2: ", shifted_input_probes.shape)
         obj_patches = self._get_object_patches(obj, patch_row, patch_col)
         # obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
-        print("obj patches shape: ", obj_patches.shape)
+        # print("fw: obj patches shape: ", obj_patches.shape)
         propagated_probes, overlap = self.overlap_projection(
             obj_patches, shifted_input_probes, descan_shifts
         )
-
-        # same propagated_probes shape as shifted_input_probes
-        # ov shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
-        # print("overlap shape0: ", overlap.shape)
-        # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        # overlap = overlap[0] # remove the num_slices channel
-        print(
-            "propagated_probes shape: ",
-            propagated_probes.shape,
-            " overlap: ",
-            overlap.shape,
-        )
+        # print("fw: propagated_probes shape: ", propagated_probes.shape, " overlap: ", overlap.shape)
         if descan_shifts is not None:
             # TODO move applying plane wave descan shift here
             ### applying plane wave shift here to overlap, reduce need for extra FFT
@@ -1892,10 +1898,8 @@ class PtychographyBase(AutoSerialize):
             #     overlap *= shifts
             raise NotImplementedError("move descan shift stuff to here")
 
-        self.overlap = overlap
         farfield_amplitudes = self.estimate_amplitudes(overlap)
         return arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
-        return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
         # return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
 
     def _get_object_patches(self, obj_array, patch_row, patch_col):
@@ -1921,28 +1925,13 @@ class PtychographyBase(AutoSerialize):
                 ml = True
 
         if not ml:
-            # overlap = obj_patches[0] * input_probes[0]
-            # for s in range(1, self.num_slices):
-            #     input_probes[s] = self._propagate_array(overlap, self._propagators[s - 1])  # type:ignore
-            #     overlap = obj_patches[s] * input_probes[s]
-            # propagated_probes = input_probes
-            # print("propagated probes, overlap: ", propagated_probes.shape, overlap.shape)
-
-            print("input probes shape: ", input_probes.shape)
-            xp = arr.get_array_module(obj_patches)
-            overlap = np.array(0)
-            shifted_probes_slices = xp.zeros_like(input_probes)
-            shifted_probes_slices[0] = input_probes[0]
-            for s in range(self.num_slices):
-                overlap = obj_patches[s] * shifted_probes_slices[s]
-                if s + 1 < self.num_slices:
-                    shifted_probes_slices[s + 1] = self._propagate_array(
-                        overlap, self._propagators[s]
-                    )  # type:ignore
-            propagated_probes = shifted_probes_slices
-            print(
-                "propagated probes, overlap: ", propagated_probes.shape, overlap.shape
-            )
+            overlap = obj_patches[0] * input_probes[0]
+            for s in range(1, self.num_slices):
+                input_probes[s] = self._propagate_array(
+                    overlap, self._propagators[s - 1]
+                )  # type:ignore
+                overlap = obj_patches[s] * input_probes[s]
+            propagated_probes = input_probes
 
         # TODO make a separate forward function for ML vs GD -- the inputs/outputs are different shapes
         # so it maybe makes sense to have them be distinct
@@ -1950,11 +1939,11 @@ class PtychographyBase(AutoSerialize):
         else:
             input_probes = input_probes[0]
             overlap = obj_patches[0] * input_probes
-            for s in range(self.num_slices):
+            for s in range(1, self.num_slices):
+                input_probes = self._propagate_array(overlap, self._propagators[s - 1])
                 overlap = obj_patches[s] * input_probes
-                if s + 1 < self.num_slices:
-                    input_probes = self._propagate_array(overlap, self._propagators[s])
-            propagated_probes = input_probes[None]
+
+            propagated_probes = input_probes
 
         return propagated_probes, overlap  # type:ignore
 
@@ -1970,13 +1959,13 @@ class PtychographyBase(AutoSerialize):
         overlap_fft = np.fft.fft2(overlap_array)
         return np.sqrt(np.sum(np.abs(overlap_fft + eps) ** 2, axis=0))
 
-    def _error_from_overlap(
-        self,
-        overlap_array: "np.ndarray | cp.ndarray",
-        true_amplitudes: "np.ndarray | cp.ndarray",
-    ):
-        farfield_amplitudes = self.estimate_amplitudes(overlap_array)
-        return np.mean((farfield_amplitudes - true_amplitudes) ** 2)
+    # def _error_from_overlap(
+    #     self,
+    #     overlap_array: "np.ndarray | cp.ndarray",
+    #     true_amplitudes: "np.ndarray | cp.ndarray",
+    # ):
+    #     farfield_amplitudes = self.estimate_amplitudes(overlap_array)
+    #     return np.mean((farfield_amplitudes - true_amplitudes) ** 2)
 
     def _propagate_array(
         self, array: "np.ndarray|cp.ndarray", propagator_array: "np.ndarray|cp.ndarray"

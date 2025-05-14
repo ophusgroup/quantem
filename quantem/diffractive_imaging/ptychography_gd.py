@@ -166,13 +166,13 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         fix_probe: bool = False,
     ):
         """Single-pass adjoint operator."""
-        print(f"amp {amplitudes.shape} overlap: {overlap.shape}")
+        # print(f"adj: amp {amplitudes.shape} overlap: {overlap.shape}")
         modified_overlap = self.fourier_projection(amplitudes, overlap)
         # mod_overlap shape same as overlap: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        print("modified overlap shape: ", modified_overlap.shape)
+        # print("adj: modified overlap shape: ", modified_overlap.shape)
         gradient = self.gradient_step(overlap, modified_overlap)
         # grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        print("gradient shape: ", gradient.shape)
+        # print("adj: gradient shape: ", gradient.shape)
         obj_array, probe_array = self.update_object_and_probe(
             obj_array,
             probe_array,

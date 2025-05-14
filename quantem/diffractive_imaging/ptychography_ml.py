@@ -59,7 +59,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             rng=rng,
         )
 
-        self._object_padding_force_power2_level = 3
+        self._object_padding_force_power2_level = 0
         self._schedulers = {}
         self._optimizers = {}
         self._scheduler_params = {}
@@ -608,9 +608,6 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
 
         if batch_size is None:
             batch_size = self.gpts[0] * self.gpts[1]
-            num_batches = 1
-        else:
-            num_batches = 1 + ((self.gpts[0] * self.gpts[1]) // batch_size)
 
         if new_optimizers:
             self._add_optimizer(key="object", params=obj)
@@ -696,18 +693,17 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 else:
                     batch_descan_shifts = None
 
-                loss += (
-                    self.error_estimate(
-                        pred_obj,
-                        pred_probe,
-                        t_patch_row[batch_indices],
-                        t_patch_col[batch_indices],
-                        t_position_px_fractional[batch_indices],
-                        t_amplitudes[batch_indices],
-                        batch_descan_shifts,
-                    )
-                    / num_batches
+                loss += self.error_estimate(
+                    pred_obj,
+                    pred_probe,
+                    t_patch_row[batch_indices],
+                    t_patch_col[batch_indices],
+                    t_position_px_fractional[batch_indices],
+                    t_amplitudes[batch_indices],
+                    batch_descan_shifts,
                 )
+
+            loss /= self._mean_diffraction_intensity * np.prod(self.gpts)
 
             if (
                 self.constraints["object"]["tv_weight_z"] > 0
