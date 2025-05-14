@@ -28,7 +28,7 @@ def read_4dstem(
     --------
     Dataset4dstem
     """
-    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader # type: ignore
     imported_data = file_reader(file_path)[0]
     dataset = Dataset4dstem.from_array(
         array=imported_data["data"],
@@ -77,7 +77,7 @@ def read_2d(
     if file_type is None:
         file_type = Path(file_path).suffix.lower().lstrip(".")
 
-    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader # type: ignore
     imported_data = file_reader(file_path)[0]
 
     dataset = Dataset2d.from_array(
