@@ -129,7 +129,7 @@ class Dataset2d(Dataset):
     def from_shape(
         cls,
         shape: tuple[int, int],
-        name: str = "empty 2D dataset",
+        name: str = "constant 2D dataset",
         fill_value: float = 0.0,
         origin: Union[NDArray, tuple, list, float, int] | None = None,
         sampling: Union[NDArray, tuple, list, float, int] | None = None,
@@ -141,9 +141,9 @@ class Dataset2d(Dataset):
         return cls.from_array(
             array=array,
             name=name,
-            origin=origin if origin is not None else np.zeros(2),
-            sampling=sampling if sampling is not None else np.ones(2),
-            units=units if units is not None else ["pixels", "pixels"],
+            origin=origin,
+            sampling=sampling,
+            units=units,
             signal_units=signal_units,
         )
 
@@ -162,7 +162,7 @@ class Dataset2d(Dataset):
             If True, displays scalebar
         title: str
             Title of Dataset
-        kwargs: dict
+        **kwargs: dict
             Keyword arguments for show_2d
         """
 

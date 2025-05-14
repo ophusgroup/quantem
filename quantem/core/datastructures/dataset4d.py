@@ -5,16 +5,17 @@ from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset import Dataset
 from quantem.core.datastructures.dataset2d import Dataset2d
+from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.utils.utils import as_numpy
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
-class Dataset3d(Dataset):
-    """3D dataset class that inherits from Dataset.
+class Dataset4d(Dataset):
+    """4D dataset class that inherits from Dataset.
 
-    This class represents 3D stacks of 2D datasets, such as image sequences.
+    This class represents 4D stacks of 2D datasets, such as 4D-STEM experiments.
 
     Attributes
     ----------
@@ -31,7 +32,7 @@ class Dataset3d(Dataset):
         signal_units: str = "arb. units",
         _token: object | None = None,
     ):
-        """Initialize a 3D dataset.
+        """Initialize a 4D dataset.
 
         Parameters
         ----------
@@ -70,13 +71,13 @@ class Dataset3d(Dataset):
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
-        array = ensure_valid_array(array, ndim=3)
+        array = ensure_valid_array(array, ndim=4)
         return cls(
             array=array,
-            name=name if name is not None else "3D dataset",
-            origin=origin if origin is not None else np.zeros(3),
-            sampling=sampling if sampling is not None else np.ones(3),
-            units=units if units is not None else ["index", "pixels", "pixels"],
+            name=name if name is not None else "4D dataset",
+            origin=origin if origin is not None else np.zeros(4),
+            sampling=sampling if sampling is not None else np.ones(4),
+            units=units if units is not None else ["index", "index", "pixels", "pixels"],
             signal_units=signal_units,
             _token=cls._token,
         )
@@ -84,15 +85,15 @@ class Dataset3d(Dataset):
     @classmethod
     def from_shape(
         cls,
-        shape: tuple[int, int, int],
-        name: str = "constant 3D dataset",
+        shape: tuple[int, int, int, int],
+        name: str = "constant 4D dataset",
         fill_value: float = 0.0,
         origin: Union[NDArray, tuple, list, float, int] | None = None,
         sampling: Union[NDArray, tuple, list, float, int] | None = None,
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
-        """Create a new Dataset3d filled with a constant value."""
+        """Create a new Dataset4d filled with a constant value."""
         array = np.full(shape, fill_value, dtype=np.float32)
         return cls.from_array(
             array=array,
@@ -103,7 +104,7 @@ class Dataset3d(Dataset):
             signal_units=signal_units,
         )
 
-    def __getitem__(self, index) -> Dataset2d:
+    def __getitem__(self, index) -> Dataset2d | Dataset3d:
         """
         Simple indexing function to return Dataset2d or Dataset3d view.
 
@@ -120,8 +121,9 @@ class Dataset3d(Dataset):
         array_view = self.array[index]
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
-      
-        return Dataset2d.from_array(
+
+        cls = Dataset2d if ndim == 2 else Dataset3d        
+        return cls.from_array(
             array=array_view,
             name=self.name + str(index),
             origin=self.origin[index] if calibrated_origin else self.origin[-ndim:],
@@ -132,18 +134,18 @@ class Dataset3d(Dataset):
 
     def show(
         self,
-        index: int = 0,
+        index : tuple[int,int] = (0,0),
         scalebar: ScalebarConfig | bool = True,
         title: str | None = None,
         **kwargs,
     ):
         """
-        Display a 2D slice of the 3D dataset.
+        Display a 2D slice of the 4D dataset.
 
         Parameters
         ----------
-        index : int
-            Index of the 2D slice to display (along axis 0).
+        index : tuple[int,int]
+            2D index of the 2D slice to display (along axes (0,1)).
         scalebar: ScalebarConfig or bool
             If True, displays scalebar
         title: str
@@ -151,5 +153,5 @@ class Dataset3d(Dataset):
         **kwargs: dict
             Keyword arguments for show_2d
         """
-
+        
         return self[index].show(scalebar=scalebar,title=title,**kwargs)
