@@ -122,7 +122,13 @@ class Dataset4d(Dataset):
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
 
-        cls = Dataset2d if ndim == 2 else Dataset3d
+        if ndim == 2:
+            cls = Dataset2d
+        elif ndim == 3:
+            cls = Dataset3d
+        else:
+            raise ValueError("only 2D and 3D slices are supported.")
+
         return cls.from_array(
             array=array_view,
             name=self.name + str(index),
