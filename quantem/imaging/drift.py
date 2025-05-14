@@ -4,6 +4,8 @@ from typing import List, Union
 
 import numpy as np
 from scipy.interpolate import interp1d
+from scipy.ndimage import gaussian_filter
+from scipy.optimize import minimize
 from tqdm import tqdm
 
 from quantem.core.datastructures.dataset2d import Dataset2d
@@ -254,19 +256,12 @@ class DriftCorrection(AutoSerialize):
         step=0.01,
         num_tests=9,  # should be odd
         refine=True,
-        # window_edge_fraction = 1.0,
         upsample_factor: int = 8,
         max_shift: int = 32,
     ):
         """
         Estimate affine drift from the first 2 images.
         """
-
-        # Window function for translation estimate
-        # window = (
-        #     tukey(self.shape[1], alpha=window_edge_fraction)[:, None]
-        #     * tukey(self.shape[2], alpha=window_edge_fraction)[None, :]
-        # )
 
         # Potential drift vectors
         vec = np.arange(-(num_tests - 1) / 2, (num_tests + 1) / 2)
@@ -282,12 +277,7 @@ class DriftCorrection(AutoSerialize):
             * step
         )
 
-        # dxy = np.array((
-        #     (0.0,0.1),
-        #     (0.0,0.0),
-        # ))
-
-        # Measure cost function
+        # Measure cost function for linear drift vectors
         cost = np.zeros(dxy.shape[0])
         for a0 in tqdm(range(dxy.shape[0]), desc="Solving affine drift"):
             # updated knots
@@ -320,12 +310,6 @@ class DriftCorrection(AutoSerialize):
                 max_shift=max_shift,
             )
             cost[a0] = np.mean(np.abs(im0 - image_shift))
-
-            # import matplotlib.pyplot as plt
-            # fig,ax = plt.subplots(1,3,figsize=(6,3))
-            # ax[0].imshow(im0)
-            # ax[1].imshow(im1)
-            # ax[2].imshow(im0 + image_shift)
 
         # update all knots
         ind = np.argmin(cost)
@@ -396,6 +380,141 @@ class DriftCorrection(AutoSerialize):
             max_shift=max_shift,
         )
 
+    # non-rigid alignment
+    def align_nonrigid(
+        self,
+        num_iterations: int = 4,
+        max_optimize_iterations: int = 10,
+        regularization_sigma_px=1.0,
+        regularization_poly_order: int = 2,
+    ):
+        """
+        Non-rigid drift correction.
+
+
+        Set max_optimize_iterations = None to run to convergence.
+
+        """
+
+        for iterations in tqdm(
+            range(num_iterations),
+            desc="Solving nonrigid drift",
+        ):
+            for ind in range(self.shape[0]):
+                image_ref = np.delete(self.images_transform.array, ind, axis=0).mean(
+                    axis=0
+                )
+
+                knots_init = self.knots[ind]
+                shape_knots = knots_init.shape  # (2, N, K)
+                x0 = knots_init.ravel()
+
+                def cost_function(x):
+                    knots = x.reshape(shape_knots)
+                    xa, ya = self.interpolator[ind].transform_coordinates(knots)
+
+                    xf = np.clip(np.floor(xa).astype(int), 0, self.shape[1] - 2)
+                    yf = np.clip(np.floor(ya).astype(int), 0, self.shape[2] - 2)
+                    dx = xa - xf
+                    dy = ya - yf
+
+                    warped = (
+                        image_ref[xf, yf] * (1 - dx) * (1 - dy)
+                        + image_ref[xf + 1, yf] * dx * (1 - dy)
+                        + image_ref[xf, yf + 1] * (1 - dx) * dy
+                        + image_ref[xf + 1, yf + 1] * dx * dy
+                    )
+
+                    residual = warped - self.images[ind].array
+                    return np.sum(residual**2)
+
+                # Run optimization
+                if max_optimize_iterations is None:
+                    result = minimize(
+                        cost_function,
+                        x0,
+                        method="L-BFGS-B",
+                    )
+                else:
+                    result = minimize(
+                        cost_function,
+                        x0,
+                        method="L-BFGS-B",
+                        options={"maxiter": max_optimize_iterations},
+                    )
+                knots_updated = result.x.reshape(shape_knots)
+
+                # apply regularization if needed
+                if regularization_sigma_px is not None and regularization_sigma_px > 0:
+                    knots_smoothed = knots_updated.copy()
+
+                    for dim in range(knots_updated.shape[0]):
+                        x = np.arange(knots_updated.shape[1])
+                        for knot_ind in range(knots_updated.shape[2]):
+                            y = knots_updated[dim, :, knot_ind]
+
+                            coefs = np.polyfit(x, y, deg=regularization_poly_order)
+                            trend = np.polyval(coefs, x)
+
+                            # Remove trend, filter, add back
+                            residual = y - trend
+                            residual_smooth = gaussian_filter(
+                                residual, sigma=regularization_sigma_px
+                            )
+                            knots_smoothed[dim, :, knot_ind] = residual_smooth + trend
+
+                    knots_updated = knots_smoothed
+
+                # if regularization_sigma_px is not None and regularization_sigma_px > 0:
+                #     knots_updated -= np.arange(shape_knots[1])[None,:,None]
+                #     knots_updated = gaussian_filter(
+                #         knots_updated,
+                #         sigma = regularization_sigma_px,
+                #         axes = 1,
+                #     )
+                #     knots_updated += np.arange(shape_knots[1])[None,:,None]
+
+                # Update knots with optimized values
+                self.knots[ind] = knots_updated
+
+            # Update images
+            for ind in range(self.shape[0]):
+                self.images_transform.array[ind] = self.interpolator[ind].warp_image(
+                    self.images[ind].array,
+                    self.knots[ind],
+                )
+
+                # # Generate reference image
+                # image_ref = np.delete(self.images_transform.array, a0, axis=0).mean(axis=0)
+
+                # # Cost function
+                # def cost_function(
+                #     self,
+                #     knots,
+                # ):
+                #     xa,ya = self.interpolator[a0].transform_coordinates(knots)
+
+                #     xf = np.clip(
+                #         np.floor(xa).astype('int'),
+                #         0,
+                #         self.shape[1]-1,
+                #     )
+                #     yf = np.clip(
+                #         np.floor(ya).astype('int'),
+                #         0,
+                #         self.shape[2]-1,
+                #     )
+                #     dx = xa - xf
+                #     dy = ya - yf
+
+                #     cost = np.sum((
+                #         image_ref[xf  , yf  ]*(1-dx)*(1-dy) + \
+                #         image_ref[xf+1, yf  ]*(1-dx)*(1-dy) + \
+                #         image_ref[xf  , yf+1]*(1-dx)*(1-dy) + \
+                #         image_ref[xf+1, yf+1]*(1-dx)*(1-dy) - \
+                #         self.images[a0]
+                #         )**2)
+
         # import matplotlib.pyplot as plt
         # fig,ax = plt.subplots()
         # xx[:] = 0
@@ -414,20 +533,31 @@ class DriftCorrection(AutoSerialize):
         # fig,ax = plt.subplots()
         # ax.imshow(keep)
 
-    # non-rigid alignment
+    def plot_transformed_images(self, show_knots: bool = True, **kwargs):
+        fig, ax = show_2d(
+            list(self.images_transform.array),
+            **kwargs,
+        )
+        if show_knots:
+            for a0 in range(self.shape[0]):
+                x = self.knots[a0][0]
+                y = self.knots[a0][1]
+                ax[a0].plot(
+                    y,
+                    x,
+                    color="r",
+                )
 
     def plot_merged_images(self, show_knots: bool = True, **kwargs):
         """
         Plot the current transformed images, with knot overlays.
         """
-
         fig, ax = show_2d(
             self.images_transform.array.mean(0),
             # self.images_transform.array[0],
             # self.images[0].array,
             **kwargs,
         )
-
         if show_knots:
             for a0 in range(self.shape[0]):
                 x = self.knots[a0][0]
@@ -435,7 +565,6 @@ class DriftCorrection(AutoSerialize):
                 ax.plot(
                     y,
                     x,
-                    # color = 'r',
                 )
 
 
@@ -460,12 +589,10 @@ class DriftInterpolator:
         self.u = np.linspace(0, 1, input_shape[1])
         # self.v = np.linspace(0, 1, input_shape[0])
 
-    def warp_image(
+    def transform_coordinates(
         self,
-        image: np.ndarray,
-        knots: np.ndarray,  # shape: (2, rows, num_knots)
-        kde_sigma: float = 0.5,
-    ) -> np.ndarray:
+        knots: np.array,
+    ):
         num_knots = knots.shape[-1]
         basis = np.linspace(0, 1, num_knots)
 
@@ -505,11 +632,29 @@ class DriftInterpolator:
                     assume_sorted=True,
                 )(self.u)
 
+        return xa, ya
+
+    def warp_image(
+        self,
+        image: np.ndarray,
+        knots: np.ndarray,  # shape: (2, rows, num_knots)
+        kde_sigma: float = 0.5,
+        output_shape=None,
+        pad_value=None,
+    ) -> np.ndarray:
+        xa, ya = self.transform_coordinates(knots)
+
+        if output_shape is None:
+            output_shape = self.output_shape
+
+        if pad_value is None:
+            pad_value = self.pad_value
+
         image_interp = bilinear_kde(
             xa=xa,  # rows
             ya=ya,  # cols
             intensities=image,
-            output_shape=self.output_shape,
+            output_shape=output_shape,
             kde_sigma=kde_sigma,
             pad_value=self.pad_value,
         )
