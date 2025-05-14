@@ -1,6 +1,6 @@
 import numbers
 from collections.abc import Sequence
-from typing import List, Union
+from typing import List, Optional, Union
 
 import numpy as np
 from scipy.interpolate import interp1d
@@ -386,7 +386,9 @@ class DriftCorrection(AutoSerialize):
         num_iterations: int = 4,
         max_optimize_iterations: int = 10,
         regularization_sigma_px=1.0,
-        regularization_poly_order: int = 2,
+        regularization_poly_order: int = 1,
+        regularization_max_shift_px: Optional[float] = None,
+        solve_individual_rows: bool = True,
     ):
         """
         Non-rigid drift correction.
@@ -406,45 +408,106 @@ class DriftCorrection(AutoSerialize):
                 )
 
                 knots_init = self.knots[ind]
-                shape_knots = knots_init.shape  # (2, N, K)
-                x0 = knots_init.ravel()
+                shape_knots = knots_init.shape
 
-                def cost_function(x):
-                    knots = x.reshape(shape_knots)
-                    xa, ya = self.interpolator[ind].transform_coordinates(knots)
+                if solve_individual_rows:
+                    knots_updated = np.zeros_like(knots_init)
 
-                    xf = np.clip(np.floor(xa).astype(int), 0, self.shape[1] - 2)
-                    yf = np.clip(np.floor(ya).astype(int), 0, self.shape[2] - 2)
-                    dx = xa - xf
-                    dy = ya - yf
+                    for row_ind in range(knots_init.shape[1]):
+                        x0 = knots_init[:, row_ind, :].ravel()
 
-                    warped = (
-                        image_ref[xf, yf] * (1 - dx) * (1 - dy)
-                        + image_ref[xf + 1, yf] * dx * (1 - dy)
-                        + image_ref[xf, yf + 1] * (1 - dx) * dy
-                        + image_ref[xf + 1, yf + 1] * dx * dy
-                    )
+                        def cost_function(x):
+                            knots_row = x.reshape(shape_knots[0], shape_knots[2])
+                            xa, ya = self.interpolator[ind].transform_rows(knots_row)
 
-                    residual = warped - self.images[ind].array
-                    return np.sum(residual**2)
+                            xf = np.clip(np.floor(xa).astype(int), 0, self.shape[1] - 2)
+                            yf = np.clip(np.floor(ya).astype(int), 0, self.shape[2] - 2)
+                            dx = xa - xf
+                            dy = ya - yf
 
-                # Run optimization
-                if max_optimize_iterations is None:
-                    result = minimize(
-                        cost_function,
-                        x0,
-                        method="L-BFGS-B",
-                    )
+                            warped = (
+                                image_ref[xf, yf] * (1 - dx) * (1 - dy)
+                                + image_ref[xf + 1, yf] * dx * (1 - dy)
+                                + image_ref[xf, yf + 1] * (1 - dx) * dy
+                                + image_ref[xf + 1, yf + 1] * dx * dy
+                            )
+
+                            residual = warped - self.images[ind].array[row_ind, :]
+                            return np.sum(residual**2)
+
+                        # Run optimization
+                        if max_optimize_iterations is None:
+                            result = minimize(
+                                cost_function,
+                                x0,
+                                method="L-BFGS-B",
+                            )
+                        else:
+                            result = minimize(
+                                cost_function,
+                                x0,
+                                method="L-BFGS-B",
+                                options={"maxiter": max_optimize_iterations},
+                            )
+                        knots_updated[:, row_ind, :] = result.x.reshape((2, -1))
+
                 else:
-                    result = minimize(
-                        cost_function,
-                        x0,
-                        method="L-BFGS-B",
-                        options={"maxiter": max_optimize_iterations},
-                    )
-                knots_updated = result.x.reshape(shape_knots)
+                    x0 = knots_init.ravel()
 
-                # apply regularization if needed
+                    def cost_function(x):
+                        knots = x.reshape(shape_knots)
+                        xa, ya = self.interpolator[ind].transform_coordinates(knots)
+
+                        xf = np.clip(np.floor(xa).astype(int), 0, self.shape[1] - 2)
+                        yf = np.clip(np.floor(ya).astype(int), 0, self.shape[2] - 2)
+                        dx = xa - xf
+                        dy = ya - yf
+
+                        warped = (
+                            image_ref[xf, yf] * (1 - dx) * (1 - dy)
+                            + image_ref[xf + 1, yf] * dx * (1 - dy)
+                            + image_ref[xf, yf + 1] * (1 - dx) * dy
+                            + image_ref[xf + 1, yf + 1] * dx * dy
+                        )
+
+                        residual = warped - self.images[ind].array
+                        return np.sum(residual**2)
+
+                    # Run optimization
+                    if max_optimize_iterations is None:
+                        result = minimize(
+                            cost_function,
+                            x0,
+                            method="L-BFGS-B",
+                        )
+                    else:
+                        result = minimize(
+                            cost_function,
+                            x0,
+                            method="L-BFGS-B",
+                            options={"maxiter": max_optimize_iterations},
+                        )
+                    knots_updated = result.x.reshape(shape_knots)
+
+                # apply max shift regularization if needed
+                if regularization_max_shift_px is not None:
+                    knots_shift = knots_updated - self.knots[ind]
+                    knots_dist = np.sqrt(np.sum(knots_shift**2, axis=0))
+                    sub = knots_dist > regularization_max_shift_px
+                    knots_updated[0][sub] = (
+                        self.knots[ind][0][sub]
+                        + knots_shift[0][sub]
+                        * regularization_max_shift_px
+                        / knots_dist[sub]
+                    )
+                    knots_updated[1][sub] = (
+                        self.knots[ind][1][sub]
+                        + knots_shift[1][sub]
+                        * regularization_max_shift_px
+                        / knots_dist[sub]
+                    )
+
+                # apply smoothness regularization if needed
                 if regularization_sigma_px is not None and regularization_sigma_px > 0:
                     knots_smoothed = knots_updated.copy()
 
@@ -464,15 +527,6 @@ class DriftCorrection(AutoSerialize):
                             knots_smoothed[dim, :, knot_ind] = residual_smooth + trend
 
                     knots_updated = knots_smoothed
-
-                # if regularization_sigma_px is not None and regularization_sigma_px > 0:
-                #     knots_updated -= np.arange(shape_knots[1])[None,:,None]
-                #     knots_updated = gaussian_filter(
-                #         knots_updated,
-                #         sigma = regularization_sigma_px,
-                #         axes = 1,
-                #     )
-                #     knots_updated += np.arange(shape_knots[1])[None,:,None]
 
                 # Update knots with optimized values
                 self.knots[ind] = knots_updated
@@ -587,7 +641,46 @@ class DriftInterpolator:
         self.cols_input = np.arange(input_shape[1])
 
         self.u = np.linspace(0, 1, input_shape[1])
-        # self.v = np.linspace(0, 1, input_shape[0])
+
+    def transform_rows(
+        self,
+        knots_row: np.array,
+    ):
+        num_knots = knots_row.shape[-1]
+        basis = np.linspace(0, 1, num_knots)
+
+        if num_knots == 1:
+            xa = knots_row[0] + self.u[None, :] * self.scan_fast[0] * (
+                self.input_shape[0] - 1
+            )
+            ya = knots_row[1] + self.u[None, :] * self.scan_fast[1] * (
+                self.input_shape[1] - 1
+            )
+        elif num_knots == 2:
+            xa = interp1d(basis, knots_row[0], kind="linear", assume_sorted=True)(
+                self.u
+            )
+            ya = interp1d(basis, knots_row[1], kind="linear", assume_sorted=True)(
+                self.u
+            )
+        else:
+            kind = "quadratic" if num_knots == 3 else "cubic"
+            xa = interp1d(
+                basis,
+                knots_row[0],
+                kind=kind,
+                fill_value="extrapolate",
+                assume_sorted=True,
+            )(self.u)
+            ya = interp1d(
+                basis,
+                knots_row[1],
+                kind=kind,
+                fill_value="extrapolate",
+                assume_sorted=True,
+            )(self.u)
+
+        return xa, ya
 
     def transform_coordinates(
         self,
