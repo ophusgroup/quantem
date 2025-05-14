@@ -5,6 +5,7 @@ from tqdm import tqdm
 
 from quantem.core import config
 from quantem.core.datastructures import Dataset4dstem
+from quantem.core.utils import array_funcs as arr
 from quantem.diffractive_imaging.ptycho_utils import (
     generate_batches,
     sum_patches,
@@ -61,9 +62,6 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
 
         if batch_size is None:
             batch_size = self.gpts[0] * self.gpts[1]
-            num_batches = 1
-        else:
-            num_batches = 1 + ((self.gpts[0] * self.gpts[1]) // batch_size)
 
         if reset:
             obj = xp.ones_like(self.object)
@@ -81,14 +79,13 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         patch_row = xp.asarray(self.patch_row)
         patch_col = xp.asarray(self.patch_col)
         amplitudes = xp.asarray(self.shifted_amplitudes)
-        if self.constraints["object"]["apply_fov_mask"]:
-            fov_mask = xp.asarray(self.object_fov_mask).astype(self._object_dtype)
-        else:
-            fov_mask = None
+        fov_mask = xp.asarray(self.object_fov_mask).astype(self._object_dtype)
+        self._propagators = xp.asarray(self._propagators)
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in tqdm(range(num_iter)):
             error = xp.float32(0)
+            np.random.shuffle(shuffled_indices)
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
@@ -113,12 +110,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     fix_probe=fix_probe,
                 )
 
-                # obj, probe = self.apply_constraints(obj, probe)
-                obj, probe = self.apply_constraints(
-                    obj, probe, object_fov_mask=fov_mask
-                )
-
-                error += self.error_estimate(
+                error += self.error_estimate(  # TODO move this to forward operator
                     obj,
                     probe,
                     patch_row[batch_indices],
@@ -127,7 +119,24 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     amplitudes[batch_indices],
                 )
 
-            self._losses.append(error.item() / num_batches)
+            # from PyLorentz.visualize import show_im
+            # import matplotlib.pyplot as plt
+            # fig, axs = plt.subplots(ncols=2)
+            # show_im(np.angle(obj), title=f'pre-const obj {a0}', figax=(fig, axs[0]))
+            # show_im(np.abs(obj), title=f'pre-const obj {a0}', figax=(fig, axs[1]))
+            # plt.show()
+
+            # obj, probe = self.apply_constraints(obj, probe)
+            obj, probe = self.apply_constraints(obj, probe, object_fov_mask=fov_mask)
+
+            # fig, axs = plt.subplots(ncols=2)
+            # show_im(np.angle(obj), title=f'post-const obj {a0}', figax=(fig, axs[0]))
+            # show_im(np.abs(obj), title=f'post-const obj {a0}', figax=(fig, axs[1]))
+            # plt.show()
+
+            error /= self._mean_diffraction_intensity * np.prod(self.gpts)
+            self._losses.append(error.item())
+            # TODO add storage and such
 
         if self.device == "gpu":
             if isinstance(obj, cp.ndarray):
@@ -217,8 +226,10 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         for s in reversed(range(self.num_slices)):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
-            probe_normalization = self._to_xp(np.zeros_like(obj_array[s]))
-            object_update = self._to_xp(np.zeros_like(obj_array[s]))
+            probe_normalization = arr.match_device(
+                np.zeros_like(obj_array[s]), probe_slice
+            )
+            object_update = arr.match_device(np.zeros_like(obj_array[s]), obj_slice)
 
             for a0 in range(self.num_probes):
                 probe = probe_slice[a0]
@@ -246,21 +257,21 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                         obj_shape,
                     )
 
-                obj_array[s] += object_update / probe_normalization
+            obj_array[s] += object_update / probe_normalization
 
-                # back-transmit
-                gradient *= np.conj(obj_slice)
+            # back-transmit
+            gradient *= np.conj(obj_slice)
 
-                if s > 0:
-                    # back-propagate
-                    gradient = self._propagate_array(
-                        gradient, np.conj(self._propagators[s - 1])
-                    )
-                elif not fix_probe:
-                    obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
-                    probe_array = probe_array + (
-                        step_size * np.sum(gradient, axis=1) / obj_normalization
-                    )
+            if s > 0:
+                # back-propagate
+                gradient = self._propagate_array(
+                    gradient, np.conj(self._propagators[s - 1])
+                )
+            elif not fix_probe:
+                obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
+                probe_array = probe_array + (
+                    step_size * np.sum(gradient, axis=1) / obj_normalization
+                )
         return obj_array, probe_array
 
     # endregion

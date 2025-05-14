@@ -130,12 +130,11 @@ def sum_patches_base(
     patches: np.ndarray, patch_row: np.ndarray, patch_col: np.ndarray, obj_shape: tuple
 ) -> np.ndarray:
     """Sums overlapping patches corner-centered at `positions`."""
-
     flat_weights = patches.ravel()
     indices = (patch_col + patch_row * obj_shape[1]).ravel()
+    # print("indices shape: ", indices.shape, flat_weights.shape,np.prod(obj_shape))
     counts = np.bincount(indices, weights=flat_weights, minlength=np.prod(obj_shape))
     counts = np.reshape(counts, obj_shape)
-
     return counts
 
 

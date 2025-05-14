@@ -95,7 +95,7 @@ class PtychographyConstraints(PtychographyBase):
             else:
                 amp = 1.0
             phase = arr.angle(object)
-            if mask is not None:
+            if mask is not None and self.constraints["object"]["apply_fov_mask"]:
                 obj2 = (
                     amp * mask * arr.exp(1.0j * phase * mask)
                 )  # .type(obj_dtype_torch)

@@ -862,8 +862,8 @@ class PtychographyBase(AutoSerialize):
 
             intensities = get_shifted_array(
                 diff_intensities[Rr, Rc],
-                -(com_fitted_r[Rr, Rc] + 0.5),
-                -(com_fitted_c[Rr, Rc] + 0.5),
+                -(com_fitted_r[Rr, Rc] + 0.0),
+                -(com_fitted_c[Rr, Rc] + 0.0),
                 bilinear=bilinear,
             )
 
@@ -1011,7 +1011,6 @@ class PtychographyBase(AutoSerialize):
         kr, kc = tuple(
             np.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling)
         )
-
         wavelength = electron_wavelength_angstrom(self.probe_params["energy"])
         propagators = np.empty(
             (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=np.complex64
@@ -1032,6 +1031,7 @@ class PtychographyBase(AutoSerialize):
                 propagators[i] *= np.exp(
                     1.0j * (-2 * kc[None] * np.pi * dz * np.tan(theta_c / 1e3))
                 )
+
         self.propagators = propagators
         return
 
@@ -1051,13 +1051,17 @@ class PtychographyBase(AutoSerialize):
         self.patch_row = row
         self.patch_col = col
 
-    def _set_object_fov_mask(self, gaussian_sigma: float = 5.0, batch_size=None):
+    def _set_object_fov_mask(self, gaussian_sigma: float = 2.0, batch_size=None):
         overlap = self._get_probe_overlap(batch_size)
         ov = overlap > overlap.max() * 0.3
+        # from PyLorentz.visualize import show_im
+        # show_im(ov, '1')
+        ov = ndi.binary_closing(ov, iterations=5)
+        # show_im(ov, '2')
         ov = ndi.binary_dilation(
             ov, iterations=min(32, np.min(self.object_padding_px) // 4)
         )
-        ov = ndi.binary_closing(ov, iterations=5)
+        # show_im(ov, '3')
         # dont want mask too small
         # small mask is especially problematic with smaller batch sizes because applied more often
         ov = ndi.gaussian_filter(
@@ -1888,8 +1892,11 @@ class PtychographyBase(AutoSerialize):
             #     overlap *= shifts
             raise NotImplementedError("move descan shift stuff to here")
 
+        self.overlap = overlap
         farfield_amplitudes = self.estimate_amplitudes(overlap)
+        return arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
         return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
+        # return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
 
     def _get_object_patches(self, obj_array, patch_row, patch_col):
         """Extracts complex-valued roi-shaped patches from `obj_array`."""
@@ -1914,18 +1921,33 @@ class PtychographyBase(AutoSerialize):
                 ml = True
 
         if not ml:
-            overlap = obj_patches[0] * input_probes[0]
-            for s in range(1, self.num_slices):
-                input_probes[s] = self._propagate_array(
-                    overlap, self._propagators[s - 1]
-                )  # type:ignore
-                overlap = obj_patches[s] * input_probes[s]
-            propagated_probes = input_probes
+            # overlap = obj_patches[0] * input_probes[0]
+            # for s in range(1, self.num_slices):
+            #     input_probes[s] = self._propagate_array(overlap, self._propagators[s - 1])  # type:ignore
+            #     overlap = obj_patches[s] * input_probes[s]
+            # propagated_probes = input_probes
+            # print("propagated probes, overlap: ", propagated_probes.shape, overlap.shape)
+
+            print("input probes shape: ", input_probes.shape)
+            xp = arr.get_array_module(obj_patches)
+            overlap = np.array(0)
+            shifted_probes_slices = xp.zeros_like(input_probes)
+            shifted_probes_slices[0] = input_probes[0]
+            for s in range(self.num_slices):
+                overlap = obj_patches[s] * shifted_probes_slices[s]
+                if s + 1 < self.num_slices:
+                    shifted_probes_slices[s + 1] = self._propagate_array(
+                        overlap, self._propagators[s]
+                    )  # type:ignore
+            propagated_probes = shifted_probes_slices
+            print(
+                "propagated probes, overlap: ", propagated_probes.shape, overlap.shape
+            )
 
         # TODO make a separate forward function for ML vs GD -- the inputs/outputs are different shapes
         # so it maybe makes sense to have them be distinct
         # really hard to make typing work with just one function also
-        if ml:
+        else:
             input_probes = input_probes[0]
             overlap = obj_patches[0] * input_probes
             for s in range(self.num_slices):
@@ -1974,8 +1996,7 @@ class PtychographyBase(AutoSerialize):
         propagated_array: np.ndarray
             Fourier-convolved array
         """
-        xp = arr.get_array_module(array)
-        propagated = xp.fft.ifft2(xp.fft.fft2(array) * propagator_array)
+        propagated = arr.ifft2(arr.fft2(array) * propagator_array)
         return propagated
 
     # endregion
