@@ -14,5 +14,6 @@
         "rosettasciio",
         "rsciio",
         "Scalebar"
-    ]
+    ],
+    "basedpyright.analysis.typeCheckingMode": "standard",
 }
