@@ -350,7 +350,15 @@ def show_2d(
     if tight_layout:
         fig.tight_layout()
 
-    return fig, np.squeeze(axs)
+    # Squeeze the axes to the expected shape
+    if axs.shape == (1, 1):
+        axs = axs[0, 0]
+    elif axs.shape[0] == 1:
+        axs = axs[0]
+    elif axs.shape[1] == 1:
+        axs = axs[:, 0]
+
+    return fig, axs
 
 
 update_wrapper(show_2d, _show_2d)
