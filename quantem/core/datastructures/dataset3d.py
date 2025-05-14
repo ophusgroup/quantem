@@ -119,6 +119,9 @@ class Dataset3d(Dataset):
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
 
+        if ndim != 2:
+            raise ValueError("only 2D slices are supported.")
+
         return Dataset2d.from_array(
             array=array_view,
             name=self.name + str(index),
