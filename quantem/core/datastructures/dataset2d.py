@@ -1,4 +1,4 @@
-from typing import Any, Self
+from typing import Any, Self, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -6,6 +6,9 @@ from numpy.typing import NDArray
 from quantem.core.datastructures.dataset import Dataset
 from quantem.core.utils.validators import ensure_valid_array
 
+from quantem.core.visualization.visualization import show_2d
+from quantem.core.visualization.visualization_utils import ScalebarConfig
+from quantem.core.utils.utils import as_numpy
 
 class Dataset2d(Dataset):
     """2D dataset class that inherits from Dataset.
@@ -128,8 +131,8 @@ class Dataset2d(Dataset):
         shape: tuple[int, int],
         name: str = "empty 2D dataset",
         fill_value: float = 0.0,
-        origin: NDArray = None,
-        sampling: NDArray = None,
+        origin: Union[NDArray, tuple, list, float, int] | None = None,
+        sampling: Union[NDArray, tuple, list, float, int] | None = None,
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
@@ -143,3 +146,33 @@ class Dataset2d(Dataset):
             units=units if units is not None else ["pixels", "pixels"],
             signal_units=signal_units,
         )
+
+    def show(
+        self,
+        scalebar: ScalebarConfig | bool = True,
+        title: str | None = None,
+        **kwargs,
+    ):
+        """
+        Displays Dataset as a 2D image
+
+        Parameters
+        ----------
+        scalebar: ScalebarConfig or bool
+            If True, displays scalebar
+        title: str
+            Title of Dataset
+        kwargs: dict
+            Keyword arguments for show_2d
+        """
+
+        if scalebar is True:
+            scalebar = ScalebarConfig(
+                sampling=self.sampling[-1],
+                units=self.units[-1],
+            )
+
+        if title is None:
+            title = self.name
+
+        return show_2d(as_numpy(self.array), scalebar=scalebar, title=title, **kwargs)

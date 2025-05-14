@@ -1,9 +1,10 @@
-from typing import Any, Self
+from typing import Any, Self, Union
 
 import numpy as np
 from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset import Dataset
+from quantem.core.utils.utils import as_numpy
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
@@ -79,64 +80,15 @@ class Dataset3d(Dataset):
             _token=cls._token,
         )
 
-    def show_image(
-        self,
-        index: int = 0,
-        title: str | None = None,
-        figax=None,
-        axsize=(4, 4),
-        scalebar: ScalebarConfig | bool = True,
-        tight_layout: bool = True,
-        combine_images: bool = False,
-        **kwargs,
-    ):
-        """
-        Display a 2D slice of the 3D dataset using the `show_2d` visualization function.
-
-        Parameters
-        ----------
-        index : int
-            Index of the 2D slice to display (along axis 0).
-        title : str | None, optional
-            Title for the plot.
-        figax : tuple or None
-            Optionally pass (fig, ax). Otherwise, a new figure is created.
-        axsize : tuple
-            Size of the figure in inches.
-        scalebar : ScalebarConfig | bool, optional
-            If True, show default scalebar. If False, disable. If ScalebarConfig, customize.
-        tight_layout : bool, default=True
-            Whether to call tight_layout on the resulting figure.
-        combine_images : bool, default=False
-            Combine multiple images into one color-encoded image, if applicable.
-        **kwargs : dict
-            Additional keyword arguments passed to `imshow`.
-
-        Returns
-        -------
-        tuple
-            (fig, ax)
-        """
-        return show_2d(
-            arrays=self.array[index],
-            figax=figax,
-            axsize=axsize,
-            tight_layout=tight_layout,
-            combine_images=combine_images,
-            title=title or f"{self.name} [{index}]",
-            scalebar=scalebar,
-            **kwargs,
-        )
-
     @classmethod
     def from_shape(
         cls,
         shape: tuple[int, int, int],
         name: str = "empty 3D dataset",
         fill_value: float = 0.0,
-        origin: NDArray = None,
-        sampling: NDArray = None,
-        units: list[str] = None,
+        origin: Union[NDArray, tuple, list, float, int] | None = None,
+        sampling: Union[NDArray, tuple, list, float, int] | None = None,
+        units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
         """Create a new Dataset3d filled with a constant value."""
@@ -148,4 +100,42 @@ class Dataset3d(Dataset):
             sampling=sampling if sampling is not None else np.ones(3),
             units=units if units is not None else ["pixels"] * 3,
             signal_units=signal_units,
+        )
+
+    def show(
+        self,
+        index: int = 0,
+        scalebar: ScalebarConfig | bool = True,
+        title: str | None = None,
+        **kwargs,
+    ):
+        """
+        Display a 2D slice of the 3D dataset.
+
+        Parameters
+        ----------
+        index : int
+            Index of the 2D slice to display (along axis 0).
+        scalebar: ScalebarConfig or bool
+            If True, displays scalebar
+        title: str
+            Title of Dataset
+        kwargs: dict
+            Keyword arguments for show_2d
+        """
+
+        if scalebar is True:
+            scalebar = ScalebarConfig(
+                sampling=self.sampling[-1],
+                units=self.units[-1],
+            )
+
+        if title is None:
+            title = f"{self.name} [{index}]"
+
+        return show_2d(
+            arrays=as_numpy(self.array[index]),
+            title=title,
+            scalebar=scalebar,
+            **kwargs,
         )
