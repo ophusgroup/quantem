@@ -345,23 +345,12 @@ def show_2d(
     # Hide unused axes in incomplete rows
     for i, row in enumerate(grid):
         for j in range(len(row), ncols):
-            axs[i][j].axis("off")
+            axs[i][j].axis("off")  # type: ignore
 
     if tight_layout:
         fig.tight_layout()
 
-    # Squeeze the axes to the expected shape
-    axs = np.asarray(axs)
-    if axs.shape == (1, 1):
-        axs = axs[0, 0]
-    elif axs.shape[0] == 1:
-        axs = axs[0]
-    elif axs.shape[1] == 1:
-        axs = axs[:, 0]
-
-    return fig, axs
-
-    return fig, axs
+    return fig, np.squeeze(axs)
 
 
 update_wrapper(show_2d, _show_2d)
