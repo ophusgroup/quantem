@@ -3,17 +3,17 @@ from collections.abc import Sequence
 from typing import List, Union
 
 import numpy as np
-
-# from scipy.interpolate import CloughTocher2DInterpolator, interp1d
 from scipy.interpolate import interp1d
+from tqdm import tqdm
 
-# from scipy.interpolate import interpn
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
-from quantem.core.utils.utils_imaging import bilinear_kde
+from quantem.core.io.serialize import AutoSerialize
+from quantem.core.utils.utils_imaging import bilinear_kde, cross_correlation_shift
+from quantem.core.visualization import show_2d
 
 
-class DriftCorrection:
+class DriftCorrection(AutoSerialize):
     def __init__(self):
         raise RuntimeError(
             "Use Drift.from_data(...) or Drift.from_file(...) to create a Drift object."
@@ -96,15 +96,15 @@ class DriftCorrection:
         self.scan_direction = np.deg2rad(self.scan_direction_degrees)
         self.scan_fast = np.stack(
             [
-                np.sin(self.scan_direction),
-                np.cos(self.scan_direction),
+                np.sin(-self.scan_direction),
+                np.cos(-self.scan_direction),
             ],
             axis=1,
         )
         self.scan_slow = np.stack(
             [
-                -np.cos(self.scan_direction),
-                np.sin(self.scan_direction),
+                np.cos(-self.scan_direction),
+                -np.sin(-self.scan_direction),
             ],
             axis=1,
         )
@@ -143,18 +143,18 @@ class DriftCorrection:
                 -(shape[1] - 1) / 2, (shape[1] - 1) / 2, self.number_knots
             )
 
-            rows = (
+            xa = (
                 (self.shape[1] - 1) / 2
                 + u_fast[None, :] * self.scan_fast[a0, 0]
                 + v_slow[:, None] * self.scan_slow[a0, 0]
             )
-            cols = (
+            ya = (
                 (self.shape[2] - 1) / 2
                 + u_fast[None, :] * self.scan_fast[a0, 1]
                 + v_slow[:, None] * self.scan_slow[a0, 1]
             )
 
-            self.knots.append(np.stack([rows, cols], axis=0))
+            self.knots.append(np.stack([xa, ya], axis=0))
 
         # Precompute the interpolator for all images
         self.interpolator = []
@@ -172,34 +172,249 @@ class DriftCorrection:
         # Generate initial resampled images
         self.images_transform = Dataset3d.from_shape(self.shape)
         for a0 in range(self.shape[0]):
-            im = self.images[a0]
-            interpolator = self.interpolator[a0]
-            self.images_transform.array[a0] = interpolator.warp_image(
-                im.array,
+            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+                self.images[a0].array,
                 self.knots[a0],
             )
 
-        # # Test plotting
-        # # im = np.zeros()
-        # for a0 in range(self.shape[0]):
-        #     fig, ax = plt.subplots(figsize=(8, 8))
-        #     ax.imshow(
-        #         self.images_transform.array[a0],
-        #     )
-        #     x = self.knots[a0][0]
-        #     y = self.knots[a0][1]
-        #     # ax.scatter(
-        #     #     y,
-        #     #     x,
-        #     #     marker=".",
-        #     #     color="r",
-        #     # )
-        #     ax.plot(
-        #         y,
-        #         x,
-        #         color = 'r',
-        #     )
-        #     ax.set_axis_off()
+    # Translation alignment
+    def align_translation(
+        self,
+        # window_edge_fraction=1,
+        upsample_factor: int = 8,
+        max_shift: int = 32,
+    ):
+        """
+        Solve for the translation between all images in DriftCorrection.images_transform
+        """
+
+        # init
+        dxy = np.zeros((self.shape[0], 2))
+        # window = (
+        #     tukey(self.shape[1], alpha=window_edge_fraction)[:, None]
+        #     * tukey(self.shape[2], alpha=window_edge_fraction)[None, :]
+        # )
+
+        # loop over images
+        F_ref = np.fft.fft2(self.images_transform.array[0])  #  * window
+        for ind in range(1, self.shape[0]):
+            shifts, image_shift = cross_correlation_shift(
+                F_ref,
+                np.fft.fft2(self.images_transform.array[ind]),  # * window
+                upsample_factor=upsample_factor,
+                max_shift=max_shift,
+                fft_input=True,
+                fft_output=True,
+                return_shifted_image=True,
+            )
+
+            dxy[ind, :] = shifts
+            F_ref = F_ref * ind / (ind + 1) + image_shift / (ind + 1)
+
+        # Normalize dxy
+        dxy -= np.mean(dxy, axis=0)
+
+        # Apply shifts to knots
+        for ind in range(self.shape[0]):
+            self.knots[ind][0] += dxy[ind, 0]
+            self.knots[ind][1] += dxy[ind, 1]
+
+        # Regenerate images
+        for a0 in range(self.shape[0]):
+            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+                self.images[a0].array,
+                self.knots[a0],
+            )
+
+    # Affine alignment
+    def align_affine(
+        self,
+        step=0.01,
+        num_tests=9,  # should be odd
+        refine=True,
+        # window_edge_fraction = 1.0,
+        upsample_factor: int = 8,
+        max_shift: int = 32,
+    ):
+        """
+        Estimate affine drift from the first 2 images.
+        """
+
+        # Window function for translation estimate
+        # window = (
+        #     tukey(self.shape[1], alpha=window_edge_fraction)[:, None]
+        #     * tukey(self.shape[2], alpha=window_edge_fraction)[None, :]
+        # )
+
+        # Potential drift vectors
+        vec = np.arange(-(num_tests - 1) / 2, (num_tests + 1) / 2)
+        xx, yy = np.meshgrid(vec, vec, indexing="ij")
+        keep = xx**2 + yy**2 <= (num_tests / 2) ** 2
+        dxy = (
+            np.vstack(
+                (
+                    xx[keep],
+                    yy[keep],
+                )
+            ).T
+            * step
+        )
+
+        # dxy = np.array((
+        #     (0.0,0.1),
+        #     (0.0,0.0),
+        # ))
+
+        # Measure cost function
+        cost = np.zeros(dxy.shape[0])
+        for a0 in tqdm(range(dxy.shape[0]), desc="Solving affine drift"):
+            # updated knots
+            knot_0 = self.knots[0].copy()
+            u = np.arange(knot_0.shape[1]) - (knot_0.shape[1] - 1) / 2
+            knot_0[0] += dxy[a0, 0] * u[:, None]
+            knot_0[1] += dxy[a0, 1] * u[:, None]
+
+            knot_1 = self.knots[1].copy()
+            u = np.arange(knot_1.shape[1]) - (knot_1.shape[1] - 1) / 2
+            knot_1[0] += dxy[a0, 0] * u[:, None]
+            knot_1[1] += dxy[a0, 1] * u[:, None]
+
+            im0 = self.interpolator[0].warp_image(
+                self.images[0].array,
+                knot_0,
+            )
+            im1 = self.interpolator[1].warp_image(
+                self.images[1].array,
+                knot_1,
+            )
+            # Cross correlation alignment
+            shifts, image_shift = cross_correlation_shift(
+                im0,
+                im1,
+                upsample_factor=upsample_factor,
+                fft_input=False,
+                fft_output=False,
+                return_shifted_image=True,
+                max_shift=max_shift,
+            )
+            cost[a0] = np.mean(np.abs(im0 - image_shift))
+
+            # import matplotlib.pyplot as plt
+            # fig,ax = plt.subplots(1,3,figsize=(6,3))
+            # ax[0].imshow(im0)
+            # ax[1].imshow(im1)
+            # ax[2].imshow(im0 + image_shift)
+
+        # update all knots
+        ind = np.argmin(cost)
+        for a0 in range(self.shape[0]):
+            u = np.arange(self.knots[a0].shape[1]) - (self.knots[a0].shape[1] - 1) / 2
+            self.knots[a0][0] += dxy[ind, 0] * u[:, None]
+            self.knots[a0][1] += dxy[ind, 1] * u[:, None]
+
+        # Affine drift refinement
+        if refine:
+            # Potential drift vectors
+            dxy /= num_tests - 1
+
+            # Measure cost function
+            cost = np.zeros(dxy.shape[0])
+            for a0 in tqdm(range(dxy.shape[0]), desc="Refining affine drift"):
+                # updated knots
+
+                knot_0 = self.knots[0].copy()
+                u = np.arange(knot_0.shape[1]) - (knot_0.shape[1] - 1) / 2
+                knot_0[0] += dxy[a0, 0] * u[:, None]
+                knot_0[1] += dxy[a0, 1] * u[:, None]
+
+                knot_1 = self.knots[1].copy()
+                u = np.arange(knot_1.shape[1]) - (knot_1.shape[1] - 1) / 2
+                knot_1[0] += dxy[a0, 0] * u[:, None]
+                knot_1[1] += dxy[a0, 1] * u[:, None]
+
+                im0 = self.interpolator[0].warp_image(
+                    self.images[0].array,
+                    knot_0,
+                )
+                im1 = self.interpolator[1].warp_image(
+                    self.images[1].array,
+                    knot_1,
+                )
+                # Cross correlation alignment
+                shifts, image_shift = cross_correlation_shift(
+                    im0,
+                    im1,
+                    upsample_factor=upsample_factor,
+                    fft_input=False,
+                    fft_output=False,
+                    return_shifted_image=True,
+                    max_shift=max_shift,
+                )
+                cost[a0] = np.mean(np.abs(im0 - image_shift))
+
+            # update all knots
+            ind = np.argmin(cost)
+            for a0 in range(self.shape[0]):
+                u = (
+                    np.arange(self.knots[a0].shape[1])
+                    - (self.knots[a0].shape[1] - 1) / 2
+                )
+                self.knots[a0][0] += dxy[ind, 0] * u[:, None]
+                self.knots[a0][1] += dxy[ind, 1] * u[:, None]
+
+        # Regenerate images
+        for a0 in range(self.shape[0]):
+            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+                self.images[a0].array,
+                self.knots[a0],
+            )
+
+        # Translation alignment
+        self.align_translation(
+            max_shift=max_shift,
+        )
+
+        # import matplotlib.pyplot as plt
+        # fig,ax = plt.subplots()
+        # xx[:] = 0
+        # xx[keep] = cost
+        # ax.imshow(
+        #     xx,
+        #     vmin = np.min(cost),
+        #     vmax = np.max(cost),
+        # )
+
+        # k = knots_test_all[0][3]
+        # print(k)
+        # print(self.knots[0].shape)
+
+        # import matplotlib.pyplot as plt
+        # fig,ax = plt.subplots()
+        # ax.imshow(keep)
+
+    # non-rigid alignment
+
+    def plot_merged_images(self, show_knots: bool = True, **kwargs):
+        """
+        Plot the current transformed images, with knot overlays.
+        """
+
+        fig, ax = show_2d(
+            self.images_transform.array.mean(0),
+            # self.images_transform.array[0],
+            # self.images[0].array,
+            **kwargs,
+        )
+
+        if show_knots:
+            for a0 in range(self.shape[0]):
+                x = self.knots[a0][0]
+                y = self.knots[a0][1]
+                ax.plot(
+                    y,
+                    x,
+                    # color = 'r',
+                )
 
 
 class DriftInterpolator:
@@ -221,6 +436,7 @@ class DriftInterpolator:
         self.cols_input = np.arange(input_shape[1])
 
         self.u = np.linspace(0, 1, input_shape[1])
+        # self.v = np.linspace(0, 1, input_shape[0])
 
     def warp_image(
         self,
@@ -231,42 +447,35 @@ class DriftInterpolator:
         num_knots = knots.shape[-1]
         basis = np.linspace(0, 1, num_knots)
 
-        # Interpolate each scanline separately
-        rows_interp = np.zeros((self.input_shape[0], self.input_shape[1]))
-        cols_interp = np.zeros((self.input_shape[0], self.input_shape[1]))
+        xa = np.zeros(self.input_shape)
+        ya = np.zeros(self.input_shape)
 
         if num_knots == 1:
-            # Simple linear mapping from single knot
-            for i in range(self.input_shape[0]):
-                rows_interp[i, :] = knots[0, i] + self.u * self.scan_fast[0] * (
-                    self.input_shape[0] - 1
-                )
-                cols_interp[i, :] = knots[1, i] + self.u * self.scan_fast[1] * (
-                    self.input_shape[1] - 1
-                )
-
+            xa[:] = knots[0, :] + self.u[None, :] * self.scan_fast[0] * (
+                self.input_shape[0] - 1
+            )
+            ya[:] = knots[1, :] + self.u[None, :] * self.scan_fast[1] * (
+                self.input_shape[1] - 1
+            )
         elif num_knots == 2:
-            # Linear interpolation between two knots
             for i in range(self.input_shape[0]):
-                rows_interp[i, :] = interp1d(
+                xa[i, :] = interp1d(
                     basis, knots[0, i], kind="linear", assume_sorted=True
                 )(self.u)
-                cols_interp[i, :] = interp1d(
+                ya[i, :] = interp1d(
                     basis, knots[1, i], kind="linear", assume_sorted=True
                 )(self.u)
-
         else:
-            # Quadratic (3 knots) or cubic (4+ knots) interpolation
             kind = "quadratic" if num_knots == 3 else "cubic"
             for i in range(self.input_shape[0]):
-                rows_interp[i, :] = interp1d(
+                xa[i, :] = interp1d(
                     basis,
                     knots[0, i],
                     kind=kind,
                     fill_value="extrapolate",
                     assume_sorted=True,
                 )(self.u)
-                cols_interp[i, :] = interp1d(
+                ya[i, :] = interp1d(
                     basis,
                     knots[1, i],
                     kind=kind,
@@ -275,8 +484,8 @@ class DriftInterpolator:
                 )(self.u)
 
         image_interp = bilinear_kde(
-            xa=rows_interp,
-            ya=cols_interp,
+            xa=xa,  # rows
+            ya=ya,  # cols
             intensities=image,
             output_shape=self.output_shape,
             kde_sigma=kde_sigma,

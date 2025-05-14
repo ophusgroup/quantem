@@ -350,6 +350,17 @@ def show_2d(
     if tight_layout:
         fig.tight_layout()
 
+    # Squeeze the axes to the expected shape
+    axs = np.asarray(axs)
+    if axs.shape == (1, 1):
+        axs = axs[0, 0]
+    elif axs.shape[0] == 1:
+        axs = axs[0]
+    elif axs.shape[1] == 1:
+        axs = axs[:, 0]
+
+    return fig, axs
+
     return fig, axs
 
 
