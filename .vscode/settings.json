@@ -1,0 +1,18 @@
+{
+    "python.terminal.activateEnvInCurrentTerminal": true,
+    "python.defaultInterpreterPath": ".venv/bin/python",
+    "cSpell.words": [
+        "cupy",
+        "datacube",
+        "dstem",
+        "emdfile",
+        "isscalar",
+        "metadatabundle",
+        "ndarray",
+        "ndinfo",
+        "quantem",
+        "rosettasciio",
+        "rsciio",
+        "Scalebar"
+    ]
+}
