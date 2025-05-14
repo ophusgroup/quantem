@@ -16,6 +16,67 @@ from quantem.core.visualization import show_2d
 
 
 class DriftCorrection(AutoSerialize):
+    """
+    DriftCorrection provides translation, affine, and non-rigid drift correction for
+    sequential 2D images using scan direction metadata and flexible spatial interpolation.
+
+    This class supports input data as numpy arrays, Dataset2d, or Dataset3d instances,
+    with various padding strategies and configurable spline interpolation of scanline
+    trajectories via Bezier knot control.
+
+    Features
+    --------
+    - Load data from arrays or files
+    - Apply initial scanline resampling using Bezier curves
+    - Align images using translation, affine, or non-rigid optimization
+    - Visualize intermediate and final results with optional knot overlays
+    - Serialize state with `.save()` and restore with `.load()`
+
+    Parameters (via `from_data` or `from_file`)
+    ----------
+    images : list of 2D arrays, Dataset2d, Dataset3d, or file names, or a 3D numpy array.
+        The image stack to correct for drift.
+    scan_direction_degrees : list of float
+        The scan direction angle (in degrees) for each image, relative to vertical.
+    pad_fraction : float, default 0.25
+        Fraction of padding to add around each image during interpolation.
+    pad_value : str, float, or list of float, default 'median'
+        How to pad outside the image area during warping. Can be:
+        - One of: 'median', 'mean', 'min', 'max'
+        - A float quantile value (e.g., 0.25)
+        - A list of per-image float values
+    number_knots : int, default 1
+        Number of knots to use for Bezier interpolation of scanline trajectories.
+        Note that we strongly recommend number_knots = 1, unless you have fast scan direction error.
+
+    Example
+    -------
+    >>> drift = DriftCorrection.from_data(
+    ...     images=[
+    ...         image0,  # 2D np.ndarray, or dataset2d, or file name
+    ...         image1,
+    ...     ],
+    ...     scan_direction_degrees=[0, 90],
+    ...     pad_fraction=0.25,
+    ...     pad_value='median',
+    ...     number_knots=1,
+    ... )
+
+    >>> drift.align_affine()
+    >>> drift.align_nonrigid()
+    >>> drift.plot_merged_images()
+    >>> drift.save("drift_result.zip")
+
+    >>> drift_reloaded = quantem.io.load('drift_result.zip')
+
+    Notes
+    -----
+    - Use `align_translation()` for rigid shifts, `align_affine()` for scan-shear or uniform drift,
+      and `align_nonrigid()` for flexible per-row or per-image correction.
+    - The class stores resampled images in `self.images_transform` and the control knots in `self.knots`.
+    - Interactive visualization is supported through `plot_merged_images()` and `plot_transformed_images()`.
+    """
+
     _token = object()
 
     def __init__(
@@ -24,6 +85,7 @@ class DriftCorrection(AutoSerialize):
         scan_direction_degrees: np.ndarray,
         pad_fraction: float,
         pad_value: Union[float, str, List[float]],
+        kde_sigma: float,
         number_knots: int,
         _token: object | None = None,
     ):
@@ -45,6 +107,7 @@ class DriftCorrection(AutoSerialize):
         file_type: str | None = None,
         pad_fraction: float = 0.25,
         pad_value: Union[float, str, List[float]] = "median",
+        kde_sigma: float = 0.5,
         number_knots: int = 1,
     ) -> "DriftCorrection":
         image_list = [Dataset2d.from_file(fp, file_type=file_type) for fp in file_paths]
@@ -59,6 +122,7 @@ class DriftCorrection(AutoSerialize):
         scan_direction_degrees: Union[List[float], np.ndarray],
         pad_fraction: float = 0.25,
         pad_value: Union[float, str, List[float]] = "median",
+        kde_sigma: float = 0.5,
         number_knots: int = 1,
     ) -> "DriftCorrection":
         if isinstance(images, Dataset3d):
@@ -92,6 +156,7 @@ class DriftCorrection(AutoSerialize):
             scan_direction_degrees=np.array(scan_direction_degrees),
             pad_fraction=pad_fraction,
             pad_value=pad_value,
+            kde_sigma=kde_sigma,
             number_knots=number_knots,
             _token=cls._token,
         )
@@ -102,12 +167,14 @@ class DriftCorrection(AutoSerialize):
         scan_direction_degrees,
         pad_fraction,
         pad_value,
+        kde_sigma,
         number_knots=1,
     ):
         # Input data
         self.images = images
         self.scan_direction_degrees = np.array(scan_direction_degrees)
         self.pad_fraction = pad_fraction
+        self.kde_sigma = kde_sigma
         self.number_knots = number_knots
 
         # Derived data
@@ -190,6 +257,7 @@ class DriftCorrection(AutoSerialize):
                     scan_fast=self.scan_fast[a0],
                     scan_slow=self.scan_slow[a0],
                     pad_value=self.pad_value[a0],
+                    kde_sigma=self.kde_sigma,
                 )
             )
 
@@ -538,54 +606,90 @@ class DriftCorrection(AutoSerialize):
                     self.knots[ind],
                 )
 
-                # # Generate reference image
-                # image_ref = np.delete(self.images_transform.array, a0, axis=0).mean(axis=0)
+    def generate_corrected_image(
+        self,
+        upsample_factor: int = 2,
+        output_original_shape: bool = True,
+        fourier_filter: bool = True,
+        kde_sigma: float = 0.5,
+    ):
+        """
+        Generate the final output image, after drift correction.
+        """
 
-                # # Cost function
-                # def cost_function(
-                #     self,
-                #     knots,
-                # ):
-                #     xa,ya = self.interpolator[a0].transform_coordinates(knots)
+        # init
+        stack_corr = np.zeros(
+            (
+                self.shape[0],
+                self.shape[1] * upsample_factor,
+                self.shape[2] * upsample_factor,
+            )
+        )
 
-                #     xf = np.clip(
-                #         np.floor(xa).astype('int'),
-                #         0,
-                #         self.shape[1]-1,
-                #     )
-                #     yf = np.clip(
-                #         np.floor(ya).astype('int'),
-                #         0,
-                #         self.shape[2]-1,
-                #     )
-                #     dx = xa - xf
-                #     dy = ya - yf
+        if kde_sigma is None:
+            kde_sigma = self.kde_sigma
 
-                #     cost = np.sum((
-                #         image_ref[xf  , yf  ]*(1-dx)*(1-dy) + \
-                #         image_ref[xf+1, yf  ]*(1-dx)*(1-dy) + \
-                #         image_ref[xf  , yf+1]*(1-dx)*(1-dy) + \
-                #         image_ref[xf+1, yf+1]*(1-dx)*(1-dy) - \
-                #         self.images[a0]
-                #         )**2)
+        # Update images
+        for ind in range(self.shape[0]):
+            stack_corr[ind] = self.interpolator[ind].warp_image(
+                self.images[ind].array,
+                self.knots[ind],
+                kde_sigma=kde_sigma,
+                upsample_factor=upsample_factor,
+            )
 
-        # import matplotlib.pyplot as plt
-        # fig,ax = plt.subplots()
-        # xx[:] = 0
-        # xx[keep] = cost
-        # ax.imshow(
-        #     xx,
-        #     vmin = np.min(cost),
-        #     vmax = np.max(cost),
-        # )
+        if fourier_filter:
+            # Apply fourier filtering
+            kx = np.fft.fftfreq(stack_corr.shape[1])[:, None]
+            ky = np.fft.fftfreq(stack_corr.shape[2])[None, :]
+            kr = np.sqrt(kx**2 + ky**2)
 
-        # k = knots_test_all[0][3]
-        # print(k)
-        # print(self.knots[0].shape)
+            stack_fft = np.fft.fft2(stack_corr)
+            weights = np.zeros_like(stack_corr)
 
-        # import matplotlib.pyplot as plt
-        # fig,ax = plt.subplots()
-        # ax.imshow(keep)
+            for ind in range(stack_corr.shape[0]):
+                weights[ind] = np.divide(
+                    np.abs(self.scan_fast[ind, 0] * kx + self.scan_fast[ind, 1] * ky),
+                    kr,
+                    where=kr > 0.0,
+                )
+                weights[ind][0, 0] = 1.0
+                stack_fft[ind] *= weights[ind]
+
+            weights_sum = np.sum(weights, axis=0)
+            image_corr_fft = np.divide(
+                np.sum(stack_fft, axis=0),
+                weights_sum,
+                where=weights_sum > 0.0,
+            )
+
+        else:
+            image_corr_fft = np.fft.fft2(np.mean(stack_corr, axis=0))
+
+        if output_original_shape:
+            x_inds = np.hstack(
+                (
+                    np.arange(0, self.shape[1] // 2),
+                    np.arange(-self.shape[1] // 2, 0),
+                )
+            ).astype("int")
+            y_inds = np.hstack(
+                (
+                    np.arange(0, self.shape[2] // 2),
+                    np.arange(-self.shape[2] // 2, 0),
+                )
+            ).astype("int")
+            image_corr_fft = image_corr_fft[x_inds[:, None], y_inds[None, :]]
+
+        image_corr = Dataset2d.from_array(
+            np.real(np.fft.ifft2(image_corr_fft)),
+            name="drift corrected image",
+            origin=self.images[0].origin,
+            sampling=self.images[0].sampling,
+            units=self.images[0].units,
+        )
+
+        return image_corr
 
     def plot_transformed_images(self, show_knots: bool = True, **kwargs):
         fig, ax = show_2d(
@@ -630,12 +734,14 @@ class DriftInterpolator:
         scan_fast,
         scan_slow,
         pad_value,
+        kde_sigma,
     ):
         self.input_shape = input_shape
         self.output_shape = output_shape
         self.scan_fast = scan_fast
         self.scan_slow = scan_slow
         self.pad_value = pad_value
+        self.kde_sigma = kde_sigma
 
         self.rows_input = np.arange(input_shape[0])
         self.cols_input = np.arange(input_shape[1])
@@ -731,11 +837,17 @@ class DriftInterpolator:
         self,
         image: np.ndarray,
         knots: np.ndarray,  # shape: (2, rows, num_knots)
-        kde_sigma: float = 0.5,
+        kde_sigma=None,
         output_shape=None,
         pad_value=None,
+        upsample_factor=None,
     ) -> np.ndarray:
-        xa, ya = self.transform_coordinates(knots)
+        xa, ya = self.transform_coordinates(
+            knots,
+        )
+
+        if kde_sigma is None:
+            kde_sigma = self.kde_sigma
 
         if output_shape is None:
             output_shape = self.output_shape
@@ -743,12 +855,18 @@ class DriftInterpolator:
         if pad_value is None:
             pad_value = self.pad_value
 
+        if upsample_factor is None:
+            upsample_factor = 1
+
         image_interp = bilinear_kde(
-            xa=xa,  # rows
-            ya=ya,  # cols
+            xa=xa * upsample_factor,  # rows
+            ya=ya * upsample_factor,  # cols
             intensities=image,
-            output_shape=output_shape,
-            kde_sigma=kde_sigma,
+            output_shape=(
+                output_shape[0] * upsample_factor,
+                output_shape[1] * upsample_factor,
+            ),
+            kde_sigma=kde_sigma * upsample_factor,
             pad_value=self.pad_value,
         )
 
