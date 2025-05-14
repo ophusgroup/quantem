@@ -1,14 +1,11 @@
 from typing import Any, Self
 
-import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset2d import Dataset2d
-from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.datastructures.dataset4d import Dataset4d
 from quantem.core.utils.validators import ensure_valid_array
-from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
 class Dataset4dstem(Dataset4d):

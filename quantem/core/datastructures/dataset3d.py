@@ -5,9 +5,7 @@ from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset import Dataset
 from quantem.core.datastructures.dataset2d import Dataset2d
-from quantem.core.utils.utils import as_numpy
 from quantem.core.utils.validators import ensure_valid_array
-from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
@@ -120,7 +118,7 @@ class Dataset3d(Dataset):
         array_view = self.array[index]
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
-      
+
         return Dataset2d.from_array(
             array=array_view,
             name=self.name + str(index),
@@ -152,4 +150,4 @@ class Dataset3d(Dataset):
             Keyword arguments for show_2d
         """
 
-        return self[index].show(scalebar=scalebar,title=title,**kwargs)
+        return self[index].show(scalebar=scalebar, title=title, **kwargs)

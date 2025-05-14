@@ -110,7 +110,9 @@ class set:
             self._assign(keys[1:], value, d[key], path)
 
 
-def refresh(config: dict = config, defaults: list[Mapping] = defaults, **kwargs) -> None:
+def refresh(
+    config: dict = config, defaults: list[Mapping] = defaults, **kwargs
+) -> None:
     """
     Update configuration by re-reading yaml files and env variables
 
@@ -172,7 +174,9 @@ def get(
     return result
 
 
-def update_defaults(new: dict, config: dict = config, defaults: list[Mapping] = defaults) -> None:
+def update_defaults(
+    new: dict, config: dict = config, defaults: list[Mapping] = defaults
+) -> None:
     """Add a new set of defaults to the configuration
 
     It does two things:
@@ -420,7 +424,9 @@ def _load_config_file(path: str) -> dict | None:
     return config
 
 
-def check_key_val(key: str, val: Any, deprecations: dict = deprecations) -> tuple[str, Any]:
+def check_key_val(
+    key: str, val: Any, deprecations: dict = deprecations
+) -> tuple[str, Any]:
     """Check if the provided value has been renamed or removed
 
     Parameters

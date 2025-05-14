@@ -4,11 +4,11 @@ import numpy as np
 from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset import Dataset
+from quantem.core.utils.utils import as_numpy
 from quantem.core.utils.validators import ensure_valid_array
-
 from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
-from quantem.core.utils.utils import as_numpy
+
 
 class Dataset2d(Dataset):
     """2D dataset class that inherits from Dataset.

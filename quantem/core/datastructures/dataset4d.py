@@ -6,9 +6,7 @@ from numpy.typing import NDArray
 from quantem.core.datastructures.dataset import Dataset
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
-from quantem.core.utils.utils import as_numpy
 from quantem.core.utils.validators import ensure_valid_array
-from quantem.core.visualization.visualization import show_2d
 from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
@@ -77,7 +75,9 @@ class Dataset4d(Dataset):
             name=name if name is not None else "4D dataset",
             origin=origin if origin is not None else np.zeros(4),
             sampling=sampling if sampling is not None else np.ones(4),
-            units=units if units is not None else ["index", "index", "pixels", "pixels"],
+            units=units
+            if units is not None
+            else ["index", "index", "pixels", "pixels"],
             signal_units=signal_units,
             _token=cls._token,
         )
@@ -122,7 +122,7 @@ class Dataset4d(Dataset):
         ndim = array_view.ndim
         calibrated_origin = self.origin.ndim == self.ndim
 
-        cls = Dataset2d if ndim == 2 else Dataset3d        
+        cls = Dataset2d if ndim == 2 else Dataset3d
         return cls.from_array(
             array=array_view,
             name=self.name + str(index),
@@ -134,7 +134,7 @@ class Dataset4d(Dataset):
 
     def show(
         self,
-        index : tuple[int,int] = (0,0),
+        index: tuple[int, int] = (0, 0),
         scalebar: ScalebarConfig | bool = True,
         title: str | None = None,
         **kwargs,
@@ -153,5 +153,5 @@ class Dataset4d(Dataset):
         **kwargs: dict
             Keyword arguments for show_2d
         """
-        
-        return self[index].show(scalebar=scalebar,title=title,**kwargs)
+
+        return self[index].show(scalebar=scalebar, title=title, **kwargs)

@@ -11,6 +11,7 @@ from quantem.core.utils.validators import (
     validate_units,
 )
 
+
 class Dataset(AutoSerialize):
     """
     A class representing a multi-dimensional dataset with metadata.
@@ -428,5 +429,3 @@ class Dataset(AutoSerialize):
             self.array = np.sum(
                 self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
             )
-
-
