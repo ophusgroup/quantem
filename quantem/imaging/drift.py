@@ -14,10 +14,13 @@ from quantem.core.visualization import show_2d
 
 
 class DriftCorrection(AutoSerialize):
-    def __init__(self):
-        raise RuntimeError(
-            "Use Drift.from_data(...) or Drift.from_file(...) to create a Drift object."
-        )
+    _token = object()
+
+    def __init__(self, _token=None):
+        if _token is not DriftCorrection._token:
+            raise RuntimeError(
+                "Use DriftCorrection.from_data() or from_file() to instantiate."
+            )
 
     @classmethod
     def from_file(
@@ -30,7 +33,9 @@ class DriftCorrection(AutoSerialize):
         number_knots: int = 1,
     ) -> "DriftCorrection":
         image_list = [Dataset2d.from_file(fp, file_type=file_type) for fp in file_paths]
-        return cls.from_data(image_list, scan_direction_degrees, pad_fraction)
+        return cls.from_data(
+            image_list, scan_direction_degrees, pad_fraction, pad_value, number_knots
+        )
 
     @classmethod
     def from_data(
@@ -67,14 +72,9 @@ class DriftCorrection(AutoSerialize):
                 "images must be a Dataset3d, a 3D ndarray, or a list of 2D arrays or Dataset2d instances."
             )
 
-        # Construct Drift instance
-        self = object.__new__(cls)
+        self = cls(_token=cls._token)
         self._initialize(
-            image_list,
-            scan_direction_degrees,
-            pad_fraction,
-            pad_value,
-            number_knots,
+            image_list, scan_direction_degrees, pad_fraction, pad_value, number_knots
         )
         return self
 
