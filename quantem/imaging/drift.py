@@ -16,11 +16,24 @@ from quantem.core.visualization import show_2d
 class DriftCorrection(AutoSerialize):
     _token = object()
 
-    def __init__(self, _token=None):
-        if _token is not DriftCorrection._token:
+    def __init__(
+        self,
+        images: List[Dataset2d],
+        scan_direction_degrees: np.ndarray,
+        pad_fraction: float,
+        pad_value: Union[float, str, List[float]],
+        number_knots: int,
+        _token: object | None = None,
+    ):
+        if _token is not self._token:
             raise RuntimeError(
-                "Use DriftCorrection.from_data() or from_file() to instantiate."
+                "Use DriftCorrection.from_data() or .from_file() to instantiate this class."
             )
+
+        super().__init__()
+        self._initialize(
+            images, scan_direction_degrees, pad_fraction, pad_value, number_knots
+        )
 
     @classmethod
     def from_file(
@@ -29,7 +42,7 @@ class DriftCorrection(AutoSerialize):
         scan_direction_degrees: Union[Sequence[float], np.array],
         file_type: str | None = None,
         pad_fraction: float = 0.25,
-        pad_value: Union[float, str] = "median",
+        pad_value: Union[float, str, List[float]] = "median",
         number_knots: int = 1,
     ) -> "DriftCorrection":
         image_list = [Dataset2d.from_file(fp, file_type=file_type) for fp in file_paths]
@@ -43,7 +56,7 @@ class DriftCorrection(AutoSerialize):
         images: Union[List[Dataset2d], List[np.ndarray], Dataset3d, np.ndarray],
         scan_direction_degrees: Union[List[float], np.ndarray],
         pad_fraction: float = 0.25,
-        pad_value: Union[float, str] = "median",
+        pad_value: Union[float, str, List[float]] = "median",
         number_knots: int = 1,
     ) -> "DriftCorrection":
         if isinstance(images, Dataset3d):
@@ -72,11 +85,14 @@ class DriftCorrection(AutoSerialize):
                 "images must be a Dataset3d, a 3D ndarray, or a list of 2D arrays or Dataset2d instances."
             )
 
-        self = cls(_token=cls._token)
-        self._initialize(
-            image_list, scan_direction_degrees, pad_fraction, pad_value, number_knots
+        return cls(
+            images=image_list,
+            scan_direction_degrees=np.array(scan_direction_degrees),
+            pad_fraction=pad_fraction,
+            pad_value=pad_value,
+            number_knots=number_knots,
+            _token=cls._token,
         )
-        return self
 
     def _initialize(
         self,
@@ -128,6 +144,12 @@ class DriftCorrection(AutoSerialize):
             if pad_value > 1.0:
                 raise ValueError(f"pad_value of {pad_value} is > 1.0")
             self.pad_value = [np.quantile(im.array, pad_value) for im in self.images]
+        elif isinstance(pad_value, list) and all(
+            isinstance(v, (int, float)) for v in pad_value
+        ):
+            if len(pad_value) != len(self.images):
+                raise ValueError("pad_value list length must match number of images.")
+            self.pad_value = pad_value
         else:
             raise TypeError(
                 f"pad_value must be a 0.0 < float < 1.0, or one of ['median', 'mean', 'min', 'max'], got {type(pad_value)}"
