@@ -57,7 +57,7 @@ def read_4dstem(
 
 def read_2d(
     file_path: str,
-    file_type: str,
+    file_type: str | None = None,
 ) -> Dataset2d:
     """
     File reader for images

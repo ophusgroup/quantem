@@ -55,10 +55,9 @@ class Dataset2d(Dataset):
             signal_units=signal_units,
             _token=_token,
         )
-        self._virtual_images = {}
 
     @classmethod
-    def from_file(cls, file_path: str, file_type: str | None = None) -> Self:
+    def from_file(cls, file_path: str, file_type: str | None = None) -> "Dataset2d":
         """
         Load a Dataset2d from a file using the appropriate file reader.
 
@@ -74,6 +73,7 @@ class Dataset2d(Dataset):
         Dataset2d
             The loaded dataset.
         """
+        # Import here to avoid circular imports
         from quantem.core.io.file_readers import read_2d
 
         return read_2d(file_path, file_type)
@@ -130,7 +130,7 @@ class Dataset2d(Dataset):
         fill_value: float = 0.0,
         origin: NDArray = None,
         sampling: NDArray = None,
-        units: list[str] = None,
+        units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
         """Create a new Dataset2d filled with a constant value."""
