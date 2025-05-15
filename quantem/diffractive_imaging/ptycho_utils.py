@@ -88,10 +88,11 @@ def fourier_shift(
 def fourier_shift(
     array: ArrayLike,
     positions: ArrayLike,
+    match_dim: bool = False,  # TODO make this the default
 ) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
     xp = arr.get_array_module(array)
-    phase = fourier_translation_operator(positions, array.shape)
+    phase = fourier_translation_operator(positions, array.shape, match_dim)
     fourier_array = xp.fft.fft2(array)
     shifted_fourier_array = fourier_array * phase
 
@@ -99,14 +100,17 @@ def fourier_shift(
 
 
 @overload
-def fourier_translation_operator(positions: np.ndarray, shape: tuple) -> np.ndarray: ...
+def fourier_translation_operator(
+    positions: np.ndarray, shape: tuple, match_dim: bool
+) -> np.ndarray: ...
 @overload
 def fourier_translation_operator(
-    positions: "torch.Tensor", shape: tuple
+    positions: "torch.Tensor", shape: tuple, match_dim: bool
 ) -> "torch.Tensor": ...
 def fourier_translation_operator(
     positions: ArrayLike,
     shape: tuple,
+    match_dim: bool = False,  # TODO make this the default
 ) -> ArrayLike:
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
     nr, nc = shape[-2:]
@@ -118,12 +122,51 @@ def fourier_translation_operator(
     ramp_c = arr.exp(-2.0j * np.pi * kc[None, None, :] * c)
     ramp = ramp_r * ramp_c
 
-    if len(shape) == 2:
+    if match_dim:
         return ramp
-    elif len(shape) == 3:
-        return ramp[:, None]
     else:
-        raise NotImplementedError
+        if len(shape) == 2:
+            return ramp
+        elif len(shape) == 3:
+            return ramp[:, None]
+        else:
+            raise NotImplementedError
+
+
+@overload
+def get_com_2d(ar: np.ndarray, corner_centered: bool = False) -> np.ndarray: ...
+@overload
+def get_com_2d(ar: "torch.Tensor", corner_centered: bool = False) -> "torch.Tensor": ...
+def get_com_2d(ar: ArrayLike, corner_centered: bool = False) -> ArrayLike:
+    """
+    Finds and returns the center of mass along last two dimensions.
+    If corner_centered is True, uses fftfreq for indices.
+    """
+    nr, nc = ar.shape[-2:]
+
+    if corner_centered:
+        c, r = np.meshgrid(np.fft.fftfreq(nc, 1 / nc), np.fft.fftfreq(nr, 1 / nr))
+    else:
+        c, r = np.meshgrid(np.arange(nc), np.arange(nr))
+
+    rc = arr.match_device(np.stack([r, c]), ar)
+    com = (
+        arr.sum(
+            rc * ar[..., None, :, :],
+            axis=(
+                -1,
+                -2,
+            ),
+        )
+        / arr.sum(
+            ar,
+            axis=(
+                -1,
+                -2,
+            ),
+        )[:, None]
+    )
+    return com
 
 
 def sum_patches_base(

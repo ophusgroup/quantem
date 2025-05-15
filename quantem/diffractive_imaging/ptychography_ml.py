@@ -613,6 +613,9 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             self._add_optimizer(key="object", params=obj)
             if "probe" in self.optimizer_params.keys():
                 self._add_optimizer(key="probe", params=probe)
+                self.constraints["probe"]["fix_probe"] = False
+            else:
+                self.constraints["probe"]["fix_probe"] = True
 
         if "descan" in self.optimizer_params.keys():
             # TODO clean this up, learning descan should/could just be on top of the shifted

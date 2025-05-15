@@ -47,7 +47,6 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         self,
         num_iter: int = 0,
         reset: bool = True,
-        fix_probe: bool = False,
         batch_size: int | None = None,
         step_size: float = 0.5,
         constraints: dict = {},
@@ -97,6 +96,9 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     patch_col[batch_indices],
                     pos_frac[batch_indices],
                 )
+
+                # todo move error here
+
                 obj, probe = self.adjoint_operator(
                     obj,
                     probe,
@@ -107,7 +109,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     amplitudes[batch_indices],
                     overlap,
                     step_size,
-                    fix_probe=fix_probe,
+                    fix_probe=self.constraints["probe"]["fix_probe"],
                 )
 
                 error += self.error_estimate(  # TODO move this to forward operator
@@ -119,21 +121,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     amplitudes[batch_indices],
                 )
 
-            # from PyLorentz.visualize import show_im
-            # import matplotlib.pyplot as plt
-            # fig, axs = plt.subplots(ncols=2)
-            # show_im(np.angle(obj), title=f'pre-const obj {a0}', figax=(fig, axs[0]))
-            # show_im(np.abs(obj), title=f'pre-const obj {a0}', figax=(fig, axs[1]))
-            # plt.show()
-
-            # obj, probe = self.apply_constraints(obj, probe)
             obj, probe = self.apply_constraints(obj, probe, object_fov_mask=fov_mask)
-
-            # fig, axs = plt.subplots(ncols=2)
-            # show_im(np.angle(obj), title=f'post-const obj {a0}', figax=(fig, axs[0]))
-            # show_im(np.abs(obj), title=f'post-const obj {a0}', figax=(fig, axs[1]))
-            # plt.show()
-
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
             self._losses.append(error.item())
             # TODO add storage and such
@@ -166,13 +154,10 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         fix_probe: bool = False,
     ):
         """Single-pass adjoint operator."""
-        # print(f"adj: amp {amplitudes.shape} overlap: {overlap.shape}")
         modified_overlap = self.fourier_projection(amplitudes, overlap)
-        # mod_overlap shape same as overlap: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        # print("adj: modified overlap shape: ", modified_overlap.shape)
+        ## mod_overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         gradient = self.gradient_step(overlap, modified_overlap)
-        # grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        # print("adj: gradient shape: ", gradient.shape)
+        ## grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         obj_array, probe_array = self.update_object_and_probe(
             obj_array,
             probe_array,

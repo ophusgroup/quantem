@@ -4,6 +4,7 @@ import numpy as np
 import torch
 
 from quantem.core.utils import array_funcs as arr
+from quantem.diffractive_imaging.ptycho_utils import fourier_shift, get_com_2d
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 
 if TYPE_CHECKING:
@@ -23,7 +24,10 @@ class PtychographyConstraints(PtychographyBase):
             "tv_weight_z": 0.0,
             "apply_fov_mask": False,
         },
-        "probe": {},
+        "probe": {
+            "fix_probe": False,
+            "fix_probe_com": True,
+        },
     }
 
     _constraints = DEFAULT_CONSTRAINTS.copy()
@@ -81,7 +85,7 @@ class PtychographyConstraints(PtychographyBase):
             object,
             mask=object_fov_mask,
         )
-        if probe is not None:
+        if probe is not None and not self.constraints["probe"]["fix_probe"]:
             probe = self._apply_probe_constraints(probe)
         return object, probe
 
@@ -120,71 +124,47 @@ class PtychographyConstraints(PtychographyBase):
         if self.num_probes > 1:
             probe = self._probe_orthogonalization_constraint(probe)
 
+        if self.constraints["probe"]["fix_probe_com"]:
+            probe = self._probe_center_of_mass_constraint(probe)
+
         return probe
+
+    def _probe_center_of_mass_constraint(self, start_probe: ArrayLike) -> ArrayLike:
+        """
+        Ptychographic center of mass constraint.
+        Used for centering corner-centered probe intensity.
+        """
+        probe_intensity = arr.abs(start_probe) ** 2
+        com = get_com_2d(probe_intensity, corner_centered=True)
+        shifted_probe = fourier_shift(start_probe, -1 * com, match_dim=True)  # type:ignore # not sure why this breaks
+        return shifted_probe
 
     def _probe_orthogonalization_constraint(self, start_probe: ArrayLike) -> ArrayLike:
         """
         Ptychographic probe-orthogonalization constraint.
         Used to ensure mixed states are orthogonal to each other.
         Adapted from https://github.com/AdvancedPhotonSource/tike/blob/main/src/tike/ptycho/probe.py#L690
-
-        Parameters
-        --------
-        current_probe: np.ndarray
-            Current probe estimate
-
-        Returns
-        --------
-        constrained_probe: np.ndarray
-            Orthogonalized probe estimate
         """
-        # n_probes = self.num_probes
 
-        # # compute upper half of P* @ P
-        # pairwise_dot_product = torch.empty((n_probes, n_probes), dtype=start_probe.dtype, device=start_probe.device)
-
-        # for i in range(n_probes):
-        #     for j in range(i, n_probes):
-        #         pairwise_dot_product[i, j] = torch.sum(
-        #             start_probe[i].conj() * start_probe[j]
-        #         )
-
-        # # compute eigenvectors (effectively cheaper way of computing V* from SVD)
-        # _, evecs = torch.linalg.eigh(pairwise_dot_product, UPLO="U")
-        # start_probe = torch.tensordot(evecs.T, start_probe, dims=1)
-
-        # # sort by real-space intensity
-        # intensities = torch.sum(torch.abs(start_probe) ** 2, dim=(-2, -1))
-        # intensities_order = torch.flip(torch.argsort(intensities), dims=(0,))
-        # return start_probe[intensities_order]
-
-        #### old ptycho way
         n_probes = start_probe.shape[0]
         orthogonal_probes = []
 
-        # Compute the original probe magnitudes
         original_norms = arr.norm(
             arr.reshape(start_probe, (n_probes, -1)), axis=1, keepdim=True
         )
 
-        # Apply Gram-Schmidt process
+        # Gram-Schmidt orthogonalization
         for i in range(n_probes):
             probe_i = start_probe[i]
-
-            # Subtract projections onto previously computed orthogonal probes
             for j in range(len(orthogonal_probes)):
                 projection = (
                     arr.sum(orthogonal_probes[j].conj() * probe_i)
                     * orthogonal_probes[j]
                 )
                 probe_i = probe_i - projection
-
-            # Normalize and store the probe
             orthogonal_probes.append(probe_i / arr.norm(probe_i))
 
         orthogonal_probes = arr.stack(orthogonal_probes)
-
-        # Restore original intensities by scaling with original norms
         orthogonal_probes = orthogonal_probes * arr.reshape(original_norms, (-1, 1, 1))
 
         # Sort probes by real-space intensity
@@ -192,27 +172,3 @@ class PtychographyConstraints(PtychographyBase):
         intensities_order = arr.flip(arr.argsort(intensities), axis=0)
 
         return orthogonal_probes[intensities_order]
-
-        ### py4dstem raw
-        # print('start probe shape: ', start_probe.shape)
-
-        # xp = get_array_module(start_probe)
-        # n_probes = self._num_probes
-
-        # # compute upper half of P* @ P
-        # pairwise_dot_product = xp.empty((n_probes, n_probes), dtype=start_probe.dtype)
-
-        # for i in range(n_probes):
-        #     for j in range(i, n_probes):
-        #         pairwise_dot_product[i, j] = xp.sum(
-        #             start_probe[i].conj() * start_probe[j]
-        #         )
-
-        # # compute eigenvectors (effectively cheaper way of computing V* from SVD)
-        # _, evecs = xp.linalg.eigh(pairwise_dot_product, UPLO="U")
-        # start_probe = xp.tensordot(evecs.T, start_probe, axes=1)
-
-        # # sort by real-space intensity
-        # intensities = xp.sum(xp.abs(start_probe) ** 2, axis=(-2, -1))
-        # intensities_order = xp.argsort(intensities, axis=None)[::-1]
-        # return start_probe[intensities_order]

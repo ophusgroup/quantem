@@ -1842,24 +1842,15 @@ class PtychographyBase(AutoSerialize):
     def forward_operator(
         self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
     ):
-        shifted_input_probes = fourier_shift(probe, fract_positions)
-        # initial shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
-        # print("fw: shifted input_probes shape1 : ", shifted_input_probes.shape)
-        # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
-        shifted_input_probes = self._repeat_arr(
-            shifted_input_probes.swapaxes(0, 1)[None], self.num_slices, 0
-        )
-        # shifted_input_probes = np.repeat(
-        #     np.swapaxes(shifted_input_probes, 0, 1)[None], self.num_slices, 0
-        # )
-        # print("fw: shifted input_probes shape2: ", shifted_input_probes.shape)
         obj_patches = self._get_object_patches(obj, patch_row, patch_col)
-        # obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
-        # print("fw: obj patches shape: ", obj_patches.shape)
+        ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
+        shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
+        ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         propagated_probes, overlap = self.overlap_projection(
-            obj_patches, shifted_input_probes, descan_shifts
+            obj_patches, shifted_input_probe
         )
-        # print("fw: propagated_probes shape: ", propagated_probes.shape, " overlap: ", overlap.shape)
+        ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+        ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         if descan_shifts is not None:
             # TODO move applying plane wave descan shift here
             ### applying plane wave shift here to overlap, reduce need for extra FFT
@@ -1907,45 +1898,56 @@ class PtychographyBase(AutoSerialize):
         if (
             self.object_type == "potential"
         ):  # TODO - should potential be pure_phase + positivity?
-            obj_array = np.exp(1j * obj_array)
+            obj_array = arr.exp(1.0j * obj_array)
         patches = obj_array[..., patch_row, patch_col]
         # reshape to (batch_size, num_slices, roi_shape[0], roi_shape[1])
         return patches
 
-    def overlap_projection(self, obj_patches, input_probes, descan_shifts=None):
+    def overlap_projection(self, obj_patches, input_probe):
         """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
         This version is for GD only -- AD does not require all the propagated probe
         slices and trying to store them causes in-place issues
         """
-        # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
-        # obj_patches shape: (nslices, batch_size, roi_shape[0], roi_shape[1])
-        ml = False
-        if config.get("has_torch"):
-            if isinstance(input_probes, torch.Tensor):
-                ml = True
+        propagated_probes = [input_probe]
+        overlap = obj_patches[0] * input_probe
+        for s in range(1, self.num_slices):
+            propagated_probe = self._propagate_array(overlap, self._propagators[s - 1])
+            overlap = obj_patches[s] * propagated_probe
+            propagated_probes.append(propagated_probe)
 
-        if not ml:
-            overlap = obj_patches[0] * input_probes[0]
-            for s in range(1, self.num_slices):
-                input_probes[s] = self._propagate_array(
-                    overlap, self._propagators[s - 1]
-                )  # type:ignore
-                overlap = obj_patches[s] * input_probes[s]
-            propagated_probes = input_probes
+        return arr.match_device(propagated_probes, overlap), overlap  # type:ignore
 
-        # TODO make a separate forward function for ML vs GD -- the inputs/outputs are different shapes
-        # so it maybe makes sense to have them be distinct
-        # really hard to make typing work with just one function also
-        else:
-            input_probes = input_probes[0]
-            overlap = obj_patches[0] * input_probes
-            for s in range(1, self.num_slices):
-                input_probes = self._propagate_array(overlap, self._propagators[s - 1])
-                overlap = obj_patches[s] * input_probes
+    # def overlap_projection(self, obj_patches, input_probes):
+    #     """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
+    #     This version is for GD only -- AD does not require all the propagated probe
+    #     slices and trying to store them causes in-place issues
+    #     """
+    #     # shifted_input probe shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+    #     # obj_patches shape: (nslices, batch_size, roi_shape[0], roi_shape[1])
+    #     ml = False
+    #     if config.get("has_torch"):
+    #         if isinstance(input_probes, torch.Tensor):
+    #             ml = True
 
-            propagated_probes = input_probes
+    #     if not ml:
+    #         overlap = obj_patches[0] * input_probes[0]
+    #         for s in range(1, self.num_slices):
+    #             input_probes[s] = self._propagate_array(overlap, self._propagators[s - 1]) # type:ignore
+    #             overlap = obj_patches[s] * input_probes[s]
+    #         propagated_probes = input_probes
 
-        return propagated_probes, overlap  # type:ignore
+    #     # TODO make a separate forward function for ML vs GD -- the inputs/outputs are different shapes
+    #     # so it maybe makes sense to have them be distinct
+    #     # really hard to make typing work with just one function also
+    #     else:
+    #         overlap = obj_patches[0] * input_probes
+    #         for s in range(1, self.num_slices):
+    #             input_probes = self._propagate_array(overlap, self._propagators[s - 1])
+    #             overlap = obj_patches[s] * input_probes
+
+    #         propagated_probes = input_probes
+
+    #     return propagated_probes, overlap  # type:ignore
 
     def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
@@ -1969,7 +1971,7 @@ class PtychographyBase(AutoSerialize):
 
     def _propagate_array(
         self, array: "np.ndarray|cp.ndarray", propagator_array: "np.ndarray|cp.ndarray"
-    ) -> "np.ndarray|cp.ndarray":
+    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
         """
         Propagates array by Fourier convolving array with propagator_array.
 

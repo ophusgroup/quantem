@@ -302,6 +302,23 @@ def ifft2(a: ArrayLike) -> ArrayLike:
 
 
 @overload
+def fftshift(
+    a: np.ndarray, axes: tuple[int, ...] | int | None = None
+) -> np.ndarray: ...
+@overload
+def fftshift(
+    a: "torch.Tensor", axes: tuple[int, ...] | int | None = None
+) -> "torch.Tensor": ...
+def fftshift(a: ArrayLike, axes: tuple[int, ...] | int | None = None) -> ArrayLike:
+    """Shift the zero-frequency component to the center of the spectrum."""
+    validate_arraylike(a)
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            return torch.fft.fftshift(a, dim=axes)
+    return np.fft.fftshift(a, axes=axes)
+
+
+@overload
 def as_type(a: np.ndarray, dtype: "type|str|torch.dtype") -> np.ndarray: ...
 @overload
 def as_type(a: "torch.Tensor", dtype: "type|str|torch.dtype") -> "torch.Tensor": ...
@@ -351,7 +368,17 @@ def match_device(inp_arr: ArrayLike, dev_arr: ArrayLike) -> ArrayLike:
         if isinstance(dev_arr, torch.Tensor):
             if isinstance(inp_arr, torch.Tensor):
                 return inp_arr.to(device=dev_arr.device)
+            elif isinstance(inp_arr, (tuple, list)):
+                if isinstance(inp_arr[0], torch.Tensor):  # assume the rest are too...
+                    return torch.stack(inp_arr).to(device=dev_arr.device)
+                elif isinstance(inp_arr[0], np.ndarray):
+                    return torch.tensor(np.array(inp_arr), device=dev_arr.device)
+                elif isinstance(inp_arr[0], cp.ndarray):
+                    return torch.tensor(cp.array(inp_arr), device=dev_arr.device)
+                else:
+                    return torch.tensor(inp_arr, device=dev_arr.device)
             else:
+                # raise error?
                 return torch.tensor(inp_arr, device=dev_arr.device)
     if config.get("has_cupy"):
         if isinstance(dev_arr, cp.ndarray):
@@ -420,3 +447,21 @@ def stack(arrays: list[ArrayLike], axis: int = 0) -> ArrayLike:
     if all(isinstance(array, np.ndarray) for array in arrays):
         return np.stack(arrays, axis=axis)
     raise TypeError("All arrays must be of the same type to stack.")
+
+
+@overload
+def repeat(a: np.ndarray, repeats: int, axis: int | None = None) -> np.ndarray: ...
+@overload
+def repeat(
+    a: "torch.Tensor", repeats: int, axis: int | None = None
+) -> "torch.Tensor": ...
+def repeat(a: ArrayLike, repeats: int, axis: int | None = None) -> ArrayLike:
+    """Repeat elements of an array along a specified axis. Like np.repeat"""
+    validate_arraylike(a)
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            if axis is None:
+                return a.flatten().repeat(repeats)
+            else:
+                return a.repeat_interleave(repeats, dim=axis)
+    return np.repeat(a, repeats, axis=axis)
