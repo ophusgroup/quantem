@@ -1,10 +1,9 @@
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 from tqdm import tqdm
 
 from quantem.core import config
-from quantem.core.datastructures import Dataset4dstem
 from quantem.core.utils import array_funcs as arr
 from quantem.diffractive_imaging.ptycho_utils import (
     generate_batches,
@@ -21,28 +20,6 @@ else:
 
 
 class PtychographyGD(PtychographyConstraints, PtychographyBase):
-    def __init__(
-        self,
-        dset: Dataset4dstem,
-        object_type: Literal["complex", "pure_phase", "potential"] = "complex",
-        num_probes: int = 1,
-        num_slices: int = 1,
-        slice_thicknesses: float | None = None,
-        verbose: int | bool = True,
-        rng: np.random.Generator | int | None = None,
-    ):
-        super().__init__(
-            dset=dset,
-            object_type=object_type,
-            num_probes=num_probes,
-            num_slices=num_slices,
-            slice_thicknesses=slice_thicknesses,
-            verbose=verbose,
-            rng=rng,
-        )
-
-    # region --- reconstruction ---
-
     def reconstruct(
         self,
         num_iter: int = 0,
@@ -50,40 +27,36 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         batch_size: int | None = None,
         step_size: float = 0.5,
         constraints: dict = {},
-        device: str = "cpu",
+        device: str | None = None,
     ) -> None:
         # self.device = device
-        if device == "gpu" and config.get("has_cupy"):
-            xp = cp
-        else:
-            xp = np
-        self.xp = xp
-
+        self._check_preprocessed()
+        if device is not None:
+            self.device = device
         if batch_size is None:
             batch_size = self.gpts[0] * self.gpts[1]
-
         if reset:
-            obj = xp.ones_like(self.object)
+            self.reset_recon()
+            self.reset_constraints()
+            obj = np.ones_like(self.obj)
             probe = self.initial_probe.copy()
-            self._losses = []
         else:
-            obj = self.object
+            obj = self.obj
             probe = self.probe
+        self.constraints = constraints  # doesn't overwrite unspecified constraints
 
-        self.constraints = constraints  # doesn't overwrite if not reset
-
-        obj = xp.asarray(obj)
-        probe = xp.asarray(probe)
-        pos_frac = xp.asarray(self.positions_px_fractional)
-        patch_row = xp.asarray(self.patch_row)
-        patch_col = xp.asarray(self.patch_col)
-        amplitudes = xp.asarray(self.shifted_amplitudes)
-        fov_mask = xp.asarray(self.object_fov_mask).astype(self._object_dtype)
-        self._propagators = xp.asarray(self._propagators)
+        obj = self._to_xp(obj)
+        probe = self._to_xp(probe)
+        pos_frac = self._to_xp(self.positions_px_fractional)
+        patch_row = self._to_xp(self.patch_row)
+        patch_col = self._to_xp(self.patch_col)
+        amplitudes = self._to_xp(self.shifted_amplitudes)
+        fov_mask = self._to_xp(self.object_fov_mask).astype(self._object_dtype)
+        self._propagators = self._to_xp(self._propagators)
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in tqdm(range(num_iter)):
-            error = xp.float32(0)
+            error = np.float32(0)
             np.random.shuffle(shuffled_indices)
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
@@ -123,7 +96,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
 
             obj, probe = self.apply_constraints(obj, probe, object_fov_mask=fov_mask)
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
-            self._losses.append(error.item())
+            self._epoch_losses.append(error.item())
             # TODO add storage and such
 
         if self.device == "gpu":
@@ -132,9 +105,19 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
             if isinstance(probe, cp.ndarray):
                 probe = self._as_numpy(probe)
 
-        self.object = obj
+        self.obj = obj
         self.probe = probe
         return
+
+    # def _move_recon_arrays_to_device(self):
+    #     self.obj = self._to_xp(obj)
+    #     self.probe = self._to_xp(probe)
+    #     self.pos_frac = self._to_xp(self.positions_px_fractional)
+    #     self.patch_row = self._to_xp(self.patch_row)
+    #     self.patch_col = self._to_xp(self.patch_col)
+    #     self.amplitudes = self._to_xp(self.shifted_amplitudes)
+    #     self.fov_mask = self._to_xp(self.object_fov_mask).astype(self._object_dtype)
+    #     self._propagators = self._to_xp(self._propagators)
 
     # endregion
 
@@ -173,19 +156,18 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
 
     def fourier_projection(self, measured_amplitudes, overlap_array):
         """Replaces the Fourier amplitude of overlap with the measured data."""
-        xp = self.xp
-        fourier_overlap = xp.fft.fft2(overlap_array)
-        if self.num_probes == 1:
-            fourier_modified_overlap = measured_amplitudes * xp.exp(
-                1.0j * xp.angle(fourier_overlap)
+        fourier_overlap = arr.fft2(overlap_array)  # TODO test single case this
+        if self.num_probes == 1:  # faster
+            fourier_modified_overlap = measured_amplitudes * arr.exp(
+                1.0j * arr.angle(fourier_overlap)
             )
-        else:
+        else:  # necessary for mixed state
             farfield_amplitudes = self.estimate_amplitudes(overlap_array)
-            farfield_amplitudes[farfield_amplitudes == 0] = xp.inf
+            farfield_amplitudes[farfield_amplitudes == 0] = np.inf
             amplitude_modification = measured_amplitudes / farfield_amplitudes
             fourier_modified_overlap = amplitude_modification * fourier_overlap
 
-        return xp.fft.ifft2(fourier_modified_overlap)
+        return arr.ifft2(fourier_modified_overlap)
 
     def gradient_step(self, overlap_array, modified_overlap_array):
         """Computes analytical gradient."""

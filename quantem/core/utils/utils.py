@@ -6,9 +6,6 @@ import numpy as np
 from tqdm import tqdm
 
 from quantem.core import config
-from quantem.core.config import (
-    device_id_to_int as device_id_to_int,  # just adding to namespace
-)
 
 if TYPE_CHECKING:
     import cupy as cp

@@ -44,8 +44,14 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         num_slices: int = 1,
         slice_thicknesses: float | None = None,
         verbose: int | bool = True,
+        device: Literal["cpu", "gpu"] = "cpu",
         rng: np.random.Generator | int | None = None,
+        _token: None | object = None,
     ):
+        # init required as we're setting up new attributes such as _schedulers
+        if _token is not self._token:
+            raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+
         if not config.get("has_torch"):
             raise RuntimeError("PtychographyML requires torch to be installed.")
 
@@ -56,15 +62,16 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             num_slices=num_slices,
             slice_thicknesses=slice_thicknesses,
             verbose=verbose,
+            device=device,
             rng=rng,
+            _token=self._token,
         )
 
-        self._object_padding_force_power2_level = 0
+        self._object_padding_force_power2_level = 3
         self._schedulers = {}
         self._optimizers = {}
         self._scheduler_params = {}
         self._optimizer_params = {}
-        # self._base_lrs = self.DEFAULT_LRS
         self._model_object_input = None
         self._model_probe_input = None
 
@@ -400,25 +407,6 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         self._pretrained_model_probe_weights = model.state_dict().copy()
         self._pretrained_model_probe = deepcopy(model.cpu())
 
-    # @property
-    # def base_lrs(self) -> dict[str,float]:
-    #     return self._base_lrs
-
-    # @base_lrs.setter
-    # def base_lrs(self, lrs:dict[str,float|tuple[float,float]]) -> None:
-    #     for k, v in lrs.items():
-    #         if k not in self.DEFAULT_LRS.keys():
-    #             raise KeyError(f"Bad lr key {k} | should be one of {self.DEFAULT_LRS.keys()}")
-    #         if isinstance(v, (float|int)):
-    #             v = float(v)
-    #             if v < 0:
-    #                 raise ValueError(f"LRs must be >= 0. Got lr {k} = {v}")
-    #         else:
-    #             raise ValueError(f"LRs must be float or int. Got {type(v)}")
-
-    #     self._base_lrs = self.DEFAULT_LRS | self._base_lrs | lrs
-    #     return
-
     # endregion --- explicit properties and setters ---
 
     # region --- implicit properties ---
@@ -572,7 +560,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             obj = self._to_torch(self.initial_object)
             probe = self._to_torch(self.initial_probe)
         else:
-            obj = self._to_torch(self.object)
+            obj = self._to_torch(self.obj)
             probe = self._to_torch(self.probe)
 
         new_optimizers = reset
@@ -749,7 +737,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         else:
             self._descan_shifts = None
 
-        self.object = obj
+        self.obj = obj
         self.probe = probe
         return
 
