@@ -3,6 +3,7 @@ from collections.abc import Sequence
 from typing import List, Optional, Union
 
 import numpy as np
+from numpy.typing import NDArray
 from scipy.interpolate import interp1d
 from scipy.ndimage import gaussian_filter
 from scipy.optimize import minimize
@@ -11,7 +12,7 @@ from tqdm import tqdm
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils_imaging import bilinear_kde, cross_correlation_shift
+from quantem.core.utils.imaging_utils import bilinear_kde, cross_correlation_shift
 from quantem.core.visualization import show_2d
 
 
@@ -103,7 +104,7 @@ class DriftCorrection(AutoSerialize):
     def from_file(
         cls,
         file_paths: Sequence[str],
-        scan_direction_degrees: Union[Sequence[float], np.array],
+        scan_direction_degrees: Union[Sequence[float], NDArray],
         file_type: str | None = None,
         pad_fraction: float = 0.25,
         pad_value: Union[float, str, List[float]] = "median",
@@ -208,9 +209,9 @@ class DriftCorrection(AutoSerialize):
             elif pad_value == "max":
                 self.pad_value = [np.max(im.array) for im in self.images]
         elif isinstance(pad_value, numbers.Number):
-            if pad_value < 0.0:
+            if float(pad_value) < 0.0:
                 raise ValueError(f"pad_value of {pad_value} is < 0.0")
-            if pad_value > 1.0:
+            if float(pad_value) > 1.0:
                 raise ValueError(f"pad_value of {pad_value} is > 1.0")
             self.pad_value = [np.quantile(im.array, pad_value) for im in self.images]
         elif isinstance(pad_value, list) and all(
@@ -750,7 +751,7 @@ class DriftInterpolator:
 
     def transform_rows(
         self,
-        knots_row: np.array,
+        knots_row: NDArray,
     ):
         num_knots = knots_row.shape[-1]
         basis = np.linspace(0, 1, num_knots)
@@ -790,7 +791,7 @@ class DriftInterpolator:
 
     def transform_coordinates(
         self,
-        knots: np.array,
+        knots: NDArray,
     ):
         num_knots = knots.shape[-1]
         basis = np.linspace(0, 1, num_knots)

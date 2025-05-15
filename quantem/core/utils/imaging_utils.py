@@ -42,7 +42,7 @@ def cross_correlation_shift(
         Shifted image in real space, only returned if return_shifted_image=True
     """
     if device == "gpu":
-        import cupy as cp
+        import cupy as cp  # type: ignore
 
         xp = cp
     else:
@@ -231,8 +231,8 @@ def bilinear_kde(
         f_img = np.fft.fft2(image)
         fx = np.fft.fftfreq(rows)
         fy = np.fft.fftfreq(cols)
-        f_img /= np.sinc(fx)[:, None]
-        f_img /= np.sinc(fy)[None, :]
+        f_img /= np.sinc(fx)[:, None]  # type: ignore
+        f_img /= np.sinc(fy)[None, :]  # type: ignore
         image = np.real(np.fft.ifft2(f_img))
 
     return image
