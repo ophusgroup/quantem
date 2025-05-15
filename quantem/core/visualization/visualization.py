@@ -88,7 +88,7 @@ def _show_2d(
         lower_quantile=norm_config.lower_quantile,
         upper_quantile=norm_config.upper_quantile,
         vmin=norm_config.vmin,
-        vmax=norm_config.vmin,
+        vmax=norm_config.vmax,
         vcenter=norm_config.vcenter,
         half_range=norm_config.half_range,
         power=norm_config.power,
