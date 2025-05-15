@@ -858,7 +858,7 @@ class DriftInterpolator:
         image_interp = bilinear_kde(
             xa=xa * upsample_factor,  # rows
             ya=ya * upsample_factor,  # cols
-            intensities=image,
+            values=image,
             output_shape=(
                 output_shape[0] * upsample_factor,
                 output_shape[1] * upsample_factor,
