@@ -203,10 +203,10 @@ def bilinear_kde(
 
     for start, end in generate_batches(xF.shape[0], max_batch=max_batch_size):
         for dx_off, dy_off, weight in [
-            (0, 0, (1 - dx) * (1 - dy)),
-            (1, 0, dx * (1 - dy)),
-            (0, 1, (1 - dx) * dy),
-            (1, 1, dx * dy),
+            (0, 0, (1 - dx[start:end]) * (1 - dy[start:end])),
+            (1, 0, dx[start:end] * (1 - dy[start:end])),
+            (0, 1, (1 - dx[start:end]) * dy[start:end]),
+            (1, 1, dx[start:end] * dy[start:end]),
         ]:
             inds = [xF[start:end] + dx_off, yF[start:end] + dy_off]
             inds_1D = np.ravel_multi_index(inds, dims=output_shape, mode="wrap")
