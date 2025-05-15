@@ -105,7 +105,6 @@ class DriftCorrection(AutoSerialize):
         self.pad_fraction = pad_fraction
         self.kde_sigma = kde_sigma
         self.number_knots = number_knots
-        self._preprocess()
 
     @classmethod
     def from_file(
@@ -196,8 +195,10 @@ class DriftCorrection(AutoSerialize):
     def number_knots(self, value: float):
         self._number_knots = int(value)
 
-    def _preprocess(
+    def preprocess(
         self,
+        show_images: bool = True,
+        show_knots: bool = True,
     ):
         # Derived data
         self.scan_direction = np.deg2rad(self.scan_direction_degrees)
@@ -266,10 +267,14 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        if show_images:
+            self.plot_transformed_images(show_knots=show_knots, title="initial images")
+
+        return self
+
     # Translation alignment
     def align_translation(
         self,
-        # window_edge_fraction=1,
         upsample_factor: int = 8,
         max_shift: int = 32,
     ):
@@ -279,17 +284,13 @@ class DriftCorrection(AutoSerialize):
 
         # init
         dxy = np.zeros((self.shape[0], 2))
-        # window = (
-        #     tukey(self.shape[1], alpha=window_edge_fraction)[:, None]
-        #     * tukey(self.shape[2], alpha=window_edge_fraction)[None, :]
-        # )
 
         # loop over images
-        F_ref = np.fft.fft2(self.warped_images.array[0])  #  * window
+        F_ref = np.fft.fft2(self.warped_images.array[0])
         for ind in range(1, self.shape[0]):
             shifts, image_shift = cross_correlation_shift(
                 F_ref,
-                np.fft.fft2(self.warped_images.array[ind]),  # * window
+                np.fft.fft2(self.warped_images.array[ind]),
                 upsample_factor=upsample_factor,
                 max_shift=max_shift,
                 fft_input=True,
@@ -315,18 +316,25 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        return self
+
     # Affine alignment
     def align_affine(
         self,
-        step=0.01,
-        num_tests=9,  # should be odd
-        refine=True,
+        step: float = 0.01,
+        num_tests: int = 9,
+        refine: bool = True,
         upsample_factor: int = 8,
         max_shift: int = 32,
+        show_images: bool = True,
+        show_knots: bool = True,
     ):
         """
         Estimate affine drift from the first 2 images.
         """
+
+        if num_tests % 2 == 0:
+            raise ValueError("num_tests should be odd.")
 
         # Potential drift vectors
         vec = np.arange(-(num_tests - 1) / 2, (num_tests + 1) / 2)
@@ -445,6 +453,13 @@ class DriftCorrection(AutoSerialize):
             max_shift=max_shift,
         )
 
+        if show_images:
+            self.plot_transformed_images(
+                show_knots=show_knots, title="images after affine transformation"
+            )
+
+        return self
+
     # non-rigid alignment
     def align_nonrigid(
         self,
@@ -454,13 +469,11 @@ class DriftCorrection(AutoSerialize):
         regularization_poly_order: int = 1,
         regularization_max_shift_px: Optional[float] = None,
         solve_individual_rows: bool = True,
+        show_images: bool = True,
+        show_knots: bool = True,
     ):
         """
         Non-rigid drift correction.
-
-
-        Set max_optimize_iterations = None to run to convergence.
-
         """
 
         for iterations in tqdm(
@@ -593,6 +606,13 @@ class DriftCorrection(AutoSerialize):
                     self.knots[ind],
                 )
 
+        if show_images:
+            self.plot_transformed_images(
+                show_knots=show_knots, title="images after non-rigid registration"
+            )
+
+        return self
+
     def generate_corrected_image(
         self,
         upsample_factor: int = 2,
@@ -608,8 +628,8 @@ class DriftCorrection(AutoSerialize):
         stack_corr = np.zeros(
             (
                 self.shape[0],
-                self.shape[1] * upsample_factor,
-                self.shape[2] * upsample_factor,
+                np.round(self.shape[1] * upsample_factor).astype("int"),
+                np.round(self.shape[2] * upsample_factor).astype("int"),
             )
         )
 
@@ -699,8 +719,6 @@ class DriftCorrection(AutoSerialize):
         """
         fig, ax = show_2d(
             self.warped_images.array.mean(0),
-            # self.warped_images.array[0],
-            # self.images[0].array,
             **kwargs,
         )
         if show_knots:
