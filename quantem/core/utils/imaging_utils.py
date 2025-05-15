@@ -317,3 +317,46 @@ def bilinear_array_interpolation(
     )
 
     return values
+
+
+def fourier_cropping(
+    corner_centered_array: NDArray,
+    crop_shape: Tuple[int, int],
+):
+    """
+    Crops a corner-centered FFT array to retain only the lowest frequencies,
+    equivalent to a center crop on the fftshifted version.
+
+    Parameters:
+    -----------
+    corner_centered_array : ndarray
+        2D array (typically result of np.fft.fft2) with corner-centered DC
+    crop_shape : tuple of int
+        (height, width) of the desired cropped array (could be odd or even depending on arr.shape)
+
+    Returns:
+    --------
+    cropped : ndarray
+        Cropped array containing only the lowest frequencies, still corner-centered.
+    """
+
+    H, W = corner_centered_array.shape
+    crop_h, crop_w = crop_shape
+
+    h1 = crop_h // 2
+    h2 = crop_h - h1
+    w1 = crop_w // 2
+    w2 = crop_w - w1
+
+    result = np.zeros(crop_shape, dtype=corner_centered_array.dtype)
+
+    # Top-left
+    result[:h1, :w1] = corner_centered_array[:h1, :w1]
+    # Top-right
+    result[:h1, -w2:] = corner_centered_array[:h1, -w2:]
+    # Bottom-left
+    result[-h2:, :w1] = corner_centered_array[-h2:, :w1]
+    # Bottom-right
+    result[-h2:, -w2:] = corner_centered_array[-h2:, -w2:]
+
+    return result

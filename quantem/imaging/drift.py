@@ -15,7 +15,11 @@ from quantem.core.utils.compound_validators import (
     validate_list_of_dataset2d,
     validate_pad_value,
 )
-from quantem.core.utils.imaging_utils import bilinear_kde, cross_correlation_shift
+from quantem.core.utils.imaging_utils import (
+    bilinear_kde,
+    cross_correlation_shift,
+    fourier_cropping,
+)
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization import show_2d
 
@@ -616,9 +620,10 @@ class DriftCorrection(AutoSerialize):
     def generate_corrected_image(
         self,
         upsample_factor: int = 2,
-        output_original_shape: bool = True,
+        output_original_shape: bool = False,
         fourier_filter: bool = True,
         kde_sigma: float = 0.5,
+        show_image: bool = True,
     ):
         """
         Generate the final output image, after drift correction.
@@ -674,19 +679,7 @@ class DriftCorrection(AutoSerialize):
             image_corr_fft = np.fft.fft2(np.mean(stack_corr, axis=0))
 
         if output_original_shape:
-            x_inds = np.hstack(
-                (
-                    np.arange(0, self.shape[1] // 2),
-                    np.arange(-self.shape[1] // 2, 0),
-                )
-            ).astype("int")
-            y_inds = np.hstack(
-                (
-                    np.arange(0, self.shape[2] // 2),
-                    np.arange(-self.shape[2] // 2, 0),
-                )
-            ).astype("int")
-            image_corr_fft = image_corr_fft[x_inds[:, None], y_inds[None, :]]
+            image_corr_fft = fourier_cropping(image_corr_fft, self.shape[-2:])
 
         image_corr = Dataset2d.from_array(
             np.real(np.fft.ifft2(image_corr_fft)),
@@ -695,6 +688,9 @@ class DriftCorrection(AutoSerialize):
             sampling=self.images[0].sampling,
             units=self.images[0].units,
         )
+
+        if show_image:
+            fig, ax = image_corr.show()
 
         return image_corr
 

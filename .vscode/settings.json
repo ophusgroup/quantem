@@ -26,6 +26,7 @@
         "emdfile",
         "errstate",
         "fftfreq",
+        "fftshifted",
         "Fienup",
         "figax",
         "figsize",
