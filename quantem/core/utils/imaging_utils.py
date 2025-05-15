@@ -259,3 +259,61 @@ def bilinear_kde(
         image = np.real(np.fft.ifft2(f_img))
 
     return image
+
+
+def bilinear_array_interpolation(
+    image: NDArray,
+    xa: NDArray,
+    ya: NDArray,
+    max_batch_size=None,
+) -> NDArray:
+    """
+    Bilinear sampling of values from an array and pixel positions.
+
+    Parameters
+    ----------
+    image: np.ndarray
+        Image array to sample from
+    xa: np.ndarray
+        Vertical interpolation sampling positions of image array in pixels
+    ya: np.ndarray
+        Horizontal interpolation sampling positions of image array in pixels
+
+    Returns
+    -------
+    values: np.ndarray
+        Bilinear interpolation values of array at (xa,ya) positions
+
+    """
+
+    xF = np.floor(xa.ravel()).astype("int")
+    yF = np.floor(ya.ravel()).astype("int")
+    dx = xa.ravel() - xF
+    dy = ya.ravel() - yF
+
+    raveled_image = image.ravel()
+    values = np.zeros(xF.shape, dtype=image.dtype)
+
+    output_shape = image.shape
+
+    if max_batch_size is None:
+        max_batch_size = xF.shape[0]
+
+    for start, end in generate_batches(xF.shape[0], max_batch=max_batch_size):
+        for dx_off, dy_off, weights in [
+            (0, 0, (1 - dx[start:end]) * (1 - dy[start:end])),
+            (1, 0, dx[start:end] * (1 - dy[start:end])),
+            (0, 1, (1 - dx[start:end]) * dy[start:end]),
+            (1, 1, dx[start:end] * dy[start:end]),
+        ]:
+            inds = [xF[start:end] + dx_off, yF[start:end] + dy_off]
+            inds_1D = np.ravel_multi_index(inds, dims=output_shape, mode="wrap")
+
+            values[start:end] += raveled_image[inds_1D] * weights
+
+    values = np.reshape(
+        values,
+        xa.shape,
+    )
+
+    return values

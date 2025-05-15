@@ -501,19 +501,14 @@ class DriftCorrection(AutoSerialize):
                             return np.sum(residual**2)
 
                         # Run optimization
-                        if max_optimize_iterations is None:
-                            result = minimize(
-                                cost_function,
-                                x0,
-                                method="L-BFGS-B",
-                            )
-                        else:
-                            result = minimize(
-                                cost_function,
-                                x0,
-                                method="L-BFGS-B",
-                                options={"maxiter": max_optimize_iterations},
-                            )
+                        options = (
+                            {"maxiter": max_optimize_iterations}
+                            if max_optimize_iterations is not None
+                            else {}
+                        )
+                        result = minimize(
+                            cost_function, x0, method="L-BFGS-B", options=options
+                        )
                         knots_updated[:, row_ind, :] = result.x.reshape((2, -1))
 
                 else:
@@ -539,19 +534,14 @@ class DriftCorrection(AutoSerialize):
                         return np.sum(residual**2)
 
                     # Run optimization
-                    if max_optimize_iterations is None:
-                        result = minimize(
-                            cost_function,
-                            x0,
-                            method="L-BFGS-B",
-                        )
-                    else:
-                        result = minimize(
-                            cost_function,
-                            x0,
-                            method="L-BFGS-B",
-                            options={"maxiter": max_optimize_iterations},
-                        )
+                    options = (
+                        {"maxiter": max_optimize_iterations}
+                        if max_optimize_iterations is not None
+                        else {}
+                    )
+                    result = minimize(
+                        cost_function, x0, method="L-BFGS-B", options=options
+                    )
                     knots_updated = result.x.reshape(shape_knots)
 
                 # apply max shift regularization if needed
@@ -742,7 +732,6 @@ class DriftInterpolator:
 
         self.rows_input = np.arange(input_shape[0])
         self.cols_input = np.arange(input_shape[1])
-
         self.u = np.linspace(0, 1, input_shape[1])
 
     def transform_rows(
@@ -790,43 +779,15 @@ class DriftInterpolator:
         knots: NDArray,
     ):
         num_knots = knots.shape[-1]
-        basis = np.linspace(0, 1, num_knots)
-
-        xa = np.zeros(self.input_shape)
-        ya = np.zeros(self.input_shape)
 
         if num_knots == 1:
-            xa[:] = knots[0, :] + self.u[None, :] * self.scan_fast[0] * (
-                self.input_shape[0] - 1
-            )
-            ya[:] = knots[1, :] + self.u[None, :] * self.scan_fast[1] * (
-                self.input_shape[1] - 1
-            )
-        elif num_knots == 2:
-            for i in range(self.input_shape[0]):
-                xa[i, :] = interp1d(
-                    basis, knots[0, i], kind="linear", assume_sorted=True
-                )(self.u)
-                ya[i, :] = interp1d(
-                    basis, knots[1, i], kind="linear", assume_sorted=True
-                )(self.u)
+            # vectorized version for speed
+            xa, ya = self.transform_rows(knots)
         else:
-            kind = "quadratic" if num_knots == 3 else "cubic"
+            xa = np.zeros(self.input_shape)
+            ya = np.zeros(self.input_shape)
             for i in range(self.input_shape[0]):
-                xa[i, :] = interp1d(
-                    basis,
-                    knots[0, i],
-                    kind=kind,
-                    fill_value="extrapolate",
-                    assume_sorted=True,
-                )(self.u)
-                ya[i, :] = interp1d(
-                    basis,
-                    knots[1, i],
-                    kind=kind,
-                    fill_value="extrapolate",
-                    assume_sorted=True,
-                )(self.u)
+                xa[i], ya[i] = self.transform_rows(knots[:, i])
 
         return xa, ya
 
@@ -853,7 +814,7 @@ class DriftInterpolator:
             pad_value = self.pad_value
 
         if upsample_factor is None:
-            upsample_factor = 1
+            upsample_factor = 1.0
 
         image_interp = bilinear_kde(
             xa=xa * upsample_factor,  # rows
@@ -864,7 +825,7 @@ class DriftInterpolator:
                 output_shape[1] * upsample_factor,
             ),
             kde_sigma=kde_sigma * upsample_factor,
-            pad_value=self.pad_value,
+            pad_value=pad_value,
         )
 
         return image_interp
