@@ -170,27 +170,24 @@ def get_com_2d(ar: ArrayLike, corner_centered: bool = False) -> ArrayLike:
 
 
 def sum_patches_base(
-    patches: np.ndarray, patch_row: np.ndarray, patch_col: np.ndarray, obj_shape: tuple
+    patches: np.ndarray, indices: np.ndarray, obj_shape: tuple
 ) -> np.ndarray:
-    """Sums overlapping patches corner-centered at `positions`."""
-    flat_weights = patches.ravel()
-    indices = (patch_col + patch_row * obj_shape[1]).ravel()
-    # print("indices shape: ", indices.shape, flat_weights.shape,np.prod(obj_shape))
-    counts = np.bincount(indices, weights=flat_weights, minlength=np.prod(obj_shape))
-    counts = np.reshape(counts, obj_shape)
-    return counts
+    flat_weights = patches.reshape(-1)
+    flat_indices = indices.reshape(-1)
+    out = arr.match_device(np.zeros(np.prod(obj_shape), dtype=patches.dtype), patches)
+    np.add.at(out, flat_indices, flat_weights)
+    return out.reshape(obj_shape)
 
 
 def sum_patches(
-    patches: np.ndarray, patch_row: np.ndarray, patch_col: np.ndarray, obj_shape: tuple
+    patches: np.ndarray, indices: np.ndarray, obj_shape: tuple
 ) -> np.ndarray:
-    """Sums overlapping patches corner-centered at `positions`."""
-    if np.any(np.iscomplex(patches)):
-        real = sum_patches_base(patches.real, patch_row, patch_col, obj_shape)
-        imag = sum_patches_base(patches.imag, patch_row, patch_col, obj_shape)
+    if np.iscomplexobj(patches):
+        real = sum_patches_base(patches.real, indices, obj_shape)
+        imag = sum_patches_base(patches.imag, indices, obj_shape)
         return real + 1.0j * imag
     else:
-        return sum_patches_base(patches, patch_row, patch_col, obj_shape)
+        return sum_patches_base(patches, indices, obj_shape)
 
 
 def get_shifted_array(

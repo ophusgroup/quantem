@@ -652,8 +652,9 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             # would need to add a setter is all
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        t_patch_row = self._to_torch(self.patch_row)
-        t_patch_col = self._to_torch(self.patch_col)
+        t_patch_indices = self._to_torch(self.patch_indices)
+        # t_patch_row = self._to_torch(self.patch_row)
+        # t_patch_col = self._to_torch(self.patch_col)
         t_position_px_fractional = self._to_torch(self.positions_px_fractional)
         self.propagators = self._to_torch(self.propagators)
         t_mask = self._to_torch(self._object_fov_mask)  # for constraints
@@ -687,8 +688,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 loss += self.error_estimate(
                     pred_obj,
                     pred_probe,
-                    t_patch_row[batch_indices],
-                    t_patch_col[batch_indices],
+                    t_patch_indices[batch_indices],
                     t_position_px_fractional[batch_indices],
                     t_amplitudes[batch_indices],
                     batch_descan_shifts,

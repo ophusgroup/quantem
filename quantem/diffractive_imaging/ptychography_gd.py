@@ -48,8 +48,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         obj = self._to_xp(obj)
         probe = self._to_xp(probe)
         pos_frac = self._to_xp(self.positions_px_fractional)
-        patch_row = self._to_xp(self.patch_row)
-        patch_col = self._to_xp(self.patch_col)
+        patch_indices = self._to_xp(self.patch_indices)
         amplitudes = self._to_xp(self.shifted_amplitudes)
         fov_mask = self._to_xp(self.object_fov_mask).astype(self._object_dtype)
         self._propagators = self._to_xp(self._propagators)
@@ -65,19 +64,15 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                 obj_patches, propagated_probes, overlap = self.forward_operator(
                     obj,
                     probe,
-                    patch_row[batch_indices],
-                    patch_col[batch_indices],
+                    patch_indices[batch_indices],
                     pos_frac[batch_indices],
                 )
-
-                # todo move error here
 
                 obj, probe = self.adjoint_operator(
                     obj,
                     probe,
                     obj_patches,
-                    patch_row[batch_indices],
-                    patch_col[batch_indices],
+                    patch_indices[batch_indices],
                     propagated_probes,
                     amplitudes[batch_indices],
                     overlap,
@@ -85,11 +80,10 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     fix_probe=self.constraints["probe"]["fix_probe"],
                 )
 
-                error += self.error_estimate(  # TODO move this to forward operator
+                error += self.error_estimate(
                     obj,
                     probe,
-                    patch_row[batch_indices],
-                    patch_col[batch_indices],
+                    patch_indices[batch_indices],
                     pos_frac[batch_indices],
                     amplitudes[batch_indices],
                 )
@@ -128,8 +122,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         obj_array,
         probe_array,
         obj_patches,
-        patch_row,
-        patch_col,
+        patch_indices,
         shifted_probes,
         amplitudes,
         overlap,
@@ -145,8 +138,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
             obj_array,
             probe_array,
             obj_patches,
-            patch_row,
-            patch_col,
+            patch_indices,
             shifted_probes,
             gradient,
             step_size,
@@ -178,8 +170,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         obj_array,
         probe_array,
         obj_patches,
-        patch_row,
-        patch_col,
+        patch_indices,
         shifted_probes,
         gradient,
         step_size,
@@ -204,23 +195,20 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                 grad = gradient[a0]
                 probe_normalization += sum_patches(
                     np.abs(probe) ** 2,
-                    patch_row,
-                    patch_col,
+                    patch_indices,
                     obj_shape,
                 ).max()
 
                 if self.object_type == "potential":
                     object_update += step_size * sum_patches(
                         np.real(-1j * np.conj(obj) * np.conj(probe) * grad),
-                        patch_row,
-                        patch_col,
+                        patch_indices,
                         obj_shape,
                     )
                 else:
                     object_update += step_size * sum_patches(
                         np.conj(probe) * grad,
-                        patch_row,
-                        patch_col,
+                        patch_indices,
                         obj_shape,
                     )
 

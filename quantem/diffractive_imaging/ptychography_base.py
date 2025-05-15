@@ -977,7 +977,7 @@ class PtychographyBase(AutoSerialize):
 
         if self.com_rotation_rad != 0:
             tf = AffineTransform(angle=self.com_rotation_rad)
-            positions = tf(positions, positions.mean(0))
+            positions = tf(positions, origin=positions.mean(0))
 
         sampling = self.sampling
         if self.com_transpose:
@@ -1065,8 +1065,7 @@ class PtychographyBase(AutoSerialize):
         row = (r0[:, None, None] + x_ind[None, :, None]) % self.object_shape_full[-2]
         col = (c0[:, None, None] + y_ind[None, None, :]) % self.object_shape_full[-1]
 
-        self.patch_row = row
-        self.patch_col = col
+        self.patch_indices = (row * self.object_shape_full[-1] + col).astype(np.intp)
 
     def _set_object_fov_mask(self, gaussian_sigma: float = 2.0, batch_size=None):
         overlap = self._get_probe_overlap(batch_size)
@@ -1099,8 +1098,7 @@ class PtychographyBase(AutoSerialize):
         for start, end in generate_batches(num_dps, max_batch=batch_size):
             probe_overlap += sum_patches(
                 np.abs(shifted_probes[start:end]) ** 2,
-                self.patch_row[start:end],
-                self.patch_col[start:end],
+                self.patch_indices[start:end],
                 tuple(self.object_shape_full[-2:]),
             )
         return probe_overlap
@@ -1874,9 +1872,9 @@ class PtychographyBase(AutoSerialize):
     # region --- ptychography foRcard model ---
 
     def forward_operator(
-        self, obj, probe, patch_row, patch_col, fract_positions, descan_shifts=None
+        self, obj, probe, patch_indices, fract_positions, descan_shifts=None
     ):
-        obj_patches = self._get_object_patches(obj, patch_row, patch_col)
+        obj_patches = self._get_object_patches(obj, patch_indices)
         ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
         shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
         ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
@@ -1901,8 +1899,7 @@ class PtychographyBase(AutoSerialize):
         self,
         obj,
         probe,
-        patch_row,
-        patch_col,
+        patch_indices,
         fract_positions,
         true_amplitudes,
         descan_shifts=None,
@@ -1910,8 +1907,7 @@ class PtychographyBase(AutoSerialize):
         obj_patches, propagated_probes, overlap = self.forward_operator(
             obj,
             probe,
-            patch_row,
-            patch_col,
+            patch_indices,
             fract_positions,
         )
         if descan_shifts is not None:
@@ -1925,16 +1921,15 @@ class PtychographyBase(AutoSerialize):
 
         farfield_amplitudes = self.estimate_amplitudes(overlap)
         return arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
-        # return self._mse(farfield_amplitudes, true_amplitudes)  # type:ignore ## FIXME
 
-    def _get_object_patches(self, obj_array, patch_row, patch_col):
-        """Extracts complex-valued roi-shaped patches from `obj_array`."""
-        if (
-            self.object_type == "potential"
-        ):  # TODO - should potential be pure_phase + positivity?
+    def _get_object_patches(self, obj_array, patch_indices):
+        """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
+        if self.object_type == "potential":
             obj_array = arr.exp(1.0j * obj_array)
-        patches = obj_array[..., patch_row, patch_col]
-        # reshape to (batch_size, num_slices, roi_shape[0], roi_shape[1])
+        obj_flat = obj_array.reshape(obj_array.shape[0], -1)
+        # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
+        # Output shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
+        patches = obj_flat[:, patch_indices]
         return patches
 
     def overlap_projection(self, obj_patches, input_probe):
@@ -1962,14 +1957,6 @@ class PtychographyBase(AutoSerialize):
                 return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
         overlap_fft = np.fft.fft2(overlap_array)
         return np.sqrt(np.sum(np.abs(overlap_fft + eps) ** 2, axis=0))
-
-    # def _error_from_overlap(
-    #     self,
-    #     overlap_array: "np.ndarray | cp.ndarray",
-    #     true_amplitudes: "np.ndarray | cp.ndarray",
-    # ):
-    #     farfield_amplitudes = self.estimate_amplitudes(overlap_array)
-    #     return np.mean((farfield_amplitudes - true_amplitudes) ** 2)
 
     def _propagate_array(
         self, array: "np.ndarray|cp.ndarray", propagator_array: "np.ndarray|cp.ndarray"
