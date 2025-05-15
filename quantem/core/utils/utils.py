@@ -9,8 +9,8 @@ from quantem.core.config import (
 )
 
 if TYPE_CHECKING:
-    import cupy as cp
-    import torch
+    import cupy as cp  # type: ignore
+    import torch  # type: ignore
 else:
     if config.get("has_cupy"):
         import cupy as cp
@@ -30,7 +30,7 @@ def get_array_module(array: NDArray):
 
 def get_tensor_module(tensor: NDArray):
     """
-    This is like get_array_module but includes torch. It is kept explicitly seperate as in most
+    This is like get_array_module but includes torch. It is kept explicitly separate as in most
     cases get_array_module is used, and that fails if given a torch.Tensor.
     """
     if config.get("has_torch"):
