@@ -1,15 +1,15 @@
 import importlib
 
-import numpy as np
+import h5py
 
 from quantem.core.datastructures import Dataset as Dataset
-from quantem.core.datastructures import Dataset4d as Dataset4d
+from quantem.core.datastructures import Dataset4dstem as Dataset4dstem
 
 
-def read_4D(
+def read_4dstem(
     file_path: str,
     file_type: str,
-):
+) -> Dataset4dstem:
     """
     File reader for 4D-STEM data
 
@@ -23,12 +23,12 @@ def read_4D(
 
     Returns
     --------
-    Dataset
+    Dataset4dstem
     """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset4d(
-        data=imported_data["data"],
+    dataset = Dataset4dstem.from_array(
+        array=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],
             imported_data["axes"][1]["scale"],
@@ -52,7 +52,7 @@ def read_4D(
     return dataset
 
 
-def read_2D(
+def read_2d(
     file_path: str,
     file_type: str,
 ):
@@ -73,8 +73,8 @@ def read_2D(
     """
     file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset(
-        data=imported_data["data"],
+    dataset = Dataset.from_array(
+        array=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],
             imported_data["axes"][1]["scale"],
@@ -88,5 +88,38 @@ def read_2D(
             imported_data["axes"][1]["units"],
         ],
     )
+
+    return dataset
+
+
+def read_emdfile_to_4dstem(file_path: str) -> Dataset4dstem:
+    """
+    File reader for legacy `emdFile` / `py4DSTEM` files.
+
+    Parameters
+    ----------
+    file_path: str
+        Path to data
+
+    Returns
+    --------
+    Dataset4dstem
+    """
+    with h5py.File(file_path, "r") as file:
+        # Access the data directly
+        data = file["datacube_root"]["datacube"]["data"]  # type: ignore
+
+        # Access calibration values directly
+        calibration = file["datacube_root"]["metadatabundle"]["calibration"]  # type: ignore
+        r_pixel_size = calibration["R_pixel_size"][()]  # type: ignore
+        q_pixel_size = calibration["Q_pixel_size"][()]  # type: ignore
+        r_pixel_units = calibration["R_pixel_units"][()]  # type: ignore
+        q_pixel_units = calibration["Q_pixel_units"][()]  # type: ignore
+
+        dataset = Dataset4dstem.from_array(
+            array=data,
+            sampling=[r_pixel_size, r_pixel_size, q_pixel_size, q_pixel_size],
+            units=[r_pixel_units, r_pixel_units, q_pixel_units, q_pixel_units],
+        )
 
     return dataset

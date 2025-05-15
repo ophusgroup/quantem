@@ -5,14 +5,28 @@ build-backend = "setuptools.build_meta"
 [tool.setuptools]
 packages = ["quantem"]
 
+[tool.pytest.ini_options]
+addopts = [
+    "--import-mode=importlib",
+]
+testpaths = "tests"
+
+[tool.ruff.lint]
+select = ["E4","E7","E9","F","I"]
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = ["I001"]
+
+[tool.ruff.format]
+exclude = ["*.ipynb"]
+
 [project]
 name = "quantem"
-version = "0.1.0"
+version = "0.1.4"
 description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
 license = "MIT"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
   "colorspacious",
   "dill",
@@ -20,15 +34,18 @@ dependencies = [
   "matplotlib",
   "scipy",
   "tqdm",
-  "zarr",
+  "zarr>3",
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
+  "pytest>=8.3.5",
 ]
 
 [dependency-groups]
 dev = [
     "jupyterlab>=4.4.0",
+    "packaging>=24.2",
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
 ]
+
