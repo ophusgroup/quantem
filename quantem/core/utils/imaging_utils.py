@@ -9,6 +9,48 @@ from scipy.ndimage import gaussian_filter
 from quantem.core.utils.utils import generate_batches
 
 
+def dft_upsample(
+    F: NDArray,
+    up: int,
+    shift: Tuple[float, float],
+    device: str = "cpu",
+):
+    """
+    Matrix multiplication DFT, from:
+
+    Manuel Guizar-Sicairos, Samuel T. Thurman, and James R. Fienup, "Efficient subpixel
+    image registration algorithms," Opt. Lett. 33, 156-158 (2008).
+    http://www.sciencedirect.com/science/article/pii/S0045790612000778
+    """
+    if device == "gpu":
+        import cupy as cp  # type: ignore
+
+        xp = cp
+    else:
+        xp = np
+
+    M, N = F.shape
+    du = np.ceil(1.5 * up).astype(int)
+    row = np.arange(-du, du + 1)
+    col = np.arange(-du, du + 1)
+    r_shift = shift[0] - M // 2
+    c_shift = shift[1] - N // 2
+
+    kern_row = np.exp(
+        -2j
+        * np.pi
+        / (M * up)
+        * np.outer(row, xp.fft.ifftshift(xp.arange(M)) - M // 2 + r_shift)
+    )
+    kern_col = np.exp(
+        -2j
+        * np.pi
+        / (N * up)
+        * np.outer(xp.fft.ifftshift(xp.arange(N)) - N // 2 + c_shift, col)
+    )
+    return xp.real(kern_row @ F @ kern_col)
+
+
 def cross_correlation_shift(
     im_ref,
     im,
@@ -89,29 +131,8 @@ def cross_correlation_shift(
         shifts = (x0, y0)
     else:
         # Local DFT upsampling
-        def dft_upsample(F, up, shift):
-            M, N = F.shape
-            du = np.ceil(1.5 * up).astype(int)
-            row = np.arange(-du, du + 1)
-            col = np.arange(-du, du + 1)
-            r_shift = shift[0] - M // 2
-            c_shift = shift[1] - N // 2
 
-            kern_row = np.exp(
-                -2j
-                * np.pi
-                / (M * up)
-                * np.outer(row, xp.fft.ifftshift(xp.arange(M)) - M // 2 + r_shift)
-            )
-            kern_col = np.exp(
-                -2j
-                * np.pi
-                / (N * up)
-                * np.outer(xp.fft.ifftshift(xp.arange(N)) - N // 2 + c_shift, col)
-            )
-            return xp.real(kern_row @ F @ kern_col)
-
-        local = dft_upsample(cc, upsample_factor, (x0, y0))
+        local = dft_upsample(cc, upsample_factor, (x0, y0), device=device)
         peak = np.unravel_index(xp.argmax(local), local.shape)
 
         try:
@@ -202,7 +223,7 @@ def bilinear_kde(
         max_batch_size = xF.shape[0]
 
     for start, end in generate_batches(xF.shape[0], max_batch=max_batch_size):
-        for dx_off, dy_off, weight in [
+        for dx_off, dy_off, weights in [
             (0, 0, (1 - dx[start:end]) * (1 - dy[start:end])),
             (1, 0, dx[start:end] * (1 - dy[start:end])),
             (0, 1, (1 - dx[start:end]) * dy[start:end]),
@@ -210,7 +231,6 @@ def bilinear_kde(
         ]:
             inds = [xF[start:end] + dx_off, yF[start:end] + dy_off]
             inds_1D = np.ravel_multi_index(inds, dims=output_shape, mode="wrap")
-            weights = weight[start:end]
 
             pix_count += np.bincount(inds_1D, weights=weights, minlength=rows * cols)
             pix_output += np.bincount(
