@@ -38,6 +38,7 @@
         "interp",
         "iscomplexobj",
         "isscalar",
+        "issubdtype",
         "lowpass",
         "maxiter",
         "meshgrid",

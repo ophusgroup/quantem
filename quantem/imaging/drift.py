@@ -1,4 +1,3 @@
-import numbers
 from collections.abc import Sequence
 from typing import List, Optional, Union
 
@@ -12,7 +11,12 @@ from tqdm import tqdm
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.utils.compound_validators import (
+    validate_list_of_dataset2d,
+    validate_pad_value,
+)
 from quantem.core.utils.imaging_utils import bilinear_kde, cross_correlation_shift
+from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization import show_2d
 
 
@@ -95,9 +99,13 @@ class DriftCorrection(AutoSerialize):
                 "Use DriftCorrection.from_data() or .from_file() to instantiate this class."
             )
 
-        self._initialize(
-            images, scan_direction_degrees, pad_fraction, pad_value, number_knots
-        )
+        self._images = images
+        self._pad_value = pad_value
+        self.scan_direction_degrees = scan_direction_degrees
+        self.pad_fraction = pad_fraction
+        self.kde_sigma = kde_sigma
+        self.number_knots = number_knots
+        self._preprocess()
 
     @classmethod
     def from_file(
@@ -125,50 +133,72 @@ class DriftCorrection(AutoSerialize):
         kde_sigma: float = 0.5,
         number_knots: int = 1,
     ) -> "DriftCorrection":
-        if isinstance(images, Dataset3d):
-            image_list = images.to_dataset2d()
-        elif isinstance(images, np.ndarray) and images.ndim == 3:
-            image_list = [Dataset2d.from_array(im) for im in images]
-        elif isinstance(images, list):
-            if all(isinstance(im, Dataset2d) for im in images):
-                image_list = images
-            elif all(isinstance(im, np.ndarray) and im.ndim == 2 for im in images):
-                image_list = [Dataset2d.from_array(im) for im in images]
-            else:
-                raise TypeError(
-                    "If passing a list, all elements must be either 2D numpy arrays or Dataset2d instances."
-                )
-        else:
-            raise TypeError(
-                "images must be a Dataset3d, a 3D ndarray, or a list of 2D arrays or Dataset2d instances."
-            )
+        validated_images = validate_list_of_dataset2d(images)
+        validated_pad_value = validate_pad_value(pad_value, validated_images)
 
         return cls(
-            images=image_list,
-            scan_direction_degrees=np.array(scan_direction_degrees),
+            images=validated_images,
+            scan_direction_degrees=scan_direction_degrees,
             pad_fraction=pad_fraction,
-            pad_value=pad_value,
+            pad_value=validated_pad_value,
             kde_sigma=kde_sigma,
             number_knots=number_knots,
             _token=cls._token,
         )
 
-    def _initialize(
-        self,
-        images,
-        scan_direction_degrees,
-        pad_fraction,
-        pad_value,
-        kde_sigma,
-        number_knots=1,
-    ):
-        # Input data
-        self.images = images
-        self.scan_direction_degrees = np.array(scan_direction_degrees)
-        self.pad_fraction = pad_fraction
-        self.kde_sigma = kde_sigma
-        self.number_knots = number_knots
+    # --- Properties ---
+    @property
+    def images(self) -> List[Dataset2d]:
+        return self._images
 
+    @images.setter
+    def images(self, value: Union[List[Dataset2d], List[NDArray], Dataset3d, NDArray]):
+        self._images = validate_list_of_dataset2d(value)
+        self.pad_value = self.pad_value
+
+    @property
+    def pad_value(self) -> List[float]:
+        return self._pad_value
+
+    @pad_value.setter
+    def pad_value(self, value: Union[float, str, List[float]]):
+        self._pad_value = validate_pad_value(value, self.images)
+
+    @property
+    def scan_direction_degrees(self) -> NDArray:
+        return self._scan_direction_degrees
+
+    @scan_direction_degrees.setter
+    def scan_direction_degrees(self, value: Union[List[float], NDArray]):
+        self._scan_direction_degrees = ensure_valid_array(value, ndim=1)
+
+    @property
+    def pad_fraction(self) -> float:
+        return self._pad_fraction
+
+    @pad_fraction.setter
+    def pad_fraction(self, value: float):
+        self._pad_fraction = float(value)
+
+    @property
+    def kde_sigma(self) -> float:
+        return self._kde_sigma
+
+    @kde_sigma.setter
+    def kde_sigma(self, value: float):
+        self._kde_sigma = float(value)
+
+    @property
+    def number_knots(self) -> int:
+        return self._number_knots
+
+    @number_knots.setter
+    def number_knots(self, value: float):
+        self._number_knots = int(value)
+
+    def _preprocess(
+        self,
+    ):
         # Derived data
         self.scan_direction = np.deg2rad(self.scan_direction_degrees)
         self.scan_fast = np.stack(
@@ -190,31 +220,6 @@ class DriftCorrection(AutoSerialize):
             int(np.round(self.images[0].shape[0] * (1 + self.pad_fraction) / 2) * 2),
             int(np.round(self.images[1].shape[1] * (1 + self.pad_fraction) / 2) * 2),
         )
-        if isinstance(pad_value, str):
-            if pad_value == "median":
-                self.pad_value = [np.median(im.array) for im in self.images]
-            elif pad_value == "mean":
-                self.pad_value = [np.mean(im.array) for im in self.images]
-            elif pad_value == "min":
-                self.pad_value = [np.min(im.array) for im in self.images]
-            elif pad_value == "max":
-                self.pad_value = [np.max(im.array) for im in self.images]
-        elif isinstance(pad_value, numbers.Number):
-            if float(pad_value) < 0.0:
-                raise ValueError(f"pad_value of {pad_value} is < 0.0")
-            if float(pad_value) > 1.0:
-                raise ValueError(f"pad_value of {pad_value} is > 1.0")
-            self.pad_value = [np.quantile(im.array, pad_value) for im in self.images]
-        elif isinstance(pad_value, list) and all(
-            isinstance(v, (int, float)) for v in pad_value
-        ):
-            if len(pad_value) != len(self.images):
-                raise ValueError("pad_value list length must match number of images.")
-            self.pad_value = pad_value
-        else:
-            raise TypeError(
-                f"pad_value must be a 0.0 < float < 1.0, or one of ['median', 'mean', 'min', 'max'], got {type(pad_value)}"
-            )
 
         # Initialize Bezier knots and scan vectors for scanlines
         self.knots = []
