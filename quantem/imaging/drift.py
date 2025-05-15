@@ -78,7 +78,7 @@ class DriftCorrection(AutoSerialize):
     -----
     - Use `align_translation()` for rigid shifts, `align_affine()` for scan-shear or uniform drift,
       and `align_nonrigid()` for flexible per-row or per-image correction.
-    - The class stores resampled images in `self.images_transform` and the control knots in `self.knots`.
+    - The class stores resampled images in `self.warped_images` and the control knots in `self.knots`.
     - Interactive visualization is supported through `plot_merged_images()` and `plot_transformed_images()`.
     """
 
@@ -259,9 +259,9 @@ class DriftCorrection(AutoSerialize):
             )
 
         # Generate initial resampled images
-        self.images_transform = Dataset3d.from_shape(self.shape)
+        self.warped_images = Dataset3d.from_shape(self.shape)
         for a0 in range(self.shape[0]):
-            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
@@ -274,7 +274,7 @@ class DriftCorrection(AutoSerialize):
         max_shift: int = 32,
     ):
         """
-        Solve for the translation between all images in DriftCorrection.images_transform
+        Solve for the translation between all images in DriftCorrection.warped_images
         """
 
         # init
@@ -285,11 +285,11 @@ class DriftCorrection(AutoSerialize):
         # )
 
         # loop over images
-        F_ref = np.fft.fft2(self.images_transform.array[0])  #  * window
+        F_ref = np.fft.fft2(self.warped_images.array[0])  #  * window
         for ind in range(1, self.shape[0]):
             shifts, image_shift = cross_correlation_shift(
                 F_ref,
-                np.fft.fft2(self.images_transform.array[ind]),  # * window
+                np.fft.fft2(self.warped_images.array[ind]),  # * window
                 upsample_factor=upsample_factor,
                 max_shift=max_shift,
                 fft_input=True,
@@ -310,7 +310,7 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for a0 in range(self.shape[0]):
-            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
@@ -435,7 +435,7 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for a0 in range(self.shape[0]):
-            self.images_transform.array[a0] = self.interpolator[a0].warp_image(
+            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
@@ -468,7 +468,7 @@ class DriftCorrection(AutoSerialize):
             desc="Solving nonrigid drift",
         ):
             for ind in range(self.shape[0]):
-                image_ref = np.delete(self.images_transform.array, ind, axis=0).mean(
+                image_ref = np.delete(self.warped_images.array, ind, axis=0).mean(
                     axis=0
                 )
 
@@ -588,7 +588,7 @@ class DriftCorrection(AutoSerialize):
 
             # Update images
             for ind in range(self.shape[0]):
-                self.images_transform.array[ind] = self.interpolator[ind].warp_image(
+                self.warped_images.array[ind] = self.interpolator[ind].warp_image(
                     self.images[ind].array,
                     self.knots[ind],
                 )
@@ -680,7 +680,7 @@ class DriftCorrection(AutoSerialize):
 
     def plot_transformed_images(self, show_knots: bool = True, **kwargs):
         fig, ax = show_2d(
-            list(self.images_transform.array),
+            list(self.warped_images.array),
             **kwargs,
         )
         if show_knots:
@@ -698,8 +698,8 @@ class DriftCorrection(AutoSerialize):
         Plot the current transformed images, with knot overlays.
         """
         fig, ax = show_2d(
-            self.images_transform.array.mean(0),
-            # self.images_transform.array[0],
+            self.warped_images.array.mean(0),
+            # self.warped_images.array[0],
             # self.images[0].array,
             **kwargs,
         )
@@ -820,9 +820,8 @@ class DriftInterpolator:
             xa=xa * upsample_factor,  # rows
             ya=ya * upsample_factor,  # cols
             values=image,
-            output_shape=(
-                output_shape[0] * upsample_factor,
-                output_shape[1] * upsample_factor,
+            output_shape=np.round(np.array(output_shape) * upsample_factor).astype(
+                "int"
             ),
             kde_sigma=kde_sigma * upsample_factor,
             pad_value=pad_value,
