@@ -131,6 +131,10 @@ class Dataset3d(Dataset):
             signal_units=self.signal_units,
         )
 
+    def to_dataset2d(self):
+        """ """
+        return [self[i] for i in range(self.shape[0])]
+
     def show(
         self,
         index: int = 0,

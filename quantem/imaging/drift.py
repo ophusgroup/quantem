@@ -54,7 +54,7 @@ class DriftCorrection(AutoSerialize):
     -------
     >>> drift = DriftCorrection.from_data(
     ...     images=[
-    ...         image0,  # 2D np.ndarray, or dataset2d, or file name
+    ...         image0,  # 2D NDArray, or dataset2d, or file name
     ...         image1,
     ...     ],
     ...     scan_direction_degrees=[0, 90],
@@ -83,7 +83,7 @@ class DriftCorrection(AutoSerialize):
     def __init__(
         self,
         images: List[Dataset2d],
-        scan_direction_degrees: np.ndarray,
+        scan_direction_degrees: NDArray,
         pad_fraction: float,
         pad_value: Union[float, str, List[float]],
         kde_sigma: float,
@@ -95,7 +95,6 @@ class DriftCorrection(AutoSerialize):
                 "Use DriftCorrection.from_data() or .from_file() to instantiate this class."
             )
 
-        super().__init__()
         self._initialize(
             images, scan_direction_degrees, pad_fraction, pad_value, number_knots
         )
@@ -119,23 +118,15 @@ class DriftCorrection(AutoSerialize):
     @classmethod
     def from_data(
         cls,
-        images: Union[List[Dataset2d], List[np.ndarray], Dataset3d, np.ndarray],
-        scan_direction_degrees: Union[List[float], np.ndarray],
+        images: Union[List[Dataset2d], List[NDArray], Dataset3d, NDArray],
+        scan_direction_degrees: Union[List[float], NDArray],
         pad_fraction: float = 0.25,
         pad_value: Union[float, str, List[float]] = "median",
         kde_sigma: float = 0.5,
         number_knots: int = 1,
     ) -> "DriftCorrection":
         if isinstance(images, Dataset3d):
-            image_list = [
-                Dataset2d.from_array(
-                    images.array[i],
-                    origin=images.origin[:2],
-                    sampling=images.sampling[:2],
-                    units=images.units[:2],
-                )
-                for i in range(images.array.shape[0])
-            ]
+            image_list = images.to_dataset2d()
         elif isinstance(images, np.ndarray) and images.ndim == 3:
             image_list = [Dataset2d.from_array(im) for im in images]
         elif isinstance(images, list):
@@ -836,13 +827,13 @@ class DriftInterpolator:
 
     def warp_image(
         self,
-        image: np.ndarray,
-        knots: np.ndarray,  # shape: (2, rows, num_knots)
+        image: NDArray,
+        knots: NDArray,  # shape: (2, rows, num_knots)
         kde_sigma=None,
         output_shape=None,
         pad_value=None,
         upsample_factor=None,
-    ) -> np.ndarray:
+    ) -> NDArray:
         xa, ya = self.transform_coordinates(
             knots,
         )
