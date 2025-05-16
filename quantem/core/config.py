@@ -11,20 +11,20 @@ from typing import TYPE_CHECKING, Any, Literal, Union
 import yaml
 
 if TYPE_CHECKING:
-    import cupy as cp
-    import torch
+    import cupy as cp  # type: ignore
+    import torch  # type: ignore
 
 NUM_DEVICES = 0
 _defaults = {}
 try:
-    import torch as torch
+    import torch as torch  # type: ignore
 
     NUM_DEVICES = torch.cuda.device_count()
     _defaults["has_torch"] = True
 except ModuleNotFoundError:
     _defaults["has_torch"] = False
 try:
-    import cupy as cp
+    import cupy as cp  # type: ignore
 
     NUM_DEVICES = cp.cuda.runtime.getDeviceCount()
     _defaults["has_cupy"] = True
@@ -110,7 +110,9 @@ class set:
             self._assign(keys[1:], value, d[key], path)
 
 
-def refresh(config: dict = config, defaults: list[Mapping] = defaults, **kwargs) -> None:
+def refresh(
+    config: dict = config, defaults: list[Mapping] = defaults, **kwargs
+) -> None:
     """
     Update configuration by re-reading yaml files and env variables
 
@@ -152,7 +154,7 @@ def get(
     Get elements from global config
 
     If ``override_with`` is not None this value will be passed straight back.
-    Useful for getting kwarg defaults from abtek config.
+    Useful for getting kwarg defaults from abtem config.
 
     Use '.' for nested access
     """
@@ -172,7 +174,9 @@ def get(
     return result
 
 
-def update_defaults(new: dict, config: dict = config, defaults: list[Mapping] = defaults) -> None:
+def update_defaults(
+    new: dict, config: dict = config, defaults: list[Mapping] = defaults
+) -> None:
     """Add a new set of defaults to the configuration
 
     It does two things:
@@ -420,7 +424,9 @@ def _load_config_file(path: str) -> dict | None:
     return config
 
 
-def check_key_val(key: str, val: Any, deprecations: dict = deprecations) -> tuple[str, Any]:
+def check_key_val(
+    key: str, val: Any, deprecations: dict = deprecations
+) -> tuple[str, Any]:
     """Check if the provided value has been renamed or removed
 
     Parameters
