@@ -1,5 +1,5 @@
 from collections.abc import Sequence
-from typing import List, Optional, Tuple, Union
+from typing import List, Optional, Union
 
 import numpy as np
 from numpy.typing import NDArray
@@ -196,7 +196,7 @@ class DriftCorrection(AutoSerialize):
         show_merged: bool = False,
         show_images: bool = False,
         show_knots: bool = True,
-        axsize: Tuple[int, int] = (4, 4),
+        **kwargs,
     ):
         # Validators
         validated_pad_value = validate_pad_value(pad_value, self._images)
@@ -274,18 +274,17 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        kwargs.pop("title", None)
         if show_merged:
             self.plot_merged_images(
-                show_knots=show_knots,
-                title="Merged: initial",
-                axsize=axsize,
+                show_knots=show_knots, title="Merged: initial", **kwargs
             )
 
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
                 title=[f"Image {i}: initial" for i in range(self.shape[0])],
-                axsize=axsize,
+                **kwargs,
             )
 
         return self
@@ -295,6 +294,10 @@ class DriftCorrection(AutoSerialize):
         self,
         upsample_factor: int = 8,
         max_shift: int = 32,
+        show_merged: bool = True,
+        show_images: bool = False,
+        show_knots: bool = True,
+        **kwargs,
     ):
         """
         Solve for the translation between all images in DriftCorrection.images_warped
@@ -340,6 +343,19 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        kwargs.pop("title", None)
+        if show_merged:
+            self.plot_merged_images(
+                show_knots=show_knots, title="Merged: translation", **kwargs
+            )
+
+        if show_images:
+            self.plot_transformed_images(
+                show_knots=show_knots,
+                title=[f"Image {i}: translation" for i in range(self.shape[0])],
+                **kwargs,
+            )
+
         return self
 
     # Affine alignment
@@ -353,7 +369,7 @@ class DriftCorrection(AutoSerialize):
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
-        axsize: Tuple[int, int] = (4, 4),
+        **kwargs,
     ):
         """
         Estimate affine drift from the first 2 images.
@@ -483,20 +499,24 @@ class DriftCorrection(AutoSerialize):
         # Translation alignment
         self.align_translation(
             max_shift=max_shift,
+            show_images=False,
+            show_merged=False,
+            show_knots=False,
         )
 
+        kwargs.pop("title", None)
         if show_merged:
             self.plot_merged_images(
                 show_knots=show_knots,
                 title="Merged: affine",
-                axsize=axsize,
+                **kwargs,
             )
 
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
                 title=[f"Image {i}: affine" for i in range(self.shape[0])],
-                axsize=axsize,
+                **kwargs,
             )
 
         return self
@@ -513,7 +533,7 @@ class DriftCorrection(AutoSerialize):
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
-        axsize: Tuple[int, int] = (4, 4),
+        **kwargs,
     ):
         """
         Non-rigid drift correction.
@@ -655,18 +675,19 @@ class DriftCorrection(AutoSerialize):
                     self.knots[ind],
                 )
 
+        kwargs.pop("title", None)
         if show_merged:
             self.plot_merged_images(
                 show_knots=show_knots,
                 title="Merged: non-rigid",
-                axsize=axsize,
+                **kwargs,
             )
 
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
                 title=[f"Image {i}: non-rigid" for i in range(self.shape[0])],
-                axsize=axsize,
+                **kwargs,
             )
 
         return self
@@ -678,6 +699,7 @@ class DriftCorrection(AutoSerialize):
         fourier_filter: bool = True,
         kde_sigma: float = 0.5,
         show_image: bool = True,
+        **kwargs,
     ):
         """
         Generate the final output image, after drift correction.
@@ -746,7 +768,7 @@ class DriftCorrection(AutoSerialize):
         )
 
         if show_image:
-            fig, ax = image_corr.show()
+            fig, ax = image_corr.show(**kwargs)
 
         return image_corr
 
