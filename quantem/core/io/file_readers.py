@@ -1,8 +1,11 @@
 import importlib
+from pathlib import Path
 
 import h5py
 
 from quantem.core.datastructures import Dataset as Dataset
+from quantem.core.datastructures import Dataset2d as Dataset2d
+from quantem.core.datastructures import Dataset3d as Dataset3d
 from quantem.core.datastructures import Dataset4dstem as Dataset4dstem
 
 
@@ -25,7 +28,7 @@ def read_4dstem(
     --------
     Dataset4dstem
     """
-    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader  # type: ignore
     imported_data = file_reader(file_path)[0]
     dataset = Dataset4dstem.from_array(
         array=imported_data["data"],
@@ -54,8 +57,8 @@ def read_4dstem(
 
 def read_2d(
     file_path: str,
-    file_type: str,
-):
+    file_type: str | None = None,
+) -> Dataset2d:
     """
     File reader for images
 
@@ -71,9 +74,13 @@ def read_2d(
     --------
     Dataset
     """
-    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader
+    if file_type is None:
+        file_type = Path(file_path).suffix.lower().lstrip(".")
+
+    file_reader = importlib.import_module(f"rsciio.{file_type}").file_reader  # type: ignore
     imported_data = file_reader(file_path)[0]
-    dataset = Dataset.from_array(
+
+    dataset = Dataset2d.from_array(
         array=imported_data["data"],
         sampling=[
             imported_data["axes"][0]["scale"],

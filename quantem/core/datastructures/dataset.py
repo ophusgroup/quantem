@@ -10,8 +10,6 @@ from quantem.core.utils.validators import (
     validate_ndinfo,
     validate_units,
 )
-from quantem.core.visualization.visualization import show_2d
-from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
 class Dataset(AutoSerialize):
@@ -450,34 +448,3 @@ class Dataset(AutoSerialize):
                 self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
             )
 
-    def show(
-        self,
-        scalebar: ScalebarConfig | bool = True,
-        title: str | None = None,
-        **kwargs,
-    ):
-        """
-        Displays Dataset as a 2D image
-
-        Parameters
-        ----------
-        scalebar: ScalebarConfig or bool
-            If True, displays scalebar
-        title: str
-            Title of Dataset
-        kwargs: dict
-            Keyword arguments for show_2d
-        """
-        if self.ndim != 2:
-            raise NotImplementedError()  # base class only provides 2D. subclasses can override.
-
-        if scalebar is True:
-            scalebar = ScalebarConfig(
-                sampling=self.sampling[-1],
-                units=self.units[-1],
-            )
-
-        if title is None:
-            title = self.name
-
-        return show_2d(to_numpy(self.array), scalebar=scalebar, title=title, **kwargs)
