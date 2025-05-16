@@ -19,21 +19,18 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         reset: bool = False,
         constraints: dict = {},
         step_size: float = 0.5,
+        obj_type: Literal["complex", "pure_phase", "potential"] | None = None,
         batch_size: int | None = None,
         store_iterations: bool | None = None,
         store_iterations_every: int | None = None,
         device: Literal["gpu", "cpu"] | None = None,
     ) -> Self:
-        # self.device = device
         self._check_preprocessed()
-        if device is not None:
-            self.device = device
-        if batch_size is None:
-            batch_size = self.gpts[0] * self.gpts[1]
-        if store_iterations is not None:
-            self.store_iterations = store_iterations
-        if store_iterations_every is not None:
-            self.store_iterations_every = store_iterations_every
+        self.device = device
+        batch_size = self.gpts[0] * self.gpts[1] if batch_size is None else batch_size
+        self.store_iterations = store_iterations
+        self.store_iterations_every = store_iterations_every
+        self.set_obj_type(obj_type, force=reset)
         if reset:
             self.reset_recon()
             self.reset_constraints()
@@ -73,7 +70,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                 )
 
             self._obj, self._probe = self.apply_constraints(
-                self._obj, self._probe, object_fov_mask=self._object_fov_mask
+                self._obj, self._probe, obj_fov_mask=self._obj_fov_mask
             )
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
             self._epoch_losses.append(error.item())
@@ -102,7 +99,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         self._patch_indices = self._to_xp(self._patch_indices)
         self._shifted_amplitudes = self._to_xp(self._shifted_amplitudes)
         self.positions_px = self._to_xp(self._positions_px)
-        self._fov_mask = self._to_xp(self._object_fov_mask)
+        self._fov_mask = self._to_xp(self._obj_fov_mask)
         self._propagators = self._to_xp(self._propagators)
 
     # endregion
@@ -124,7 +121,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         ## mod_overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         gradient = self.gradient_step(overlap, modified_overlap)
         ## grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        self._obj, self._probe = self.update_object_and_probe(
+        self._obj, self._probe = self.update_obj_and_probe(
             self._obj,
             self._probe,
             obj_patches,
@@ -155,7 +152,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         """Computes analytical gradient."""
         return modified_overlap_array - overlap_array
 
-    def update_object_and_probe(
+    def update_obj_and_probe(
         self,
         obj_array,
         probe_array,
@@ -175,7 +172,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
             probe_normalization = arr.match_device(np.zeros_like(obj_array[s]), probe_slice)
-            object_update = arr.match_device(np.zeros_like(obj_array[s]), obj_slice)
+            obj_update = arr.match_device(np.zeros_like(obj_array[s]), obj_slice)
 
             for a0 in range(self.num_probes):
                 probe = probe_slice[a0]
@@ -187,20 +184,20 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                     obj_shape,
                 ).max()
 
-                if self.object_type == "potential":
-                    object_update += step_size * sum_patches(
+                if self.obj_type == "potential":
+                    obj_update += step_size * sum_patches(
                         np.real(-1j * np.conj(obj) * np.conj(probe) * grad),
                         patch_indices,
                         obj_shape,
                     )
                 else:
-                    object_update += step_size * sum_patches(
+                    obj_update += step_size * sum_patches(
                         np.conj(probe) * grad,
                         patch_indices,
                         obj_shape,
                     )
 
-            obj_array[s] += object_update / probe_normalization
+            obj_array[s] += obj_update / probe_normalization
 
             # back-transmit
             gradient *= np.conj(obj_slice)

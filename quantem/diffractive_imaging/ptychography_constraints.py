@@ -65,54 +65,50 @@ class PtychographyConstraints(PtychographyBase):
     @overload
     def apply_constraints(
         self,
-        object: "torch.Tensor",
+        obj: "torch.Tensor",
         probe: "torch.Tensor",
-        object_fov_mask: ArrayLike | None,
+        obj_fov_mask: ArrayLike | None,
     ) -> tuple[torch.Tensor, torch.Tensor]: ...
     @overload
     def apply_constraints(
-        self, object: "torch.Tensor", probe: None, object_fov_mask: ArrayLike | None
+        self, obj: "torch.Tensor", probe: None, obj_fov_mask: ArrayLike | None
     ) -> tuple[torch.Tensor, None]: ...
     @overload
     def apply_constraints(
-        self, object: np.ndarray, probe: np.ndarray, object_fov_mask: ArrayLike | None
+        self, obj: np.ndarray, probe: np.ndarray, obj_fov_mask: ArrayLike | None
     ) -> tuple[np.ndarray, np.ndarray]: ...
     @overload
     def apply_constraints(
-        self, object: np.ndarray, probe: None, object_fov_mask: ArrayLike | None
+        self, obj: np.ndarray, probe: None, obj_fov_mask: ArrayLike | None
     ) -> tuple[np.ndarray, None]: ...
     def apply_constraints(
         self,
-        object: ArrayLike,
+        obj: ArrayLike,
         probe: ArrayLike | None,
-        object_fov_mask: ArrayLike | None = None,
+        obj_fov_mask: ArrayLike | None = None,
     ) -> tuple[ArrayLike, ArrayLike | None]:
-        object = self._apply_object_constraints(
-            object,
-            mask=object_fov_mask,
+        obj = self._apply_obj_constraints(
+            obj,
+            mask=obj_fov_mask,
         )
         if probe is not None and not self.constraints["probe"]["fix_probe"]:
             probe = self._apply_probe_constraints(probe)
-        return object, probe
+        return obj, probe
 
     # overloading could be applied to these as well, not sure if necessary
-    def _apply_object_constraints(
-        self, object, mask: ArrayLike | None = None
-    ) -> ArrayLike:
-        if self.object_type in ["complex", "pure_phase"]:
-            if self.object_type == "complex":
-                amp = arr.clip(arr.abs(object), 0.0, 1.0)
+    def _apply_obj_constraints(self, obj, mask: ArrayLike | None = None) -> ArrayLike:
+        if self.obj_type in ["complex", "pure_phase"]:
+            if self.obj_type == "complex":
+                amp = arr.clip(arr.abs(obj), 0.0, 1.0)
             else:
                 amp = 1.0
-            phase = arr.angle(object)
+            phase = arr.angle(obj)
             if mask is not None and self.constraints["object"]["apply_fov_mask"]:
-                obj2 = (
-                    amp * mask * arr.exp(1.0j * phase * mask)
-                )  # .type(obj_dtype_torch)
+                obj2 = amp * mask * arr.exp(1.0j * phase * mask)  # .type(obj_dtype_torch)
             else:
                 obj2 = amp * arr.exp(1.0j * phase)  # .type(obj_dtype_torch)
         else:  # is potential, apply positivity
-            obj2 = arr.clip(object, a_min=0.0)
+            obj2 = arr.clip(obj, a_min=0.0)
             if self.constraints["object"]["fix_potential_baseline"]:
                 ### pushing towards 0 can make reconstruction worse?
                 if mask is not None:
@@ -121,8 +117,8 @@ class PtychographyConstraints(PtychographyBase):
 
         if self.num_slices > 1:
             if self.constraints["object"]["identical_slices"]:
-                object_mean = arr.mean(obj2, axis=0, keepdim=True)
-                obj2[:] = object_mean  # type:ignore # TODO fix this, see if breaks graph to just do in place
+                obj_mean = arr.mean(obj2, axis=0, keepdim=True)
+                obj2[:] = obj_mean  # type:ignore # TODO fix this, see if breaks graph to just do in place
 
         return obj2
 
@@ -155,18 +151,13 @@ class PtychographyConstraints(PtychographyBase):
         n_probes = start_probe.shape[0]
         orthogonal_probes = []
 
-        original_norms = arr.norm(
-            arr.reshape(start_probe, (n_probes, -1)), axis=1, keepdim=True
-        )
+        original_norms = arr.norm(arr.reshape(start_probe, (n_probes, -1)), axis=1, keepdim=True)
 
         # Gram-Schmidt orthogonalization
         for i in range(n_probes):
             probe_i = start_probe[i]
             for j in range(len(orthogonal_probes)):
-                projection = (
-                    arr.sum(orthogonal_probes[j].conj() * probe_i)
-                    * orthogonal_probes[j]
-                )
+                projection = arr.sum(orthogonal_probes[j].conj() * probe_i) * orthogonal_probes[j]
                 probe_i = probe_i - projection
             orthogonal_probes.append(probe_i / arr.norm(probe_i))
 

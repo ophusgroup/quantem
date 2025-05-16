@@ -65,12 +65,12 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             _token=self._token,
         )
 
-        self._object_padding_force_power2_level = 3
+        self._obj_padding_force_power2_level = 3
         self._schedulers = {}
         self._optimizers = {}
         self._scheduler_params = {}
         self._optimizer_params = {}
-        self._model_object_input = None
+        self._model_obj_input = None
         self._model_probe_input = None
 
     # region --- explicit properties and setters ---
@@ -79,6 +79,13 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
     def mode(self) -> Literal["model", "pixelwise"]:
         # saying model for generative model of some sort, doesn't have to be a DIP
         return self._mode
+
+    @mode.setter
+    def mode(self, mode: Literal["model", "pixelwise"] | None):
+        if mode is not None:
+            if mode not in ["model", "pixelwise"]:
+                raise ValueError(f"mode must be one of ['model', 'pixelwise'], got {mode}")
+            self._mode: Literal["model", "pixelwise"] = mode
 
     @property
     def optimizer_params(self) -> dict[str, dict]:
@@ -117,12 +124,6 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             if "lr" not in v.keys():
                 v["lr"] = self.DEFAULT_LRS[k]
             self._optimizer_params[k] = v
-
-    @mode.setter
-    def mode(self, mode: Literal["model", "pixelwise"]):
-        if mode not in ["model", "pixelwise"]:
-            raise ValueError(f"mode must be one of ['model', 'pixelwise'], got {mode}")
-        self._mode: Literal["model", "pixelwise"] = mode
 
     @property
     def optimizers(self) -> dict[str, torch.optim.Adam | torch.optim.AdamW]:
@@ -334,21 +335,21 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         return scheduler
 
     @property
-    def model_object(self) -> "torch.nn.Module":
-        if hasattr(self, "_model_object"):
-            return self._model_object
-        elif hasattr(self, "_pretrained_model_object"):
-            return self._pretrained_model_object
+    def model_obj(self) -> "torch.nn.Module":
+        if hasattr(self, "_model_obj"):
+            return self._model_obj
+        elif hasattr(self, "_pretrained_model_obj"):
+            return self._pretrained_model_obj
         else:
             raise AttributeError(
                 "Neither model_object nor pretrained_model_object have been assigned"
             )
 
-    @model_object.setter
-    def model_object(self, model: "torch.nn.Module"):
+    @model_obj.setter
+    def model_obj(self, model: "torch.nn.Module"):
         if not isinstance(model, torch.nn.Module):
             raise TypeError(f"model_object must be a torch.nn.Module, got {type(model)}")
-        self._model_object = model
+        self._model_obj = model
 
     @property
     def model_probe(self) -> "torch.nn.Module":
@@ -368,12 +369,12 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         self._model_probe = model
 
     @property
-    def model_object_input(self) -> "torch.Tensor | None":
-        return self._model_object_input
+    def model_obj_input(self) -> "torch.Tensor | None":
+        return self._model_obj_input
 
-    @model_object_input.setter
-    def model_object_input(self, t: "torch.Tensor"):
-        self._model_object_input = t.clone()
+    @model_obj_input.setter
+    def model_obj_input(self, t: "torch.Tensor"):
+        self._model_obj_input = t.clone()
 
     @property
     def model_probe_input(self) -> "torch.Tensor | None":
@@ -384,14 +385,14 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         self._model_probe_input = t.clone()
 
     @property
-    def pretrained_model_object(self) -> "torch.nn.Module":
-        self._pretrained_model_object.load_state_dict(self._pretrained_model_object_weights)
-        return self._pretrained_model_object
+    def pretrained_model_obj(self) -> "torch.nn.Module":
+        self._pretrained_model_obj.load_state_dict(self._pretrained_model_obj_weights)
+        return self._pretrained_model_obj
 
-    @pretrained_model_object.setter
-    def pretrained_model_object(self, model: "torch.nn.Module"):
-        self._pretrained_model_object_weights = model.state_dict().copy()
-        self._pretrained_model_object: "torch.nn.Module" = deepcopy(model.cpu())
+    @pretrained_model_obj.setter
+    def pretrained_model_obj(self, model: "torch.nn.Module"):
+        self._pretrained_model_obj_weights = model.state_dict().copy()
+        self._pretrained_model_obj: "torch.nn.Module" = deepcopy(model.cpu())
 
     @property
     def pretrained_model_probe(self) -> "torch.nn.Module":
@@ -533,7 +534,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         self._patch_indices = self._to_torch(self._patch_indices)
         self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
         self.positions_px = self._to_torch(self._positions_px)
-        self._fov_mask = self._to_torch(self._object_fov_mask)
+        self._fov_mask = self._to_torch(self._obj_fov_mask)
         self._propagators = self._to_torch(self._propagators)
 
     # endregion --- methods ---
@@ -546,9 +547,8 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         num_iter: int = 0,
         reset: bool = False,
         optimizer_params: dict | None = None,
-        object_type: Literal["complex", "pure_phase", "potential"] | None = None,
+        obj_type: Literal["complex", "pure_phase", "potential"] | None = None,
         models: "tuple[torch.nn.Module, torch.nn.Module] | torch.nn.Module | None" = None,
-        # lrs: dict = {},
         scheduler_params: dict | None = None,
         constraints: dict = {},
         batch_size: int | None = None,
@@ -565,19 +565,16 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         # TODO maybe make an "process args" method that handles things like:
         # mode, store_iterations, device,
         self._check_preprocessed()
-        if mode is not None:
-            self.mode = mode
-        if device is not None:
-            self.device = device
-        if batch_size is None:
-            batch_size = self.gpts[0] * self.gpts[1]
-        if store_iterations is not None:
-            self.store_iterations = store_iterations
-        if store_iterations_every is not None:
-            self.store_iterations_every = store_iterations_every
+        self.mode = mode
+        self.device = device
+        batch_size = self.gpts[0] * self.gpts[1] if batch_size is None else batch_size
+        self.store_iterations = store_iterations
+        self.store_iterations_every = store_iterations_every
+        self.set_obj_type(obj_type, force=reset)
         if reset:
             self.reset_recon()
             self.reset_constraints()
+        self.constraints = constraints
 
         new_optimizers = reset
         new_scheduler = reset
@@ -585,42 +582,31 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             self.optimizer_params = optimizer_params
             new_optimizers = True
             new_scheduler = True
-
         if scheduler_params is not None:
             self.scheduler_params = scheduler_params
             new_scheduler = True
 
-        if object_type is not None:
-            if object_type != self.object_type:
-                if not reset:
-                    raise ValueError(
-                        f"object_type {object_type} cannot be changed to {object_type} with reset=False."
-                    )
-                self.object_type = object_type
-
-        self.constraints = constraints  # doesn't overwrite if not reset
         self._move_recon_arrays_to_device()
 
         if new_optimizers:
-            # TODO make a method to set all the optimizers
+            # TODO make a method to set all the optimizers in the dict
             self._add_optimizer(key="object", params=self._obj)
             if "probe" in self.optimizer_params.keys():
                 self._add_optimizer(key="probe", params=self._probe)
                 self.constraints["probe"]["fix_probe"] = False
             else:
                 self.constraints["probe"]["fix_probe"] = True
-
-        if "descan" in self.optimizer_params.keys():
-            # should just use raw amplitudes, and the com_shifts should be learned and
-            # used to shift the predicted amplitudes to the correct position
-            raise NotImplementedError
+            if "descan" in self.optimizer_params.keys():
+                # should just use raw amplitudes, and the com_shifts should be learned and
+                # used to shift the predicted amplitudes to the correct position
+                raise NotImplementedError
 
         if new_scheduler:
+            # TODO clean this up
             self._schedulers = {}
-            # This could be self.schedulers = self.get_schedulers(self.scheduler_params, num_iter)
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        t_mask = self._object_fov_mask
+        t_mask = self._obj_fov_mask
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         # TODO add pbar with loss printout
@@ -636,7 +622,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 raise NotImplementedError(f"mode {self.mode} not implemented")
 
             pred_obj, pred_probe = self.apply_constraints(
-                object=pred_obj, probe=pred_probe, object_fov_mask=self._object_fov_mask
+                obj=pred_obj, probe=pred_probe, obj_fov_mask=self._obj_fov_mask
             )
 
             for start, end in generate_batches(
@@ -687,7 +673,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         else:
             raise NotImplementedError
         self.obj, self.probe = self.apply_constraints(
-            object=pred_obj.detach(), probe=pred_probe.detach(), object_fov_mask=t_mask
+            obj=pred_obj.detach(), probe=pred_probe.detach(), obj_fov_mask=t_mask
         )
 
         return self
