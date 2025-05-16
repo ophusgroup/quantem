@@ -178,7 +178,7 @@ class QuantileInterval(BaseInterval):
 
         # Filter out invalid values (inf, nan)
         values = values[np.isfinite(values)]
-        vmin, vmax = np.quantile(values, (self.lower_quantile, self.upper_quantile))  # type: ignore
+        vmin, vmax = np.quantile(values, (self.lower_quantile, self.upper_quantile))
 
         return vmin, vmax
 

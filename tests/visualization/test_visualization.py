@@ -143,17 +143,17 @@ class TestNormalizeShowInputToGrid:
 
 
 class TestShow2DMain:
-    # def test_show_2d_single_array(self, sample_array):
-    #     fig, axs = show_2d(sample_array)
-    #     assert isinstance(fig, Figure)
-    #     assert len(axs.shape) == 2
-    #     assert axs.shape == (1, 1)
+    def test_show_2d_single_array(self, sample_array):
+        fig, axs = show_2d(sample_array)
+        assert isinstance(fig, Figure)
+        assert len(axs.shape) == 2
+        assert axs.shape == (1, 1)
 
-    # def test_show_2d_list(self, sample_arrays):
-    #     fig, axs = show_2d(sample_arrays)
-    #     assert isinstance(fig, Figure)
-    #     assert len(axs.shape) == 2
-    #     assert axs.shape == (1, len(sample_arrays))
+    def test_show_2d_list(self, sample_arrays):
+        fig, axs = show_2d(sample_arrays)
+        assert isinstance(fig, Figure)
+        assert len(axs.shape) == 2
+        assert axs.shape == (1, len(sample_arrays))
 
     def test_show_2d_nested_list(self, sample_arrays):
         nested = [sample_arrays[:2], sample_arrays[1:]]
@@ -175,11 +175,11 @@ class TestShow2DMain:
         with pytest.raises(ValueError):
             show_2d(nested, combine_images=True)
 
-    # def test_show_2d_with_figax(self, sample_array, mock_fig_ax):
-    #     fig, axs = show_2d(sample_array, figax=mock_fig_ax)
-    #     assert isinstance(fig, Figure)
-    #     assert len(axs.shape) == 2
-    #     assert axs.shape == (1, 1)
+    def test_show_2d_with_figax(self, sample_array, mock_fig_ax):
+        fig, axs = show_2d(sample_array, figax=mock_fig_ax)
+        assert isinstance(fig, Figure)
+        assert len(axs.shape) == 2
+        assert axs.shape == (1, 1)
 
     def test_show_2d_with_invalid_figax_shape(self, sample_arrays, mock_fig_ax):
         with pytest.raises(ValueError):

@@ -11,20 +11,20 @@ from typing import TYPE_CHECKING, Any, Literal, Union
 import yaml
 
 if TYPE_CHECKING:
-    import cupy as cp  # type: ignore
-    import torch  # type: ignore
+    import cupy as cp
+    import torch
 
 NUM_DEVICES = 0
 _defaults = {}
 try:
-    import torch as torch  # type: ignore
+    import torch as torch
 
     NUM_DEVICES = torch.cuda.device_count()
     _defaults["has_torch"] = True
 except ModuleNotFoundError:
     _defaults["has_torch"] = False
 try:
-    import cupy as cp  # type: ignore
+    import cupy as cp
 
     NUM_DEVICES = cp.cuda.runtime.getDeviceCount()
     _defaults["has_cupy"] = True
@@ -154,7 +154,7 @@ def get(
     Get elements from global config
 
     If ``override_with`` is not None this value will be passed straight back.
-    Useful for getting kwarg defaults from abtem config.
+    Useful for getting kwarg defaults from abtek config.
 
     Use '.' for nested access
     """

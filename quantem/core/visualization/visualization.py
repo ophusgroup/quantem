@@ -89,7 +89,7 @@ def _show_2d(
         lower_quantile=norm_config.lower_quantile,
         upper_quantile=norm_config.upper_quantile,
         vmin=norm_config.vmin,
-        vmax=norm_config.vmax,
+        vmax=norm_config.vmin,
         vcenter=norm_config.vcenter,
         half_range=norm_config.half_range,
         power=norm_config.power,
@@ -316,8 +316,6 @@ def show_2d(
     nrows = len(grid)
     ncols = max(len(row) for row in grid)
 
-    title = kwargs.pop("title", None)
-
     if combine_images:
         if nrows > 1:
             raise ValueError()
@@ -340,46 +338,19 @@ def show_2d(
     for i, row in enumerate(grid):
         for j, array in enumerate(row):
             figax = (fig, axs[i][j])
-            if title is None:
-                t = None
-            elif isinstance(title, str):
-                t = title
-            elif isinstance(title[0], str):
-                # Flat list of titles
-                t = title[i * ncols + j] if i * ncols + j < len(title) else None
-            else:
-                # Grid of titles
-                t = title[i][j] if i < len(title) and j < len(title[i]) else None
-
             _show_2d(
                 array,
                 figax=figax,
-                title=t,
                 **kwargs,
             )
-
-            # figax = (fig, axs[i][j])
-            # _show_2d(
-            #     array,
-            #     figax=figax,
-            #     **kwargs,
-            # )
 
     # Hide unused axes in incomplete rows
     for i, row in enumerate(grid):
         for j in range(len(row), ncols):
-            axs[i][j].axis("off")  # type: ignore
+            axs[i][j].axis("off")
 
     if tight_layout:
         fig.tight_layout()
-
-    # Squeeze the axes to the expected shape
-    if axs.shape == (1, 1):
-        axs = axs[0, 0]
-    elif axs.shape[0] == 1:
-        axs = axs[0]
-    elif axs.shape[1] == 1:
-        axs = axs[:, 0]
 
     return fig, axs
 

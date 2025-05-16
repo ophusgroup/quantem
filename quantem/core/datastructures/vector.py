@@ -304,8 +304,7 @@ class Vector(AutoSerialize):
         # Handle fancy indexing and slicing
         def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
             if isinstance(dim_idx, slice):
-                start, stop, step = dim_idx.indices(dim_size)
-                return np.arange(start, stop, step)
+                return np.arange(*dim_idx.indices(dim_size))
             elif isinstance(dim_idx, (np.ndarray, list)):
                 idx = np.asarray(dim_idx)
                 if np.any((idx < 0) | (idx >= dim_size)):
@@ -372,8 +371,7 @@ class Vector(AutoSerialize):
         # Handle fancy indexing and slicing
         def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
             if isinstance(dim_idx, slice):
-                start, stop, step = dim_idx.indices(dim_size)
-                return np.arange(start, stop, step)
+                return np.arange(*dim_idx.indices(dim_size))
             elif isinstance(dim_idx, (np.ndarray, list)):
                 idx = np.asarray(dim_idx)
                 if np.any((idx < 0) | (idx >= dim_size)):
@@ -448,14 +446,13 @@ class Vector(AutoSerialize):
                 raise KeyError(f"Field '{idx}' not found.")
             return _FieldView(self, idx)
 
-        # Normalize idx to tuple
-        normalized: Tuple[Any, ...] = (idx,) if not isinstance(idx, tuple) else idx
+        if not isinstance(idx, tuple):
+            idx = (idx,)
 
-        # Convert lists/arrays to ndarray
+        # Convert sequences to numpy arrays for fancy indexing
         idx_converted: Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]]], ...] = (
             tuple(
-                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i
-                for i in normalized
+                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
             )
         )
 
@@ -475,8 +472,7 @@ class Vector(AutoSerialize):
         # Handle fancy indexing and slicing
         def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
             if isinstance(dim_idx, slice):
-                start, stop, step = dim_idx.indices(dim_size)
-                return np.arange(start, stop, step)
+                return np.arange(*dim_idx.indices(dim_size))
             elif isinstance(dim_idx, (np.ndarray, list)):
                 return np.asarray(dim_idx)
             elif isinstance(dim_idx, (int, np.integer)):
@@ -524,15 +520,12 @@ class Vector(AutoSerialize):
             field_view.set_flattened(value)
             return
 
-        # Normalize idx to tuple
-        normalized: Tuple[Any, ...] = (idx,) if not isinstance(idx, tuple) else idx
+        if not isinstance(idx, tuple):
+            idx = (idx,)
 
-        # Convert lists/arrays to ndarray
-        idx_converted: Tuple[Union[int, slice, np.ndarray[Any, np.dtype[Any]]], ...] = (
-            tuple(
-                np.asarray(i) if isinstance(i, (list, np.ndarray)) else i
-                for i in normalized
-            )
+        # Convert sequences to numpy arrays for fancy indexing
+        idx_converted = tuple(
+            np.asarray(i) if isinstance(i, (list, np.ndarray)) else i for i in idx
         )
 
         # Check if we're doing slice‐ or array‐based (multi‐cell) indexing
@@ -564,8 +557,7 @@ class Vector(AutoSerialize):
             # Get indices for each dimension
             def get_indices(dim_idx: Any, dim_size: int) -> np.ndarray:
                 if isinstance(dim_idx, slice):
-                    start, stop, step = dim_idx.indices(dim_size)
-                    return np.arange(start, stop, step)
+                    return np.arange(*dim_idx.indices(dim_size))
                 elif isinstance(dim_idx, (np.ndarray, list)):
                     idx = np.asarray(dim_idx)
                     if np.any((idx < 0) | (idx >= dim_size)):
@@ -941,7 +933,7 @@ class Vector(AutoSerialize):
         self._data = validate_vector_data(value, self.shape, self.num_fields)
 
 
-# Helper function for nesting lists
+# Helper function for nexting lists
 def nested_list(shape: Tuple[int, ...], fill: Any = None) -> Any:
     if len(shape) == 0:
         return fill
