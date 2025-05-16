@@ -88,7 +88,7 @@ def _show_2d(
         lower_quantile=norm_config.lower_quantile,
         upper_quantile=norm_config.upper_quantile,
         vmin=norm_config.vmin,
-        vmax=norm_config.vmin,
+        vmax=norm_config.vmax,
         vcenter=norm_config.vcenter,
         half_range=norm_config.half_range,
         power=norm_config.power,
@@ -345,10 +345,18 @@ def show_2d(
     # Hide unused axes in incomplete rows
     for i, row in enumerate(grid):
         for j in range(len(row), ncols):
-            axs[i][j].axis("off")
+            axs[i][j].axis("off")  # type: ignore
 
     if tight_layout:
         fig.tight_layout()
+
+    # Squeeze the axes to the expected shape
+    if axs.shape == (1, 1):
+        axs = axs[0, 0]
+    elif axs.shape[0] == 1:
+        axs = axs[0]
+    elif axs.shape[1] == 1:
+        axs = axs[:, 0]
 
     return fig, axs
 
