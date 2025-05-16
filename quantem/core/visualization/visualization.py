@@ -9,6 +9,7 @@ from matplotlib import colors
 from mpl_toolkits.axes_grid1 import make_axes_locatable
 from numpy.typing import NDArray
 
+from quantem.core.utils.utils import to_cpu
 from quantem.core.visualization.custom_normalizations import (
     CustomNormalization,
     NormalizationConfig,
@@ -239,7 +240,7 @@ def _show_2d_combined(
 
 
 def _normalize_show_input_to_grid(
-    arrays: Union[NDArray, Sequence[NDArray], Sequence[Sequence[NDArray]]],
+    arrays: Any,  # Union[NDArray, Sequence[NDArray], Sequence[Sequence[NDArray]]],
 ) -> List[List[NDArray]]:
     """Convert various input formats to a consistent grid format for visualization.
 
@@ -310,6 +311,7 @@ def show_2d(
         If combine_images is True but arrays contains multiple rows, or if
         figax is provided but the axes shape doesn't match the grid shape.
     """
+    arrays = to_cpu(arrays)
     grid = _normalize_show_input_to_grid(arrays)
     nrows = len(grid)
     ncols = max(len(row) for row in grid)
