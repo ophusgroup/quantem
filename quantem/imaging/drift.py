@@ -1,5 +1,3 @@
-# Override warnings
-import warnings
 from collections.abc import Sequence
 from typing import List, Optional, Union
 
@@ -24,20 +22,6 @@ from quantem.core.utils.imaging_utils import (
 )
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization import show_2d
-
-
-# original_formatwarning = warnings.formatwarning
-def simple_formatwarning(message, category, filename, lineno, line=None):
-    return f"{message}\n"
-
-
-warnings.formatwarning = simple_formatwarning
-warnings.simplefilter("always")  # Ensure your warning is shown
-warnings.filterwarnings(
-    "ignore",
-    message="ast.Ellipsis is deprecated and will be removed in Python 3.14",
-    category=DeprecationWarning,
-)
 
 
 class DriftCorrection(AutoSerialize):
@@ -303,8 +287,8 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            warnings.warn(
-                "No knots found — running .preprocess() with default settings."
+            print(
+                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
             )
             self.preprocess()
 
@@ -360,9 +344,8 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            warnings.simplefilter("always")
-            warnings.warn(
-                "No knots found — running .preprocess() with default settings."
+            print(
+                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
             )
             self.preprocess()
 
@@ -511,8 +494,8 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            warnings.warn(
-                "No knots found — running .preprocess() with default settings."
+            print(
+                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
             )
             self.preprocess()
 
@@ -715,7 +698,9 @@ class DriftCorrection(AutoSerialize):
             image_corr_fft = np.fft.fft2(np.mean(stack_corr, axis=0))
 
         if output_original_shape:
-            image_corr_fft = fourier_cropping(image_corr_fft, self.shape[-2:])
+            image_corr_fft = (
+                fourier_cropping(image_corr_fft, self.shape[-2:]) / upsample_factor**2
+            )
 
         image_corr = Dataset2d.from_array(
             np.real(np.fft.ifft2(image_corr_fft)),
