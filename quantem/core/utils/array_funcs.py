@@ -37,12 +37,8 @@ numpy_to_torch_dtype_dict = {
     np.complex64: torch.complex64,
     np.complex128: torch.complex128,
 }
-torch_to_numpy_dtype_dict = {
-    value: key for (key, value) in numpy_to_torch_dtype_dict.items()
-}
-torch_to_numpy_dtype_dict.update(
-    {torch.bfloat16: np.float32, torch.complex32: np.complex64}
-)
+torch_to_numpy_dtype_dict = {value: key for (key, value) in numpy_to_torch_dtype_dict.items()}
+torch_to_numpy_dtype_dict.update({torch.bfloat16: np.float32, torch.complex32: np.complex64})
 
 
 def numpy_to_torch_dtype(np_dtype) -> torch.dtype:
@@ -79,8 +75,17 @@ def validate_arraylike(a: ArrayLike) -> None:
     """
     Validate that the input is a supported array-like type.
     """
-    if not isinstance(a, (np.ndarray, cp.ndarray, torch.Tensor)):
-        raise ValueError(f"Unsupported array type: {type(a)}")
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            return
+    if config.get("has_cupy"):
+        if isinstance(a, cp.ndarray):
+            return
+    if isinstance(a, np.ndarray):
+        return
+    raise TypeError(
+        f"Unsupported array type: {type(a)}. Supported types are: np.ndarray, cp.ndarray, torch.Tensor"
+    )
 
 
 def array_operation(a: ArrayLike, np_func, torch_func=None, *args, **kwargs):
@@ -151,9 +156,7 @@ def sum(a: ArrayLike, axis=None) -> ArrayLike:
 
 
 @overload
-def clip(
-    a: np.ndarray, a_min: float | None = None, a_max: float | None = None
-) -> np.ndarray: ...
+def clip(a: np.ndarray, a_min: float | None = None, a_max: float | None = None) -> np.ndarray: ...
 @overload
 def clip(
     a: "torch.Tensor", a_min: float | None = None, a_max: float | None = None
@@ -213,65 +216,41 @@ def reshape(a: ArrayLike, newshape: tuple[int, ...]) -> ArrayLike:
 
 
 @overload
-def min(
-    a: np.ndarray, axis: int | None = None, keepdim: bool = False
-) -> np.ndarray: ...
+def min(a: np.ndarray, axis: int | None = None, keepdim: bool = False) -> np.ndarray: ...
 @overload
-def min(
-    a: "torch.Tensor", axis: int | None = None, keepdim: bool = False
-) -> "torch.Tensor": ...
+def min(a: "torch.Tensor", axis: int | None = None, keepdim: bool = False) -> "torch.Tensor": ...
 def min(a: ArrayLike, axis: int | None = None, keepdim: bool = False) -> ArrayLike:
     """Compute the minimum of array elements over a given axis."""
     validate_arraylike(a)
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
-            return (
-                torch.min(a, dim=axis, keepdim=keepdim)
-                if axis is not None
-                else torch.min(a)
-            )
+            return torch.min(a, dim=axis, keepdim=keepdim) if axis is not None else torch.min(a)
     return np.min(a, axis=axis, keepdims=keepdim)
 
 
 @overload
-def max(
-    a: np.ndarray, axis: int | None = None, keepdim: bool = False
-) -> np.ndarray: ...
+def max(a: np.ndarray, axis: int | None = None, keepdim: bool = False) -> np.ndarray: ...
 @overload
-def max(
-    a: "torch.Tensor", axis: int | None = None, keepdim: bool = False
-) -> "torch.Tensor": ...
+def max(a: "torch.Tensor", axis: int | None = None, keepdim: bool = False) -> "torch.Tensor": ...
 def max(a: ArrayLike, axis: int | None = None, keepdim: bool = False) -> ArrayLike:
     """Compute the maximum of array elements over a given axis."""
     validate_arraylike(a)
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
-            return (
-                torch.max(a, dim=axis, keepdim=keepdim)
-                if axis is not None
-                else torch.max(a)
-            )
+            return torch.max(a, dim=axis, keepdim=keepdim) if axis is not None else torch.max(a)
     return np.max(a, axis=axis, keepdims=keepdim)
 
 
 @overload
-def mean(
-    a: np.ndarray, axis: int | None = None, keepdim: bool = False
-) -> np.ndarray: ...
+def mean(a: np.ndarray, axis: int | None = None, keepdim: bool = False) -> np.ndarray: ...
 @overload
-def mean(
-    a: "torch.Tensor", axis: int | None = None, keepdim: bool = False
-) -> "torch.Tensor": ...
+def mean(a: "torch.Tensor", axis: int | None = None, keepdim: bool = False) -> "torch.Tensor": ...
 def mean(a: ArrayLike, axis: int | None = None, keepdim: bool = False) -> ArrayLike:
     """Compute the mean of array elements over a given axis."""
     validate_arraylike(a)
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
-            return (
-                torch.mean(a, dim=axis, keepdim=keepdim)
-                if axis is not None
-                else torch.mean(a)
-            )
+            return torch.mean(a, dim=axis, keepdim=keepdim) if axis is not None else torch.mean(a)
     return np.mean(a, axis=axis, keepdims=keepdim)
 
 
@@ -302,13 +281,9 @@ def ifft2(a: ArrayLike) -> ArrayLike:
 
 
 @overload
-def fftshift(
-    a: np.ndarray, axes: tuple[int, ...] | int | None = None
-) -> np.ndarray: ...
+def fftshift(a: np.ndarray, axes: tuple[int, ...] | int | None = None) -> np.ndarray: ...
 @overload
-def fftshift(
-    a: "torch.Tensor", axes: tuple[int, ...] | int | None = None
-) -> "torch.Tensor": ...
+def fftshift(a: "torch.Tensor", axes: tuple[int, ...] | int | None = None) -> "torch.Tensor": ...
 def fftshift(a: ArrayLike, axes: tuple[int, ...] | int | None = None) -> ArrayLike:
     """Shift the zero-frequency component to the center of the spectrum."""
     validate_arraylike(a)
@@ -422,9 +397,7 @@ def flip(a: ArrayLike, axis: tuple | int | None = None) -> ArrayLike:
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
             dims = (axis,) if isinstance(axis, int) else axis
-            return torch.flip(
-                a, dims=dims if dims is not None else tuple(range(a.ndim))
-            )
+            return torch.flip(a, dims=dims if dims is not None else tuple(range(a.ndim)))
     return np.flip(a, axis=axis)
 
 
@@ -452,9 +425,7 @@ def stack(arrays: list[ArrayLike], axis: int = 0) -> ArrayLike:
 @overload
 def repeat(a: np.ndarray, repeats: int, axis: int | None = None) -> np.ndarray: ...
 @overload
-def repeat(
-    a: "torch.Tensor", repeats: int, axis: int | None = None
-) -> "torch.Tensor": ...
+def repeat(a: "torch.Tensor", repeats: int, axis: int | None = None) -> "torch.Tensor": ...
 def repeat(a: ArrayLike, repeats: int, axis: int | None = None) -> ArrayLike:
     """Repeat elements of an array along a specified axis. Like np.repeat"""
     validate_arraylike(a)
@@ -465,3 +436,38 @@ def repeat(a: ArrayLike, repeats: int, axis: int | None = None) -> ArrayLike:
             else:
                 return a.repeat_interleave(repeats, dim=axis)
     return np.repeat(a, repeats, axis=axis)
+
+
+@overload
+def expand_dims(a: np.ndarray, axis: int) -> np.ndarray: ...
+@overload
+def expand_dims(a: "torch.Tensor", axis: int) -> "torch.Tensor": ...
+def expand_dims(a: ArrayLike, axis: int) -> ArrayLike:
+    """Expand the shape of an array by inserting a new axis at the specified position."""
+    validate_arraylike(a)
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            return a.unsqueeze(axis)
+    if config.get("has_cupy"):
+        if isinstance(a, cp.ndarray):
+            return cp.expand_dims(a, axis)
+    if isinstance(a, np.ndarray):
+        return np.expand_dims(a, axis)
+    raise TypeError(f"Unsupported array type: {type(a)}")
+
+
+@overload
+def round(a: np.ndarray, decimals: int = 0) -> np.ndarray: ...
+@overload
+def round(a: "torch.Tensor", decimals: int = 0) -> "torch.Tensor": ...
+def round(a: ArrayLike, decimals: int = 0) -> ArrayLike:
+    """Round elements of the array to the given number of decimals."""
+    validate_arraylike(a)
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            return torch.round(a, decimals=decimals)
+    if config.get("has_cupy"):
+        if isinstance(a, cp.ndarray):
+            return cp.round(a, decimals=decimals)
+    if isinstance(a, np.ndarray):
+        return np.round(a, decimals=decimals)

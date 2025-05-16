@@ -10,7 +10,7 @@ import quantem.core.utils.array_funcs as arr
 from quantem.core import config
 from quantem.core.datastructures import Dataset, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import as_numpy, electron_wavelength_angstrom, tqdmnd
+from quantem.core.utils.utils import electron_wavelength_angstrom, to_numpy, tqdmnd
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
@@ -20,7 +20,6 @@ from quantem.core.utils.validators import (
     validate_np_len,
     validate_xplike,
 )
-from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.complexprobe import (
     POLAR_ALIASES,
     POLAR_SYMBOLS,
@@ -94,13 +93,11 @@ class PtychographyBase(AutoSerialize):
     def __init__(  # TODO prevent direct instantiation
         self,
         dset: Dataset4dstem,
-        # TODO move these to preprocess
-        object_type: Literal["complex", "pure_phase", "potential"] = "complex",
-        num_probes: int = 1,
-        num_slices: int = 1,
-        slice_thicknesses: float | Sequence | None = None,
-        verbose: int | bool = True,
+        probe_params: dict | None = None,
+        probe: np.ndarray | None = None,
+        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         device: Literal["cpu", "gpu"] = "cpu",
+        verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
         _token: None | object = None,
     ):
@@ -109,12 +106,9 @@ class PtychographyBase(AutoSerialize):
 
         self.verbose = verbose
         self.dset = dset
-        self.object_type = object_type
-        self.num_probes = num_probes
-        self.num_slices = num_slices
-        self.slice_thicknesses = slice_thicknesses
         self.device = device
         self.rng = rng
+        self.vacuum_probe_intensity = vacuum_probe_intensity
 
         # initializing default attributes
         self._probe_params = self.DEFAULT_PROBE_PARAMS
@@ -127,138 +121,76 @@ class PtychographyBase(AutoSerialize):
         self._epoch_lrs: dict[str, list] = {}  # LRs/step_sizes across epochs
         self._epoch_snapshots: list[dict[str, int | np.ndarray]] = []
 
+        if probe_params is not None:
+            self.probe_params = probe_params
+        self._initial_probe = probe
+        # would like to run set_initial_probe here, but then need to have defined
+        # num_slices, which I feel like is better for pre-processing. hm.
+
     @classmethod
     def from_dataset4dstem(
         cls,
         dset: Dataset4dstem,
-        object_type: Literal["complex", "pure_phase", "potential"] = "complex",
         probe_params: dict | None = None,
         probe: np.ndarray | None = None,
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-        num_probes: int = 1,
-        num_slices: int = 1,
-        slice_thicknesses: float | None = None,
         verbose: int | bool = True,
         device: Literal["cpu", "gpu"] = "cpu",
         rng: np.random.Generator | int | None = None,
     ) -> Self:
-        """Initialize the ptychography object from a Dataset4dstem object.
+        """
+        Initialize the ptychography object from a Dataset4dstem object and probe params.
 
         Args:
-            dset (Dataset4dstem): _description_
-            object_type (Literal[&quot;complex&quot;, &quot;pure_phase&quot;, &quot;potential&quot;], optional): _description_. Defaults to "complex".
-            probe_params (dict | None, optional): _description_. Defaults to None.
-            probe (np.ndarray | None, optional): _description_. Defaults to None.
-            vacuum_probe_intensity (Dataset4dstem | np.ndarray | None, optional): _description_. Defaults to None.
-            num_probes (int, optional): _description_. Defaults to 1.
-            num_slices (int, optional): _description_. Defaults to 1.
-            slice_thicknesses (float | None, optional): _description_. Defaults to None.
-            verbose (int | bool, optional): _description_. Defaults to True.
-            rng (np.random.Generator | int | None, optional): _description_. Defaults to None.
+            dset (Dataset4dstem): The ptychography dataset to reconstruct.
+            probe_params (dict | None, optional): Parameters for probe initialization. Defaults to None.
+            probe (np.ndarray | None, optional): Initial probe array. Defaults to None.
+            vacuum_probe_intensity (Dataset4dstem | np.ndarray | None, optional): Vacuum probe intensity data. Defaults to None.
+            verbose (int | bool, optional): Verbosity level. Defaults to True.
+            device (Literal["cpu", "gpu"], optional): Computation device. Defaults to "cpu".
+            rng (np.random.Generator | int | None, optional): Random number generator or seed. Defaults to None.
 
         Returns:
-            _type_: _description_
+            Self: An instance of the ptychography class.
         """
         slf = cls(
             dset=dset,
-            object_type=object_type,
-            num_probes=num_probes,
-            num_slices=num_slices,
-            slice_thicknesses=slice_thicknesses,
+            probe_params=probe_params,
+            probe=probe,
+            vacuum_probe_intensity=vacuum_probe_intensity,
             verbose=verbose,
             device=device,
             rng=rng,
             _token=cls._token,
         )
-        slf.set_initial_probe(probe_params, probe, vacuum_probe_intensity)
         return slf
 
     # region --- preprocessing ---
-    def set_initial_probe(
-        self,
-        probe_params: dict | None,
-        probe: np.ndarray | None = None,
-        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-    ):
-        self.vacuum_probe_intensity = vacuum_probe_intensity
-        if probe_params is not None:
-            if probe is not None:
-                raise ValueError("cannot probe both directly and with probe_params")
-            self.probe_params = probe_params
-            prb = ComplexProbe(
-                gpts=tuple(self.roi_shape),
-                sampling=tuple(self.sampling),
-                energy=self.probe_params["energy"],
-                semiangle_cutoff=self.probe_params["semiangle_cutoff"],
-                defocus=self.probe_params["defocus"],
-                rolloff=self.probe_params["rolloff"],
-                vacuum_probe_intensity=self.vacuum_probe_intensity,
-                parameters=self.probe_params["polar_parameters"],
-                device="cpu",
-            )
-            probes = prb.build()._array
-            pass
-        elif probe is not None:
-            if isinstance(probe, ComplexProbe):
-                # currently don't really support this, would need to store the initial complex
-                # probe because gets re-set during preprocess if padding diffraction shape
-                probes = probe.build()._array
-            elif isinstance(probe, (np.ndarray, cp.ndarray)):
-                probes = probe
-            else:
-                raise NotImplementedError(
-                    f"setting probe currently supports np.ndarray or ComplexProbe, got {type(probe)}"
-                )
-            pass
-        else:
-            raise ValueError("must provide either probe_params or probe")
-
-        if probes.ndim != 3:
-            probes = probes[None]
-        if probes.shape[0] != self.num_probes:
-            probes = np.tile(probes, (self.num_probes, 1, 1))
-
-        # apply random phase shifts for initializing mixed state
-        for a0 in range(1, self.num_probes):
-            shift_y = np.exp(
-                -2j
-                * np.pi
-                * (self.rng.random() - 0.5)
-                * np.fft.fftfreq(self.roi_shape[0])
-            ).astype(config.get("dtype_complex"))
-            shift_x = np.exp(
-                -2j
-                * np.pi
-                * (self.rng.random() - 0.5)
-                * np.fft.fftfreq(self.roi_shape[1])
-            ).astype(config.get("dtype_complex"))
-            probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
-
-        self.initial_probe = probes
-        self.probe = probes
-
     def preprocess(
         self,
+        object_type: Literal["complex", "pure_phase", "potential"] = "complex",
         object_padding_px: tuple[int, int] = (0, 0),
-        com_fit_function: Literal[
-            "none", "plane", "parabola", "bezier_two", "constant"
-        ] = "plane",
+        com_fit_function: Literal["none", "plane", "parabola", "bezier_two", "constant"] = "plane",
+        num_probes: int = 1,
+        num_slices: int = 1,
+        slice_thicknesses: float | Sequence | None = None,
         force_com_rotation: float | None = None,
         force_com_transpose: bool | None = None,
         padded_diffraction_intensities_shape: tuple[int, int] | None = None,
         plot_rotation: bool = True,
         plot_center_of_mass: str | bool = True,
-        bilinear: bool = False,
-        max_batch_size: int | None = None,
+        plot_probe_overlap: bool = False,
         vectorized: bool = True,
     ):
         """
         Rather than passing 100 flags here, I'm going to suggest that if users want to run very
         customized pre-processing, they just call the functions themselves directly.
         """
-
         self._check_dset()
-        self._check_probe()
+        self.object_type = object_type
+        self.num_probes = num_probes
+        self.num_slices = num_slices
+        self.slice_thicknesses = slice_thicknesses
 
         # calculate CoM
         self._calculate_intensities_center_of_mass(
@@ -274,59 +206,110 @@ class PtychographyBase(AutoSerialize):
         )
 
         # corner-center amplitudes
-        self._normalize_diffraction_intensities(bilinear=bilinear)
+        self._normalize_diffraction_intensities()
 
         if padded_diffraction_intensities_shape is not None:
-            self._padded_diffraction_shape = np.array(
-                padded_diffraction_intensities_shape
-            )
-            self.dset.pad(
-                output_shape=padded_diffraction_intensities_shape, in_place=True
-            )
+            self._padded_diffraction_shape = np.array(padded_diffraction_intensities_shape)
+            self.dset.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
 
             if self.vacuum_probe_intensity is not None:
                 vppad = Dataset.from_array(np.fft.fftshift(self.vacuum_probe_intensity))
-                vppad.pad(
-                    output_shape=padded_diffraction_intensities_shape, in_place=True
-                )
+                vppad.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
                 self.vacuum_probe_intensity = np.fft.fftshift(vppad.array)
-                # set probe again because new roi shape
-                self.set_initial_probe(self.probe_params, self.vacuum_probe_intensity)
         else:
-            self._padded_diffraction_shape = (0, 0)
-            # TODO should this just be roi shape?
-            # depends on how/if it is used elsewhere
+            self._padded_diffraction_shape = self.roi_shape
 
         ## Probe stuff
-        self._normalize_initial_probe()
-
-        # initialize probe positions
+        self.set_initial_probe(self.probe_params, self._initial_probe, self.vacuum_probe_intensity)
         self.object_padding_px = object_padding_px
-        self._calculate_scan_positions_in_pixels(
-            object_padding_px=self.object_padding_px
-        )
+        self._calculate_scan_positions_in_pixels(object_padding_px=self.object_padding_px)
         self._set_patch_indices()
-
-        # precompute propagators
         self._compute_propagator_arrays()
+        self._set_object_fov_mask()
 
-        # initialize object
-        self._set_object_fov_mask(batch_size=max_batch_size)
-
-        show_2d(self._object_fov_mask.squeeze(), title="Object FOV Mask")
-        self.initial_object = np.ones(self.object_shape_full, dtype=self._object_dtype)
-        self.obj = self.initial_object.copy()
+        self.obj = np.ones(self.object_shape_full, dtype=self._object_dtype)
 
         self._preprocessed = True
+        return self
+
+    def set_initial_probe(
+        self,
+        probe_params: dict | None,
+        probe: np.ndarray | None = None,
+        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
+    ):
+        self.vacuum_probe_intensity = vacuum_probe_intensity
+        if probe is not None:
+            if isinstance(probe, ComplexProbe):
+                # currently don't really support this, would need to store the initial complex
+                # probe because gets re-set during preprocess if padding diffraction shape
+                probes = probe.build()._array
+            if config.get("has_cupy"):
+                if isinstance(probe, cp.ndarray):
+                    probes = probe
+            if isinstance(probe, np.ndarray):
+                probes = probe
+            else:
+                raise NotImplementedError(
+                    f"setting probe currently supports np.ndarray or ComplexProbe, got {type(probe)}"
+                )
+        elif probe_params is not None:
+            self.probe_params = probe_params
+            prb = ComplexProbe(
+                gpts=tuple(self.roi_shape),
+                sampling=tuple(self.sampling),
+                energy=self.probe_params["energy"],
+                semiangle_cutoff=self.probe_params["semiangle_cutoff"],
+                defocus=self.probe_params["defocus"],
+                rolloff=self.probe_params["rolloff"],
+                vacuum_probe_intensity=self.vacuum_probe_intensity,
+                parameters=self.probe_params["polar_parameters"],
+                device="cpu",
+            )
+            probes = prb.build()._array
+        else:
+            raise ValueError(
+                "must provide either probe_params or probe in the form of a numpy array or ComplexProbe"
+            )
+
+        if probes.ndim != 3:
+            probes = probes[None]
+        if probes.shape[0] != self.num_probes:
+            probes = np.tile(probes, (self.num_probes, 1, 1))
+
+        # apply random phase shifts for initializing mixed state
+        for a0 in range(1, self.num_probes):
+            shift_y = np.exp(
+                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[0])
+            ).astype(config.get("dtype_complex"))
+            shift_x = np.exp(
+                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[1])
+            ).astype(config.get("dtype_complex"))
+            probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
+
+        probes = self._normalize_initial_probe(probes)
+
+        self.initial_probe = probes
+        self.probe = probes
         return
+
+    def _normalize_initial_probe(self, probe: np.ndarray | None = None) -> np.ndarray:
+        # Normalize probe to match mean diffraction intensity
+        if hasattr(self, "_mean_diffraction_intensity"):
+            probe = self.initial_probe.copy() if probe is None else probe
+            probe_intensity = np.sum(np.abs(np.fft.fft2(probe)) ** 2)
+            intensity_norm = np.sqrt(self._mean_diffraction_intensity / probe_intensity)
+            return probe * intensity_norm
+        else:
+            raise AttributeError(
+                "_mean_diffraction_intensity has not yet been set. Run preprocess."
+            )
 
     def _calculate_intensities_center_of_mass(
         self,
         intensities: np.ndarray,
         dp_mask: np.ndarray | None = None,
-        fit_function: Literal[
-            "none", "plane", "parabola", "bezier_two", "constant"
-        ] = "plane",
+        fit_function: Literal["none", "plane", "parabola", "bezier_two", "constant"] = "plane",
         com_shifts: np.ndarray | None = None,
         com_measured: np.ndarray | None = None,
         vectorized_calculation=True,
@@ -381,22 +364,16 @@ class PtychographyBase(AutoSerialize):
                 intensities_sum = np.sum(intensities_mask, axis=(-2, -1))
 
                 com_measured_r = (
-                    np.sum(intensities_mask * kha[None, None], axis=(-2, -1))
-                    / intensities_sum
+                    np.sum(intensities_mask * kha[None, None], axis=(-2, -1)) / intensities_sum
                 )
                 com_measured_c = (
-                    np.sum(intensities_mask * kwa[None, None], axis=(-2, -1))
-                    / intensities_sum
+                    np.sum(intensities_mask * kwa[None, None], axis=(-2, -1)) / intensities_sum
                 )
 
             else:
                 shape_r, shape_c = intensities.shape[:2]
-                com_measured_r = np.zeros(
-                    (shape_r, shape_c), dtype=config.get("dtype_real")
-                )
-                com_measured_c = np.zeros(
-                    (shape_r, shape_c), dtype=config.get("dtype_real")
-                )
+                com_measured_r = np.zeros((shape_r, shape_c), dtype=config.get("dtype_real"))
+                com_measured_c = np.zeros((shape_r, shape_c), dtype=config.get("dtype_real"))
 
                 # loop of dps
                 for Rr, Rc in tqdmnd(
@@ -410,12 +387,8 @@ class PtychographyBase(AutoSerialize):
                     if dp_mask is not None:
                         masked_intensity *= dp_mask
                     summed_intensity = masked_intensity.sum()
-                    com_measured_r[Rr, Rc] = (
-                        np.sum(masked_intensity * kwa) / summed_intensity
-                    )
-                    com_measured_c[Rr, Rc] = (
-                        np.sum(masked_intensity * kha) / summed_intensity
-                    )
+                    com_measured_r[Rr, Rc] = np.sum(masked_intensity * kwa) / summed_intensity
+                    com_measured_c[Rr, Rc] = np.sum(masked_intensity * kha) / summed_intensity
 
         if com_shifts is None:
             if fit_function != "none":
@@ -429,12 +402,8 @@ class PtychographyBase(AutoSerialize):
                 com_fitted_r = np.asarray(com_shifts_r, dtype=config.get("dtype_real"))
                 com_fitted_c = np.asarray(com_shifts_c, dtype=config.get("dtype_real"))
             else:
-                com_fitted_r = np.asarray(
-                    com_measured_r, dtype=config.get("dtype_real")
-                )
-                com_fitted_c = np.asarray(
-                    com_measured_c, dtype=config.get("dtype_real")
-                )
+                com_fitted_r = np.asarray(com_measured_r, dtype=config.get("dtype_real"))
+                com_fitted_c = np.asarray(com_measured_c, dtype=config.get("dtype_real"))
         else:
             com_fitted_r = np.asarray(com_shifts[0], dtype=config.get("dtype_real"))
             com_fitted_c = np.asarray(com_shifts[1], dtype=config.get("dtype_real"))
@@ -596,9 +565,7 @@ class PtychographyBase(AutoSerialize):
             ax.set_ylabel("Mean Absolute Curl")
 
             if isinstance(curl_values, tuple):
-                aspect_ratio = np.maximum(
-                    np.ptp(curl_values[0]), np.ptp(curl_values[1])
-                )
+                aspect_ratio = np.maximum(np.ptp(curl_values[0]), np.ptp(curl_values[1]))
             else:
                 aspect_ratio = np.ptp(curl_values)
             ax.set_aspect(np.ptp(angles_deg) / aspect_ratio / 4)
@@ -633,24 +600,18 @@ class PtychographyBase(AutoSerialize):
         if rotation_angles_deg is None:
             rotation_angles_deg = np.arange(-89.0, 90.0, 1.0)
 
-        rotation_angles_deg = np.asarray(
-            rotation_angles_deg, dtype=config.get("dtype_real")
-        )
+        rotation_angles_deg = np.asarray(rotation_angles_deg, dtype=config.get("dtype_real"))
         rotation_angles_rad = np.deg2rad(rotation_angles_deg)
 
         # Case 1: Known rotation
         if force_com_rotation is not None:
             _rotation_best_rad = np.deg2rad(force_com_rotation)
-            self.vprint(
-                f"Forcing best fit rotation to {force_com_rotation:.0f} degrees."
-            )
+            self.vprint(f"Forcing best fit rotation to {force_com_rotation:.0f} degrees.")
 
             # Case 1.1: Known rotation and transpose
             if force_com_transpose is not None:
                 _rotation_best_transpose = force_com_transpose
-                self.vprint(
-                    f"Forcing transpose of intensities to {force_com_transpose}."
-                )
+                self.vprint(f"Forcing transpose of intensities to {force_com_transpose}.")
 
             # Case 1.2: Known rotation, unknown transpose
             else:
@@ -676,9 +637,7 @@ class PtychographyBase(AutoSerialize):
             # Case 2.1: Known transpose, unknown rotation
             if force_com_transpose is not None:
                 _rotation_best_transpose = force_com_transpose
-                self.vprint(
-                    f"Forcing transpose of intensities to {force_com_transpose}."
-                )
+                self.vprint(f"Forcing transpose of intensities to {force_com_transpose}.")
 
                 # Calculate curl for all angles with known transpose
                 curl_values = calculate_curl_for_angles(
@@ -692,9 +651,7 @@ class PtychographyBase(AutoSerialize):
                 min_index = np.argmin(curl_values).item()
                 rotation_best_deg = rotation_angles_deg[min_index]
                 _rotation_best_rad = rotation_angles_rad[min_index]
-                self.vprint(
-                    f"Calculated best fit rotation = {rotation_best_deg:.0f} degrees."
-                )
+                self.vprint(f"Calculated best fit rotation = {rotation_best_deg:.0f} degrees.")
 
                 if plot_rotation:
                     plot_curl_results(
@@ -735,9 +692,7 @@ class PtychographyBase(AutoSerialize):
                     _rotation_best_transpose = True
 
                 self._rotation_angles_deg = rotation_angles_deg
-                self.vprint(
-                    f"Calculated best fit rotation = {rotation_best_deg:.0f} degrees."
-                )
+                self.vprint(f"Calculated best fit rotation = {rotation_best_deg:.0f} degrees.")
                 if _rotation_best_transpose:
                     self.vprint("Diffraction intensities should be transposed.")
 
@@ -896,9 +851,7 @@ class PtychographyBase(AutoSerialize):
             diff_intensities = diff_intensities.reshape((-1, Qr, Qc))
 
         if crop_patterns:
-            diff_intensities = diff_intensities[:, crop_mask].reshape(
-                (-1, *crop_mask_shape)
-            )
+            diff_intensities = diff_intensities[:, crop_mask].reshape((-1, *crop_mask_shape))
 
         mean_intensity /= diff_intensities.shape[0]
 
@@ -907,19 +860,6 @@ class PtychographyBase(AutoSerialize):
         self._crop_mask = crop_mask
         self._crop_mask_shape = crop_mask_shape
         return
-
-    def _normalize_initial_probe(self):
-        # Normalize probe to match mean diffraction intensity
-        if hasattr(self, "_mean_diffraction_intensity"):
-            probe = self.initial_probe.copy()
-            probe_intensity = np.sum(np.abs(np.fft.fft2(probe)) ** 2)
-            intensity_norm = np.sqrt(self._mean_diffraction_intensity / probe_intensity)
-            probe *= intensity_norm
-            self.initial_probe = probe.astype(config.get("dtype_complex"))
-        else:
-            raise AttributeError(
-                "_mean_diffraction_intensity has not yet been set. Run preprocess."
-            )
 
     def _calculate_scan_positions_in_pixels(
         self,
@@ -1026,18 +966,12 @@ class PtychographyBase(AutoSerialize):
             self.propagators = np.array([])
             return
 
-        kr, kc = tuple(
-            np.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling)
-        )
+        kr, kc = tuple(np.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
         wavelength = electron_wavelength_angstrom(self.probe_params["energy"])
-        propagators = np.empty(
-            (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=np.complex64
-        )
+        propagators = np.empty((self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=np.complex64)
 
         for i, dz in enumerate(self.slice_thicknesses):
-            propagators[i] = np.exp(
-                1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz)
-            )
+            propagators[i] = np.exp(1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz))
             propagators[i] *= np.exp(1.0j * (-(kc**2)[None] * np.pi * wavelength * dz))
 
             if theta_r is not None:
@@ -1057,49 +991,33 @@ class PtychographyBase(AutoSerialize):
         r0 = np.round(self.positions_px[:, 0]).astype(np.int32)  # can fix here
         c0 = np.round(self.positions_px[:, 1]).astype(np.int32)
 
-        x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(
-            np.int32
-        )
-        y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(
-            np.int32
-        )
+        x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(np.int32)
+        y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(np.int32)
         row = (r0[:, None, None] + x_ind[None, :, None]) % self.object_shape_full[-2]
         col = (c0[:, None, None] + y_ind[None, None, :]) % self.object_shape_full[-1]
 
-        self.patch_indices = (row * self.object_shape_full[-1] + col).astype(np.intp)
+        self._patch_indices = (row * self.object_shape_full[-1] + col).astype(np.intp)
 
     def _set_object_fov_mask(self, gaussian_sigma: float = 2.0, batch_size=None):
         overlap = self._get_probe_overlap(batch_size)
         ov = overlap > overlap.max() * 0.3
-        # from PyLorentz.visualize import show_im
-        # show_im(ov, '1')
         ov = ndi.binary_closing(ov, iterations=5)
-        # show_im(ov, '2')
-        ov = ndi.binary_dilation(
-            ov, iterations=min(32, np.min(self.object_padding_px) // 4)
-        )
-        # show_im(ov, '3')
-        # dont want mask too small
-        # small mask is especially problematic with smaller batch sizes because applied more often
-        ov = ndi.gaussian_filter(
-            ov.astype(config.get("dtype_real")), sigma=gaussian_sigma
-        )
+        ov = ndi.binary_dilation(ov, iterations=min(32, np.min(self.object_padding_px) // 4))
+        ov = ndi.gaussian_filter(ov.astype(config.get("dtype_real")), sigma=gaussian_sigma)
         self.object_fov_mask = ov
         return
 
     def _get_probe_overlap(self, max_batch_size: int | None = None) -> np.ndarray:
-        prb = self._as_numpy(self.probe[0])
+        prb = self._to_numpy(self.probe[0])
         num_dps = int(np.prod(self.gpts))
         shifted_probes = np.broadcast_to(prb, (num_dps, *self.roi_shape))
 
         batch_size = num_dps if max_batch_size is None else int(max_batch_size)
-        probe_overlap = np.zeros(
-            self.object_shape_full[-2:], dtype=config.get("dtype_real")
-        )
+        probe_overlap = np.zeros(self.object_shape_full[-2:], dtype=config.get("dtype_real"))
         for start, end in generate_batches(num_dps, max_batch=batch_size):
             probe_overlap += sum_patches(
                 np.abs(shifted_probes[start:end]) ** 2,
-                self.patch_indices[start:end],
+                self._patch_indices[start:end],
                 tuple(self.object_shape_full[-2:]),
             )
         return probe_overlap
@@ -1124,10 +1042,10 @@ class PtychographyBase(AutoSerialize):
         gives the amplitudes that have had descan corrected and which are corner centered
         shaped as (rr*ry, qx, qy)
         """
-        return self._shifted_amplitudes
+        return self._to_numpy(self._shifted_amplitudes)
 
     @shifted_amplitudes.setter
-    def shifted_amplitudes(self, arr: np.ndarray):
+    def shifted_amplitudes(self, arr: "np.ndarray | cp.ndarray | torch.Tensor") -> None:
         arr = validate_array(
             arr,
             name="shifted_amplitudes",
@@ -1165,11 +1083,11 @@ class PtychographyBase(AutoSerialize):
         self._num_slices = validate_int(validate_gt(val, 0, "num_slices"), "num_slices")
 
     @property
-    def propagators(self) -> "np.ndarray|cp.ndarray|torch.Tensor":
+    def propagators(self) -> np.ndarray:
         if self.num_slices == 1:
             return np.array([])
         else:
-            return self._propagators
+            return self._to_numpy(self._propagators)
 
     @propagators.setter
     def propagators(
@@ -1221,7 +1139,7 @@ class PtychographyBase(AutoSerialize):
             if self.num_slices == 1:
                 warn("Single slice reconstruction so not setting slice_thicknesses")
             arr = validate_array(
-                self._as_numpy(val),
+                self._to_numpy(val),
                 name="slice_thicknesses",
                 dtype=config.get("dtype_real"),
                 ndim=1,
@@ -1231,9 +1149,7 @@ class PtychographyBase(AutoSerialize):
             arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
             self._slice_thicknesses = arr
 
-        if hasattr(
-            self, "_propagators"
-        ):  # propagators already set, update with new slices
+        if hasattr(self, "_propagators"):  # propagators already set, update with new slices
             self._compute_propagator_arrays()
 
     @property
@@ -1264,15 +1180,15 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def obj(self) -> np.ndarray:
-        return self._as_numpy(self._object)
+        return self._to_numpy(self._obj)
 
     @obj.setter
     def obj(self, obj: "np.ndarray | cp.ndarray") -> None:
         """Shape [num_slices, height, width]"""
-        obj = validate_xplike(obj, "object")
+        obj = validate_xplike(obj, "obj")
         obj = validate_array(
             obj,
-            name="object",
+            name="obj",
             dtype=self._object_dtype,
             ndim=3,
             shape=self.object_shape_full,
@@ -1288,16 +1204,11 @@ class PtychographyBase(AutoSerialize):
             ph = arr.angle(masked_obj)
             ph -= ph.mean()
             new_obj = amp * arr.exp(1.0j * ph)
-            self._object = arr.as_type(new_obj, self._object_dtype)
+            self._obj = arr.as_type(new_obj, self._object_dtype)
         else:
             masked_obj = obj * xp.asarray(self._object_fov_mask)
             masked_obj -= masked_obj.min()
-            self._object = arr.as_type(masked_obj, self._object_dtype)
-
-    # @property
-    # def _initial_object(self) -> np.ndarray:
-    #     """Shape [num_slices, height, width]"""
-    #     return self._initial_object
+            self._obj = arr.as_type(masked_obj, self._object_dtype)
 
     @property
     def object_padding_px(self) -> np.ndarray:
@@ -1306,7 +1217,7 @@ class PtychographyBase(AutoSerialize):
     @object_padding_px.setter
     def object_padding_px(self, pad: np.ndarray | tuple[int, int]):
         p2 = validate_xplike(pad, "object_padding_px")
-        p2 = self._as_numpy(
+        p2 = self._to_numpy(
             validate_array(
                 validate_np_len(p2, 2, name="object_padding_px"),
                 dtype="int16",
@@ -1327,17 +1238,15 @@ class PtychographyBase(AutoSerialize):
         return self._object_fov_mask
 
     @object_fov_mask.setter
-    def object_fov_mask(self, mask: np.ndarray):
-        mask = self._as_numpy(
-            validate_array(
-                mask,
-                dtype=config.get("dtype_real"),
-                ndim=3,
-                name="object_fov_mask",
-                expand_dims=True,
-            )
+    def object_fov_mask(self, mask: "np.ndarray|cp.ndarray|torch.Tensor"):
+        mask = validate_array(
+            mask,
+            dtype=self._object_dtype,
+            ndim=3,
+            name="object_fov_mask",
+            expand_dims=True,
         )
-        self._object_fov_mask = mask.astype(config.get("dtype_real"))
+        self._object_fov_mask = mask
 
     @property
     def vacuum_probe_intensity(self) -> np.ndarray | None:
@@ -1359,9 +1268,7 @@ class PtychographyBase(AutoSerialize):
         if vp2.ndim == 4:
             vp2 = np.mean(vp2, axis=(0, 1))
         elif vp2.ndim != 2:
-            raise ValueError(
-                f"Weird number of dimensions for vacuum probe, shape: {vp.shape}"
-            )
+            raise ValueError(f"Weird number of dimensions for vacuum probe, shape: {vp.shape}")
 
         # vacuum probe should be corner centered
         corner_vals = vp2[:10, :10].mean()
@@ -1383,15 +1290,17 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def positions_px(self) -> np.ndarray:
-        return self._positions_px
+        return self._to_numpy(self._positions_px)
 
     @positions_px.setter
-    def positions_px(self, pos):
-        self._positions_px = np.array(pos, dtype=config.get("dtype_real"))
+    def positions_px(self, pos: "np.ndarray | cp.ndarray | torch.Tensor"):
+        pos = validate_array(pos, dtype=config.get("dtype_real"), ndim=2, name="positions_px")
+        self._positions_px_fractional = pos - pos.round()
+        self._positions_px = pos
 
     @property
     def positions_px_fractional(self) -> np.ndarray:
-        return self.positions_px - np.round(self.positions_px)
+        return self._to_numpy(self._positions_px_fractional)
 
     @property
     def epoch_losses(self) -> np.ndarray:
@@ -1425,11 +1334,10 @@ class PtychographyBase(AutoSerialize):
     def probe(self) -> np.ndarray:
         """Complex valued probe(s). Shape [num_probes, roi_reight, roi_width]"""
         self._check_probe()
-        return self._probe
+        return self._to_numpy(self._probe)
 
     @probe.setter
-    def probe(self, prb: "np.ndarray|cp.ndarray"):
-        prb = validate_xplike(prb, "probe")
+    def probe(self, prb: "np.ndarray|cp.ndarray|torch.Tensor"):
         prb = validate_array(
             prb,
             name="probe",
@@ -1443,11 +1351,12 @@ class PtychographyBase(AutoSerialize):
     @property
     def initial_probe(self) -> np.ndarray:
         self._check_initial_probe()
-        return self._initial_probe
+        if self._initial_probe is None:
+            raise ValueError("Initial probe not set")
+        return self._to_numpy(self._initial_probe)
 
     @initial_probe.setter
-    def initial_probe(self, prb: "np.ndarray|cp.ndarray"):
-        prb = validate_xplike(prb, "probe")
+    def initial_probe(self, prb: "np.ndarray|cp.ndarray|torch.Tensor"):
         prb = validate_array(
             prb,
             name="probe",
@@ -1468,17 +1377,13 @@ class PtychographyBase(AutoSerialize):
             params,
             [*self.DEFAULT_PROBE_PARAMS.keys(), *POLAR_SYMBOLS, *POLAR_ALIASES.keys()],
         )
-        polar_parameters: dict[str, float] = dict(
-            zip(POLAR_SYMBOLS, [0.0] * len(POLAR_SYMBOLS))
-        )
+        polar_parameters: dict[str, float] = dict(zip(POLAR_SYMBOLS, [0.0] * len(POLAR_SYMBOLS)))
 
         def process_polar_params(p: dict):
             bads = []
             for symbol, value in p.items():
                 if isinstance(value, dict):
-                    process_polar_params(
-                        value
-                    )  # Recursively process nested dictionaries
+                    process_polar_params(value)  # Recursively process nested dictionaries
                 elif value is None:
                     continue
                 elif symbol in polar_parameters.keys():
@@ -1509,9 +1414,7 @@ class PtychographyBase(AutoSerialize):
         elif isinstance(rng, (int, float)):
             rng = np.random.default_rng(rng)
         elif not isinstance(rng, np.random.Generator):
-            raise TypeError(
-                f"rng should be a np.random.Generator or a seed, got {type(rng)}"
-            )
+            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
         self._rng = rng
 
     @property
@@ -1534,7 +1437,7 @@ class PtychographyBase(AutoSerialize):
     def epoch_snapshots(self) -> list[dict[str, int | np.ndarray]]:
         return self._epoch_snapshots
 
-    def get_recon_by_iter(self, iteration: int):
+    def get_snapshot_by_iter(self, iteration: int):
         iteration = int(iteration)
         for snapshot in self.epoch_snapshots:
             if snapshot["iteration"] == iteration:
@@ -1547,9 +1450,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def raw_intensities(self) -> np.ndarray:
-        """
-        gives the raw dc measured intensities
-        """
+        """gives the raw dc measured intensities"""
         return self.dset.array
 
     @property
@@ -1561,8 +1462,8 @@ class PtychographyBase(AutoSerialize):
             return config.get("device")
 
     @device.setter
-    def device(self, device: str):
-        # allow setting gpu/cpu, but not changing the device
+    def device(self, device: Literal["cpu", "gpu"]):
+        # allow setting gpu/cpu, but not changing the device from the config gpu device
         dev, id = config.validate_device(device)
         cdev, cid = config.validate_device(config.get("device"))
         # check the config device
@@ -1588,9 +1489,7 @@ class PtychographyBase(AutoSerialize):
         cropped = self._crop_rotate_object_fov(self.obj)
         if self.object_type == "pure_phase":
             cropped = np.exp(1j * np.angle(cropped))
-        cropped = center_crop_arr(
-            cropped, tuple(self.object_shape_crop)
-        )  # sometimes 1 pixel off
+        cropped = center_crop_arr(cropped, tuple(self.object_shape_crop))  # sometimes 1 pixel off
         return cropped
 
     @property
@@ -1616,14 +1515,10 @@ class PtychographyBase(AutoSerialize):
         elif units[0] == "mrad":
             if self.probe_params["energy"] is not None:  # convert mrad -> A^-1
                 sampling = (
-                    sampling
-                    / electron_wavelength_angstrom(self.probe_params["energy"])
-                    / 1e3
+                    sampling / electron_wavelength_angstrom(self.probe_params["energy"]) / 1e3
                 )
             else:
-                raise ValueError(
-                    "dc units given in mrad but no energy defined to convert to A^-1"
-                )
+                raise ValueError("dc units given in mrad but no energy defined to convert to A^-1")
         elif units[0] == "pixels":
             raise ValueError("dset Q units given in pixels, needs calibration")
         else:
@@ -1649,14 +1544,10 @@ class PtychographyBase(AutoSerialize):
         elif units[0] == "A^-1":
             if self.probe_params["energy"] is not None:
                 sampling = (
-                    sampling
-                    * electron_wavelength_angstrom(self.probe_params["energy"])
-                    * 1e3
+                    sampling * electron_wavelength_angstrom(self.probe_params["energy"]) * 1e3
                 )
             else:
-                raise ValueError(
-                    "dc units given in A^-1 but no energy defined to convert to mrad"
-                )
+                raise ValueError("dc units given in A^-1 but no energy defined to convert to mrad")
         elif units[0] == "pixels":
             raise ValueError("dset Q units given in pixels, needs calibration")
         else:
@@ -1721,9 +1612,7 @@ class PtychographyBase(AutoSerialize):
         if self.verbose:
             print(*args, **kwargs)
 
-    def _to_xp(
-        self, arr: "np.ndarray|cp.ndarray|list|tuple"
-    ) -> "np.ndarray|cp.ndarray":
+    def _to_xp(self, arr: "np.ndarray|cp.ndarray|list|tuple") -> "np.ndarray|cp.ndarray":
         """returns a copy of arr as a np or cp array"""
         if config.get("has_torch"):  # strictly could be torch cpu or cuda, so pass
             if isinstance(arr, torch.Tensor):
@@ -1731,7 +1620,7 @@ class PtychographyBase(AutoSerialize):
         if "cuda" in self.device:  # this should only be possible if "has_cupy"
             return cp.asarray(arr)
         else:
-            return self._as_numpy(arr)
+            return self._to_numpy(arr)
 
     def _check_dset(self):
         if not hasattr(self, "_dset"):
@@ -1744,7 +1633,7 @@ class PtychographyBase(AutoSerialize):
             raise AttributeError("No probe set. Run Ptycho.set_initial_probe()")
 
     def _check_initial_probe(self):
-        if not hasattr(self, "_initial_probe"):
+        if not hasattr(self, "_initial_probe") or getattr(self, "_initial_probe") is None:
             raise AttributeError("No initial probe set. Run Ptycho.set_initial_probe()")
 
     def _check_preprocessed(self):
@@ -1758,8 +1647,8 @@ class PtychographyBase(AutoSerialize):
             if getattr(self, name) != new_val:
                 self._preprocessed = False
 
-    def _as_numpy(self, array: "np.ndarray | cp.ndarray"):
-        return as_numpy(array)
+    def _to_numpy(self, array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
+        return to_numpy(array)
 
     def _crop_rotate_object_fov(
         self,
@@ -1772,15 +1661,11 @@ class PtychographyBase(AutoSerialize):
         """
         Crops and rotated object to FOV bounded by current pixel positions.
         """
-        array = self._as_numpy(array).copy()
-        com_rotation_rad = (
-            self.com_rotation_rad if com_rotation_rad is None else com_rotation_rad
-        )
+        array = self._to_numpy(array).copy()
+        com_rotation_rad = self.com_rotation_rad if com_rotation_rad is None else com_rotation_rad
         transpose = self.com_transpose if transpose is None else transpose
 
-        angle = (
-            self.com_rotation_rad if self.com_transpose else -1 * self.com_rotation_rad
-        )
+        angle = self.com_rotation_rad if self.com_transpose else -1 * self.com_rotation_rad
 
         if positions_px is None:
             positions = self.positions_px
@@ -1814,6 +1699,8 @@ class PtychographyBase(AutoSerialize):
         return np.repeat(arr, repeats, axis=axis)
 
     def reset_recon(self) -> None:
+        self.obj = arr.match_device(np.ones_like(self.obj), self._obj)
+        self.probe = arr.match_device(self.initial_probe, self._probe)
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
@@ -1827,11 +1714,11 @@ class PtychographyBase(AutoSerialize):
         if probe is None:
             prb = self.probe
         else:
-            prb = self._as_numpy(probe)
+            prb = self._to_numpy(probe)
         if object is None:
             obj = self.obj
         else:
-            obj = self._as_numpy(object)
+            obj = self._to_numpy(object)
         self._epoch_snapshots.append(
             {
                 "iteration": self.num_epochs,
@@ -1841,30 +1728,16 @@ class PtychographyBase(AutoSerialize):
         )
         return
 
-    def _mse(
-        self,
-        pred: "np.ndarray|cp.ndarray|torch.Tensor",
-        truth: "np.ndarray|cp.ndarray|torch.Tensor",
-    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
-        """Calculate the mean squared error between two arrays."""
-        if type(pred) is not type(truth):
-            raise TypeError(
-                f"pred and truth should be of the same type, got {type(pred)} and {type(truth)}"
-            )
-        if config.get("has_torch"):
-            if isinstance(pred, torch.Tensor) and isinstance(truth, torch.Tensor):
-                return torch.mean(torch.abs(truth - pred) ** 2)
-        return np.mean(np.abs(truth - pred) ** 2)
-
     def get_probe_intensities(
         self, probe: "torch.Tensor | np.ndarray | None" = None
     ) -> np.ndarray:
+        """Returns the relative probe intensities for each probe in mixed state"""
         if probe is None:
             probe = self.probe
         if probe.ndim == 2:
             return np.array([1.0])
         else:
-            probe = self._as_numpy(probe)
+            probe = self._to_numpy(probe)
             intensities = np.abs(probe) ** 2
             return intensities.sum(axis=(-2, -1)) / intensities.sum()
 
@@ -1872,16 +1745,12 @@ class PtychographyBase(AutoSerialize):
 
     # region --- ptychography foRcard model ---
 
-    def forward_operator(
-        self, obj, probe, patch_indices, fract_positions, descan_shifts=None
-    ):
+    def forward_operator(self, obj, probe, patch_indices, fract_positions, descan_shifts=None):
         obj_patches = self._get_object_patches(obj, patch_indices)
         ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
         shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
         ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        propagated_probes, overlap = self.overlap_projection(
-            obj_patches, shifted_input_probe
-        )
+        propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probe)
         ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         if descan_shifts is not None:
@@ -1898,28 +1767,9 @@ class PtychographyBase(AutoSerialize):
 
     def error_estimate(
         self,
-        obj,
-        probe,
-        patch_indices,
-        fract_positions,
+        overlap,
         true_amplitudes,
-        descan_shifts=None,
     ) -> "float":
-        obj_patches, propagated_probes, overlap = self.forward_operator(
-            obj,
-            probe,
-            patch_indices,
-            fract_positions,
-        )
-        if descan_shifts is not None:
-            ### applying plane wave shift here to overlap, reduce need for extra FFT
-            #     shifts = fourier_translation_operator(
-            #         descan_shifts, self.roi_shape, device=self.device
-            #     )
-            #     shifts = shifts[:, None]
-            #     overlap *= shifts
-            raise NotImplementedError("move descan shift stuff to here")
-
         farfield_amplitudes = self.estimate_amplitudes(overlap)
         return arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
 

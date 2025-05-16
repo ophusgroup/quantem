@@ -43,12 +43,10 @@ def get_tensor_module(tensor: "np.ndarray | cp.ndarray | torch.Tensor"):
             return cp
     if isinstance(tensor, np.ndarray):
         return np
-    raise ValueError(
-        f"Input is not a numpy array, cupy array, or torch tensor: {type(tensor)}"
-    )
+    raise ValueError(f"Input is not a numpy array, cupy array, or torch tensor: {type(tensor)}")
 
 
-def as_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
+def to_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
     """Convert a torch.Tensor or cupy.ndarray to a numpy.ndarray. Always returns
     a copy for consistency."""
     if config.get("has_cupy"):
@@ -63,7 +61,7 @@ def as_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
         try:
             return np.array(array)
         except (ValueError, TypeError):
-            ar2 = [as_numpy(i) for i in array]
+            ar2 = [to_numpy(i) for i in array]
             try:
                 return np.array(ar2)
             except (ValueError, TypeError):
@@ -71,9 +69,7 @@ def as_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
     try:
         return np.array(array)
     except (ValueError, TypeError):
-        raise TypeError(
-            f"Input is not a numpy array or convertible to one: {type(array)}"
-        )
+        raise TypeError(f"Input is not a numpy array or convertible to one: {type(array)}")
 
 
 def to_cpu(arrs: Any) -> np.ndarray | Sequence:
@@ -105,12 +101,7 @@ def electron_wavelength_angstrom(E_eV: float):
     c = 299792458
     h = 6.62607 * 10**-34
 
-    lam = (
-        h
-        / math.sqrt(2 * m * e * E_eV)
-        / math.sqrt(1 + e * E_eV / 2 / m / c**2)
-        * 10**10
-    )
+    lam = h / math.sqrt(2 * m * e * E_eV) / math.sqrt(1 + e * E_eV / 2 / m / c**2) * 10**10
     return lam
 
 

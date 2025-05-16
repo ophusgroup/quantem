@@ -1,9 +1,8 @@
-from typing import TYPE_CHECKING, Literal
+from typing import Literal, Self
 
 import numpy as np
 from tqdm import tqdm
 
-from quantem.core import config
 from quantem.core.utils import array_funcs as arr
 from quantem.diffractive_imaging.ptycho_utils import (
     generate_batches,
@@ -12,101 +11,78 @@ from quantem.diffractive_imaging.ptycho_utils import (
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
 
-if TYPE_CHECKING:
-    import cupy as cp
-else:
-    if config.get("has_cupy"):
-        import cupy as cp
-
 
 class PtychographyGD(PtychographyConstraints, PtychographyBase):
     def reconstruct(
         self,
         num_iter: int = 0,
-        reset: bool = True,
-        batch_size: int | None = None,
-        step_size: float = 0.5,
+        reset: bool = False,
         constraints: dict = {},
+        step_size: float = 0.5,
+        batch_size: int | None = None,
+        store_iterations: bool | None = None,
+        store_iterations_every: int | None = None,
         device: Literal["gpu", "cpu"] | None = None,
-    ) -> None:
+    ) -> Self:
         # self.device = device
         self._check_preprocessed()
         if device is not None:
             self.device = device
         if batch_size is None:
             batch_size = self.gpts[0] * self.gpts[1]
+        if store_iterations is not None:
+            self.store_iterations = store_iterations
+        if store_iterations_every is not None:
+            self.store_iterations_every = store_iterations_every
         if reset:
             self.reset_recon()
             self.reset_constraints()
-            obj = np.ones_like(self.obj)
-            probe = self.initial_probe.copy()
-        else:
-            obj = self.obj
-            probe = self.probe
-        self.constraints = constraints  # doesn't overwrite unspecified constraints
 
-        obj = self._to_xp(obj)
-        probe = self._to_xp(probe)
-        pos_frac = self._to_xp(self.positions_px_fractional)
-        patch_indices = self._to_xp(self.patch_indices)
-        amplitudes = self._to_xp(self.shifted_amplitudes)
-        fov_mask = self._to_xp(self.object_fov_mask).astype(self._object_dtype)
-        self._propagators = self._to_xp(self._propagators)
+        self.constraints = constraints  # doesn't overwrite unspecified constraints
+        self._move_recon_arrays_to_device()
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
-        for a0 in tqdm(range(num_iter)):
+        for a0 in tqdm(range(num_iter), disable=not self.verbose):
             error = np.float32(0)
             np.random.shuffle(shuffled_indices)
+            # TODO add get patches here if updating probe positions
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
                 batch_indices = shuffled_indices[start:end]
                 obj_patches, propagated_probes, overlap = self.forward_operator(
-                    obj,
-                    probe,
-                    patch_indices[batch_indices],
-                    pos_frac[batch_indices],
+                    self._obj,
+                    self._probe,
+                    self._patch_indices[batch_indices],
+                    self._positions_px_fractional[batch_indices],
                 )
 
-                obj, probe = self.adjoint_operator(
-                    obj,
-                    probe,
-                    obj_patches,
-                    patch_indices[batch_indices],
-                    propagated_probes,
-                    amplitudes[batch_indices],
+                error += self.error_estimate(
                     overlap,
+                    self._shifted_amplitudes[batch_indices],
+                )
+
+                self.adjoint_operator(
+                    obj_patches,
+                    propagated_probes,
+                    overlap,
+                    self._patch_indices[batch_indices],
+                    self._shifted_amplitudes[batch_indices],
                     step_size,
                     fix_probe=self.constraints["probe"]["fix_probe"],
                 )
 
-                error += self.error_estimate(
-                    obj,
-                    probe,
-                    patch_indices[batch_indices],
-                    pos_frac[batch_indices],
-                    amplitudes[batch_indices],
-                )
-
-            obj, probe = self.apply_constraints(obj, probe, object_fov_mask=fov_mask)
+            self._obj, self._probe = self.apply_constraints(
+                self._obj, self._probe, object_fov_mask=self._object_fov_mask
+            )
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
             self._epoch_losses.append(error.item())
             self._record_lrs(step_size)
             self._epoch_recon_types.append("GD")
-            if self.store_iterations and (
-                (a0 + 1) % self.store_iterations_every == 0 or a0 == 0
-            ):
-                self.append_recon_iteration(obj, probe)
+            if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
+                self.append_recon_iteration(self._obj, self._probe)
 
-        if self.device == "gpu":
-            if isinstance(obj, cp.ndarray):
-                obj = self._as_numpy(obj)
-            if isinstance(probe, cp.ndarray):
-                probe = self._as_numpy(probe)
-
-        self.obj = obj
-        self.probe = probe
-        return
+        return self
 
     def _record_lrs(self, step_size) -> None:
         if "GD" in self._epoch_lrs.keys():
@@ -120,15 +96,14 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
                 continue
             self._epoch_lrs[key].append(0.0)
 
-    # def _move_recon_arrays_to_device(self):
-    #     self.obj = self._to_xp(obj)
-    #     self.probe = self._to_xp(probe)
-    #     self.pos_frac = self._to_xp(self.positions_px_fractional)
-    #     self.patch_row = self._to_xp(self.patch_row)
-    #     self.patch_col = self._to_xp(self.patch_col)
-    #     self.amplitudes = self._to_xp(self.shifted_amplitudes)
-    #     self.fov_mask = self._to_xp(self.object_fov_mask).astype(self._object_dtype)
-    #     self._propagators = self._to_xp(self._propagators)
+    def _move_recon_arrays_to_device(self):
+        self._obj = self._to_xp(self._obj)
+        self._probe = self._to_xp(self._probe)
+        self._patch_indices = self._to_xp(self._patch_indices)
+        self._shifted_amplitudes = self._to_xp(self._shifted_amplitudes)
+        self.positions_px = self._to_xp(self._positions_px)
+        self._fov_mask = self._to_xp(self._object_fov_mask)
+        self._propagators = self._to_xp(self._propagators)
 
     # endregion
 
@@ -136,13 +111,11 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
 
     def adjoint_operator(
         self,
-        obj_array,
-        probe_array,
         obj_patches,
-        patch_indices,
-        shifted_probes,
-        amplitudes,
+        propagated_probes,
         overlap,
+        patch_indices,
+        amplitudes,
         step_size,
         fix_probe: bool = False,
     ):
@@ -151,17 +124,17 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         ## mod_overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         gradient = self.gradient_step(overlap, modified_overlap)
         ## grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        obj_array, probe_array = self.update_object_and_probe(
-            obj_array,
-            probe_array,
+        self._obj, self._probe = self.update_object_and_probe(
+            self._obj,
+            self._probe,
             obj_patches,
             patch_indices,
-            shifted_probes,
+            propagated_probes,
             gradient,
             step_size,
             fix_probe=fix_probe,
         )
-        return obj_array, probe_array
+        return
 
     def fourier_projection(self, measured_amplitudes, overlap_array):
         """Replaces the Fourier amplitude of overlap with the measured data."""
@@ -201,9 +174,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         for s in reversed(range(self.num_slices)):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
-            probe_normalization = arr.match_device(
-                np.zeros_like(obj_array[s]), probe_slice
-            )
+            probe_normalization = arr.match_device(np.zeros_like(obj_array[s]), probe_slice)
             object_update = arr.match_device(np.zeros_like(obj_array[s]), obj_slice)
 
             for a0 in range(self.num_probes):
@@ -236,9 +207,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
 
             if s > 0:
                 # back-propagate
-                gradient = self._propagate_array(
-                    gradient, np.conj(self._propagators[s - 1])
-                )
+                gradient = self._propagate_array(gradient, np.conj(self._propagators[s - 1]))
             elif not fix_probe:
                 obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
                 probe_array = probe_array + (

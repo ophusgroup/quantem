@@ -45,9 +45,7 @@ def subdivide_into_batches(
         if max_batch is not None:
             num_batches = (num_items + (-num_items % max_batch)) // max_batch
         else:
-            raise RuntimeError(
-                "max_batch must be provided if num_batches is not provided"
-            )
+            raise RuntimeError("max_batch must be provided if num_batches is not provided")
 
     if num_items < num_batches:
         raise RuntimeError("num_batches may not be larger than num_items")
@@ -82,21 +80,18 @@ def generate_batches(
 @overload
 def fourier_shift(array: np.ndarray, positions: np.ndarray) -> np.ndarray: ...
 @overload
-def fourier_shift(
-    array: "torch.Tensor", positions: "torch.Tensor"
-) -> "torch.Tensor": ...
+def fourier_shift(array: "torch.Tensor", positions: "torch.Tensor") -> "torch.Tensor": ...
 def fourier_shift(
     array: ArrayLike,
     positions: ArrayLike,
     match_dim: bool = False,  # TODO make this the default
 ) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
-    xp = arr.get_array_module(array)
     phase = fourier_translation_operator(positions, array.shape, match_dim)
-    fourier_array = xp.fft.fft2(array)
+    fourier_array = arr.fft2(array)
     shifted_fourier_array = fourier_array * phase
 
-    return xp.fft.ifft2(shifted_fourier_array)
+    return arr.ifft2(shifted_fourier_array)
 
 
 @overload
@@ -169,9 +164,7 @@ def get_com_2d(ar: ArrayLike, corner_centered: bool = False) -> ArrayLike:
     return com
 
 
-def sum_patches_base(
-    patches: np.ndarray, indices: np.ndarray, obj_shape: tuple
-) -> np.ndarray:
+def sum_patches_base(patches: np.ndarray, indices: np.ndarray, obj_shape: tuple) -> np.ndarray:
     flat_weights = patches.reshape(-1)
     flat_indices = indices.reshape(-1)
     out = arr.match_device(np.zeros(np.prod(obj_shape), dtype=patches.dtype), patches)
@@ -179,9 +172,7 @@ def sum_patches_base(
     return out.reshape(obj_shape)
 
 
-def sum_patches(
-    patches: np.ndarray, indices: np.ndarray, obj_shape: tuple
-) -> np.ndarray:
+def sum_patches(patches: np.ndarray, indices: np.ndarray, obj_shape: tuple) -> np.ndarray:
     if np.iscomplexobj(patches):
         real = sum_patches_base(patches.real, indices, obj_shape)
         imag = sum_patches_base(patches.imag, indices, obj_shape)
@@ -284,12 +275,7 @@ def _plane(xy, mx, my, b):
 
 def _parabola(xy, c0, cx1, cx2, cy1, cy2, cxy):
     return (
-        c0
-        + cx1 * xy[0]
-        + cy1 * xy[1]
-        + cx2 * xy[0] ** 2
-        + cy2 * xy[1] ** 2
-        + cxy * xy[0] * xy[1]
+        c0 + cx1 * xy[0] + cy1 * xy[1] + cx2 * xy[0] ** 2 + cy2 * xy[1] ** 2 + cxy * xy[0] * xy[1]
     )
 
 
@@ -363,12 +349,8 @@ def fit_origin(
         popt_c, _ = curve_fit(f, rc, qc0_meas)
 
         if robust:
-            popt_r = perform_robust_fitting(
-                f, rc, qr0_meas, popt_r, robust_steps, robust_thresh
-            )
-            popt_c = perform_robust_fitting(
-                f, rc, qc0_meas, popt_c, robust_steps, robust_thresh
-            )
+            popt_r = perform_robust_fitting(f, rc, qr0_meas, popt_r, robust_steps, robust_thresh)
+            popt_c = perform_robust_fitting(f, rc, qc0_meas, popt_c, robust_steps, robust_thresh)
 
     qr0_fit = f(rc, *popt_r).reshape(shape)
     qc0_fit = f(rc, *popt_c).reshape(shape)

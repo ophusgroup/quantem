@@ -1,5 +1,5 @@
 from copy import deepcopy
-from typing import TYPE_CHECKING, Any, Literal, Sequence
+from typing import TYPE_CHECKING, Any, Literal, Self, Sequence
 
 import numpy as np
 from tqdm import trange
@@ -39,12 +39,11 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
     def __init__(
         self,
         dset: Dataset4dstem,
-        object_type: Literal["complex", "pure_phase", "potential"] = "complex",
-        num_probes: int = 1,
-        num_slices: int = 1,
-        slice_thicknesses: float | None = None,
-        verbose: int | bool = True,
+        probe_params: dict | None = None,
+        probe: np.ndarray | None = None,
+        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         device: Literal["cpu", "gpu"] = "cpu",
+        verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
         _token: None | object = None,
     ):
@@ -57,12 +56,11 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
 
         super().__init__(
             dset=dset,
-            object_type=object_type,
-            num_probes=num_probes,
-            num_slices=num_slices,
-            slice_thicknesses=slice_thicknesses,
-            verbose=verbose,
+            probe_params=probe_params,
+            probe=probe,
+            vacuum_probe_intensity=vacuum_probe_intensity,
             device=device,
+            verbose=verbose,
             rng=rng,
             _token=self._token,
         )
@@ -177,6 +175,8 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         }
         """
         for k, v in d.items():
+            if not any(v):
+                continue
             if k not in self.OPTIMIZABLE_VALS:
                 raise ValueError(
                     f"key to be optimized, {k}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
@@ -268,7 +268,9 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         """
         schedulers = {}
         for opt_key, p in params.items():
-            if opt_key not in self.OPTIMIZABLE_VALS:
+            if not any(p):
+                continue
+            elif opt_key not in self.OPTIMIZABLE_VALS:
                 raise KeyError(
                     f"Scheduler got bad key {opt_key}, schedulers can only be attached to one of {self.OPTIMIZABLE_VALS}"
                 )
@@ -345,9 +347,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
     @model_object.setter
     def model_object(self, model: "torch.nn.Module"):
         if not isinstance(model, torch.nn.Module):
-            raise TypeError(
-                f"model_object must be a torch.nn.Module, got {type(model)}"
-            )
+            raise TypeError(f"model_object must be a torch.nn.Module, got {type(model)}")
         self._model_object = model
 
     @property
@@ -385,9 +385,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
 
     @property
     def pretrained_model_object(self) -> "torch.nn.Module":
-        self._pretrained_model_object.load_state_dict(
-            self._pretrained_model_object_weights
-        )
+        self._pretrained_model_object.load_state_dict(self._pretrained_model_object_weights)
         return self._pretrained_model_object
 
     @pretrained_model_object.setter
@@ -397,9 +395,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
 
     @property
     def pretrained_model_probe(self) -> "torch.nn.Module":
-        self._pretrained_model_probe.load_state_dict(
-            self._pretrained_model_probe_weights
-        )
+        self._pretrained_model_probe.load_state_dict(self._pretrained_model_probe_weights)
         return self._pretrained_model_probe
 
     @pretrained_model_probe.setter
@@ -425,7 +421,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
     # region --- methods ---
 
     def get_tv_loss(
-        self, arr: torch.Tensor, weights: None | tuple[float, float] = None
+        self, arrayay: torch.Tensor, weights: None | tuple[float, float] = None
     ) -> torch.Tensor:
         """
         weight is tuple (weight_z, weight_yx) or float -> (weight, weight)
@@ -449,41 +445,36 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 raise ValueError(f"weights must be a tuple of length 2, got {weights}")
             w = weights
 
-        if arr.is_complex():
-            ph = arr.angle()
+        if arrayay.is_complex():
+            ph = arrayay.angle()
             loss += self._calc_tv_loss(ph, w)
-            amp = arr.abs()
+            amp = arrayay.abs()
             if torch.max(amp) - torch.min(amp) > 1e-3:  # is complex and not pure_phase
                 loss += self._calc_tv_loss(amp, w)
         else:
-            loss += self._calc_tv_loss(arr, w)
+            loss += self._calc_tv_loss(arrayay, w)
 
         return loss
 
-    def _calc_tv_loss(
-        self, arr: torch.Tensor, weight: tuple[float, float]
-    ) -> torch.Tensor:
+    def _calc_tv_loss(self, array: torch.Tensor, weight: tuple[float, float]) -> torch.Tensor:
         loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
-        for dim in range(arr.ndim):
-            if dim == 0 and arr.ndim == 3:  # there's surely a cleaner way but whatev
+        for dim in range(array.ndim):
+            if dim == 0 and array.ndim == 3:  # there's surely a cleaner way but whatev
                 w = weight[0]
             else:
                 w = weight[1]
-            loss += w * torch.mean(torch.abs(arr.diff(dim=dim)))
-        loss /= arr.ndim
+            loss += w * torch.mean(torch.abs(array.diff(dim=dim)))
+        loss /= array.ndim
         return loss
 
     def reset_recon(self) -> None:
-        self._epoch_losses = []
-        self._epoch_recon_types = []
-        self._epoch_snapshots = []
-        self._epoch_lrs = {}
+        super().reset_recon()
         self._optimizers = {}
         self._schedulers = {}
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     def _to_torch(
-        self, arr: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
+        self, array: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
     ) -> "torch.Tensor":
         """
         dtype can be: "same": same as input array, default
@@ -495,7 +486,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             if dtype == "same":
                 dt = None
             elif dtype in ["object", "obj"]:
-                if np.iscomplexobj(arr):
+                if np.iscomplexobj(array):
                     dt = self._dtype_complex_torch
                 else:
                     dt = self._dtype_real_torch
@@ -506,22 +497,20 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         elif isinstance(dtype, torch.dtype):
             dt = dtype
         else:
-            raise TypeError(
-                f"dtype should be string or torch.dtype, got {type(dtype)} {dtype}"
-            )
+            raise TypeError(f"dtype should be string or torch.dtype, got {type(dtype)} {dtype}")
 
-        if isinstance(arr, np.ndarray):
-            t = torch.tensor(arr.copy(), device=self.device, dtype=dt)
-        elif isinstance(arr, cp.ndarray):
-            t = torch.tensor(arr, device=self.device, dtype=dt)
-        elif isinstance(arr, torch.Tensor):
-            t = arr.to(self.device)
+        if isinstance(array, np.ndarray):
+            t = torch.tensor(array.copy(), device=self.device, dtype=dt)
+        elif isinstance(array, cp.ndarray):
+            t = torch.tensor(array, device=self.device, dtype=dt)
+        elif isinstance(array, torch.Tensor):
+            t = array.to(self.device)
             if dt is not None:
                 t = t.type(dt)
-        elif isinstance(arr, (list, tuple)):
-            t = torch.tensor(arr, device=self.device, dtype=dt)
+        elif isinstance(array, (list, tuple)):
+            t = torch.tensor(array, device=self.device, dtype=dt)
         else:
-            raise TypeError(f"arr should be ndarray or Tensor, got {type(arr)}")
+            raise TypeError(f"arr should be ndarray or Tensor, got {type(array)}")
         return t
 
     def _record_lrs(self) -> None:
@@ -530,9 +519,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         for key in all_keys:
             if key in self._epoch_lrs.keys():
                 if key in self.optimizers.keys():
-                    self._epoch_lrs[key].append(
-                        self.optimizers[key].param_groups[0]["lr"]
-                    )
+                    self._epoch_lrs[key].append(self.optimizers[key].param_groups[0]["lr"])
                 else:
                     self._epoch_lrs[key].append(0.0)
             else:  # new optimizer
@@ -540,15 +527,24 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
                 self._epoch_lrs[key] = prev_lrs
 
+    def _move_recon_arrays_to_device(self):
+        self._obj = self._to_torch(self._obj)
+        self._probe = self._to_torch(self._probe)
+        self._patch_indices = self._to_torch(self._patch_indices)
+        self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
+        self.positions_px = self._to_torch(self._positions_px)
+        self._fov_mask = self._to_torch(self._object_fov_mask)
+        self._propagators = self._to_torch(self._propagators)
+
     # endregion --- methods ---
 
     # region --- reconstruction ---
 
     def reconstruct(
         self,
-        mode: Literal["model", "pixelwise"] | None = None,  # "model" "pixelwise"
+        mode: Literal["model", "pixelwise"] = "pixelwise",  # "model" "pixelwise"
         num_iter: int = 0,
-        reset: bool = True,
+        reset: bool = False,
         optimizer_params: dict | None = None,
         object_type: Literal["complex", "pure_phase", "potential"] | None = None,
         models: "tuple[torch.nn.Module, torch.nn.Module] | torch.nn.Module | None" = None,
@@ -556,29 +552,32 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         scheduler_params: dict | None = None,
         constraints: dict = {},
         batch_size: int | None = None,
-        verbose: bool | int | None = None,
-        pbar: bool | None = None,
         store_iterations: bool | None = None,
         store_iterations_every: int | None = None,
         device: Literal["cpu", "gpu"] | None = None,
-    ) -> None:
+    ) -> Self:
         """
         reason for having a single reconstruct() is so that updating things like constraints
         or recon_types only happens in one place, reason for having separate reoconstruction_
         methods would be to simplify the flags for this and not have to include all
 
         """
+        # TODO maybe make an "process args" method that handles things like:
+        # mode, store_iterations, device,
         self._check_preprocessed()
         if mode is not None:
             self.mode = mode
-
+        if device is not None:
+            self.device = device
+        if batch_size is None:
+            batch_size = self.gpts[0] * self.gpts[1]
+        if store_iterations is not None:
+            self.store_iterations = store_iterations
+        if store_iterations_every is not None:
+            self.store_iterations_every = store_iterations_every
         if reset:
             self.reset_recon()
-            obj = self._to_torch(self.initial_object)
-            probe = self._to_torch(self.initial_probe)
-        else:
-            obj = self._to_torch(self.obj)
-            probe = self._to_torch(self.probe)
+            self.reset_constraints()
 
         new_optimizers = reset
         new_scheduler = reset
@@ -600,24 +599,13 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 self.object_type = object_type
 
         self.constraints = constraints  # doesn't overwrite if not reset
-
-        if verbose is not None:
-            self.verbose = verbose
-        if pbar is None:
-            pbar = bool(self.verbose)
-
-        if store_iterations is not None:
-            self.store_iterations = store_iterations
-        if store_iterations_every is not None:
-            self.store_iterations_every = store_iterations_every
-
-        if batch_size is None:
-            batch_size = self.gpts[0] * self.gpts[1]
+        self._move_recon_arrays_to_device()
 
         if new_optimizers:
-            self._add_optimizer(key="object", params=obj)
+            # TODO make a method to set all the optimizers
+            self._add_optimizer(key="object", params=self._obj)
             if "probe" in self.optimizer_params.keys():
-                self._add_optimizer(key="probe", params=probe)
+                self._add_optimizer(key="probe", params=self._probe)
                 self.constraints["probe"]["fix_probe"] = False
             else:
                 self.constraints["probe"]["fix_probe"] = True
@@ -626,56 +614,45 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             # should just use raw amplitudes, and the com_shifts should be learned and
             # used to shift the predicted amplitudes to the correct position
             raise NotImplementedError
-        else:
-            t_descan_shifts = None
-            t_amplitudes = self._to_torch(self.shifted_amplitudes)
 
         if new_scheduler:
             self._schedulers = {}
             # This could be self.schedulers = self.get_schedulers(self.scheduler_params, num_iter)
-            # would need to add a setter is all
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        t_patch_indices = self._to_torch(self.patch_indices)
-        # t_patch_row = self._to_torch(self.patch_row)
-        # t_patch_col = self._to_torch(self.patch_col)
-        t_position_px_fractional = self._to_torch(self.positions_px_fractional)
-        self.propagators = self._to_torch(self.propagators)
-        t_mask = self._to_torch(self._object_fov_mask)  # for constraints
+        t_mask = self._object_fov_mask
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         # TODO add pbar with loss printout
-        for a0 in trange(num_iter, disable=not pbar):
+        for a0 in trange(num_iter, disable=not self.verbose):
             np.random.shuffle(shuffled_indices)
             loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
 
             if self.mode == "pixelwise":
-                pred_obj = obj
-                pred_probe = probe
+                pred_obj = self._obj
+                pred_probe = self._probe
             else:
+                # model prediction
                 raise NotImplementedError(f"mode {self.mode} not implemented")
 
-            ### apply constraints here after prediction
             pred_obj, pred_probe = self.apply_constraints(
-                object=pred_obj, probe=pred_probe, object_fov_mask=t_mask
+                object=pred_obj, probe=pred_probe, object_fov_mask=self._object_fov_mask
             )
 
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
                 batch_indices = shuffled_indices[start:end]
-                if t_descan_shifts is not None:
-                    batch_descan_shifts = t_descan_shifts[batch_indices]
-                else:
-                    batch_descan_shifts = None
-
-                loss += self.error_estimate(
+                _, _, overlap = self.forward_operator(
                     pred_obj,
                     pred_probe,
-                    t_patch_indices[batch_indices],
-                    t_position_px_fractional[batch_indices],
-                    t_amplitudes[batch_indices],
-                    batch_descan_shifts,
+                    self._patch_indices[batch_indices],
+                    self._positions_px_fractional[batch_indices],
+                )
+
+                loss += self.error_estimate(
+                    overlap,
+                    self._shifted_amplitudes[batch_indices],
                 )
 
             loss /= self._mean_diffraction_intensity * np.prod(self.gpts)
@@ -700,29 +677,19 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             self._record_lrs()
             self._epoch_losses.append(loss.item())
             self._epoch_recon_types.append("pixelwise")
-            if self.store_iterations and (
-                (a0 + 1) % self.store_iterations_every == 0 or a0 == 0
-            ):
+            if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(pred_obj, pred_probe)
 
         # final constraints application
         if self.mode == "pixelwise":
-            pred_obj = obj
-            pred_probe = probe
+            pred_obj = self._obj
+            pred_probe = self._probe
         else:
             raise NotImplementedError
-        obj, probe = self.apply_constraints(
+        self.obj, self.probe = self.apply_constraints(
             object=pred_obj.detach(), probe=pred_probe.detach(), object_fov_mask=t_mask
         )
 
-        if "descan" in self.optimizer_params.keys():
-            assert isinstance(t_descan_shifts, torch.Tensor)  # TODO improve/fix this
-            self._descan_shifts = t_descan_shifts.detach()
-        else:
-            self._descan_shifts = None
-
-        self.obj = obj
-        self.probe = probe
-        return
+        return self
 
     # endregion --- reconstruction ---

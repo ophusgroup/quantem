@@ -5,6 +5,7 @@ import numpy as np
 from numpy.typing import DTypeLike
 
 from quantem.core import config
+from quantem.core.utils import array_funcs as arr
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -109,9 +110,7 @@ def validate_ndinfo(
             raise ValueError(f"{name} must contain numeric values")
         return arr
     elif not isinstance(value, (np.ndarray, tuple, list)):
-        raise TypeError(
-            f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}"
-        )
+        raise TypeError(f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}")
 
     try:
         arr = np.array(value, dtype=dtype).flatten()
@@ -155,9 +154,7 @@ def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List
     elif not isinstance(value, (list, tuple)):
         raise TypeError(f"Units must be a list, tuple, or string, got {type(value)}")
     elif len(value) != ndim:
-        raise ValueError(
-            f"Length of units ({len(value)}) must match data ndim ({ndim})"
-        )
+        raise ValueError(f"Length of units ({len(value)}) must match data ndim ({ndim})")
 
     return [str(unit) for unit in value]
 
@@ -244,9 +241,7 @@ def validate_vector_units(units: Optional[List[str]], num_fields: int) -> List[s
     if not isinstance(units, (list, tuple)):
         raise TypeError(f"units must be a list or tuple, got {type(units)}")
     if len(units) != num_fields:
-        raise ValueError(
-            f"Length of units ({len(units)}) must match num_fields ({num_fields})"
-        )
+        raise ValueError(f"Length of units ({len(units)}) must match num_fields ({num_fields})")
     return [str(unit) for unit in units]
 
 
@@ -274,9 +269,7 @@ def validate_vector_data_for_inference(data: List[Any]) -> Tuple[Tuple[int, ...]
     return shape, inferred_num_fields
 
 
-def validate_vector_data(
-    data: List[Any], shape: Tuple[int, ...], num_fields: int
-) -> List[Any]:
+def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: int) -> List[Any]:
     """
     Validate that the data structure matches the expected shape and number of fields.
 
@@ -372,9 +365,7 @@ def validate_arraylike(value: Any, name: str):
         try:
             return np.array(value)
         except Exception as e:
-            raise TypeError(
-                f"{name} must be array or tensorlike, got type {type(value)}: {e}"
-            )
+            raise TypeError(f"{name} must be array or tensorlike, got type {type(value)}: {e}")
 
 
 def validate_xplike(value: Any, name: str) -> np.ndarray:
@@ -399,9 +390,7 @@ def canonical_dtype_str(dtype):
     Converts a dtype (NumPy, CuPy, torch, or string) to a canonical string for comparison.
     """
     if isinstance(dtype, str):
-        return (
-            dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
-        )
+        return dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
     elif hasattr(dtype, "name"):
         return dtype.name.lower()
     elif config.get("has_torch"):
@@ -411,7 +400,7 @@ def canonical_dtype_str(dtype):
 
 
 def validate_array(
-    value: "np.ndarray | cp.ndarray",
+    value: "np.ndarray | cp.ndarray | torch.Tensor",
     name: str,
     dtype: DTypeLike | None = None,
     ndim: int | None = None,
@@ -423,14 +412,11 @@ def validate_array(
         val_dtype_str = canonical_dtype_str(value.dtype)
         req_dtype_str = canonical_dtype_str(dtype)
         if val_dtype_str != req_dtype_str:
-            value = value.astype(dtype)
-            # raise TypeError(
-            #     f"{name} must be an array of type {req_dtype_str}, got {val_dtype_str}"
-            # )
+            value = arr.as_type(value, req_dtype_str)
     if ndim is not None and value.ndim != ndim:
         if expand_dims and ndim > value.ndim:
             for _ in range(ndim - value.ndim):
-                value = np.expand_dims(value, axis=0)
+                value = arr.expand_dims(value, axis=0)
         else:
             raise ValueError(f"{name} must have {ndim} dimensions, got {value.ndim}")
     if shape is not None and not np.array_equal(value.shape, shape):
@@ -438,9 +424,7 @@ def validate_array(
     return value
 
 
-def validate_np_len(
-    value: np.ndarray | float | int, length: int, name: str = ""
-) -> np.ndarray:
+def validate_np_len(value: np.ndarray | float | int, length: int, name: str = "") -> np.ndarray:
     if isinstance(value, np.ndarray):
         pass
     elif isinstance(value, (float, int)):

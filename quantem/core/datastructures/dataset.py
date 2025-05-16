@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import as_numpy, get_array_module
+from quantem.core.utils.utils import get_array_module, to_numpy
 from quantem.core.utils.validators import (
     ensure_valid_array,
     validate_ndinfo,
@@ -275,8 +275,7 @@ class Dataset(AutoSerialize):
 
     def pad(
         self,
-        pad_width: Union[int, tuple[int, int], tuple[tuple[int, int], ...]]
-        | None = None,
+        pad_width: Union[int, tuple[int, int], tuple[tuple[int, int], ...]] | None = None,
         output_shape: tuple[int, ...] | None = None,
         modify_in_place: bool = False,
         **kwargs: Any,
@@ -348,9 +347,7 @@ class Dataset(AutoSerialize):
         """
         if axes is None:
             if len(crop_widths) != self.ndim:
-                raise ValueError(
-                    "crop_widths must match number of dimensions when axes is None."
-                )
+                raise ValueError("crop_widths must match number of dimensions when axes is None.")
             axes = tuple(range(self.ndim))
         elif np.isscalar(axes):
             axes = (axes,)
@@ -483,4 +480,4 @@ class Dataset(AutoSerialize):
         if title is None:
             title = self.name
 
-        return show_2d(as_numpy(self.array), scalebar=scalebar, title=title, **kwargs)
+        return show_2d(to_numpy(self.array), scalebar=scalebar, title=title, **kwargs)
