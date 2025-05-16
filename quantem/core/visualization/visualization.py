@@ -314,6 +314,8 @@ def show_2d(
     nrows = len(grid)
     ncols = max(len(row) for row in grid)
 
+    title = kwargs.pop("title", None)
+
     if combine_images:
         if nrows > 1:
             raise ValueError()
@@ -336,11 +338,30 @@ def show_2d(
     for i, row in enumerate(grid):
         for j, array in enumerate(row):
             figax = (fig, axs[i][j])
+            if title is None:
+                t = None
+            elif isinstance(title, str):
+                t = title
+            elif isinstance(title[0], str):
+                # Flat list of titles
+                t = title[i * ncols + j] if i * ncols + j < len(title) else None
+            else:
+                # Grid of titles
+                t = title[i][j] if i < len(title) and j < len(title[i]) else None
+
             _show_2d(
                 array,
                 figax=figax,
+                title=t,
                 **kwargs,
             )
+
+            # figax = (fig, axs[i][j])
+            # _show_2d(
+            #     array,
+            #     figax=figax,
+            #     **kwargs,
+            # )
 
     # Hide unused axes in incomplete rows
     for i, row in enumerate(grid):

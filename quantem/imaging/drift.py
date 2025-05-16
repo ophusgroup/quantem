@@ -1,3 +1,5 @@
+# Override warnings
+import warnings
 from collections.abc import Sequence
 from typing import List, Optional, Union
 
@@ -22,6 +24,20 @@ from quantem.core.utils.imaging_utils import (
 )
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization import show_2d
+
+
+# original_formatwarning = warnings.formatwarning
+def simple_formatwarning(message, category, filename, lineno, line=None):
+    return f"{message}\n"
+
+
+warnings.formatwarning = simple_formatwarning
+warnings.simplefilter("always")  # Ensure your warning is shown
+warnings.filterwarnings(
+    "ignore",
+    message="ast.Ellipsis is deprecated and will be removed in Python 3.14",
+    category=DeprecationWarning,
+)
 
 
 class DriftCorrection(AutoSerialize):
@@ -60,6 +76,8 @@ class DriftCorrection(AutoSerialize):
 
     Example
     -------
+    We instantiate the DriftCorrection class, run preprocess,
+
     >>> drift = DriftCorrection.from_data(
     ...     images=[
     ...         image0,  # 2D NDArray, or dataset2d, or file name
@@ -69,11 +87,12 @@ class DriftCorrection(AutoSerialize):
     ...     pad_fraction=0.25,
     ...     pad_value='median',
     ...     number_knots=1,
-    ... )
+    ... ).preprocess()
 
     >>> drift.align_affine()
     >>> drift.align_nonrigid()
     >>> drift.plot_merged_images()
+    >>> image_corr =
     >>> drift.save("drift_result.zip")
 
     >>> drift_reloaded = quantem.io.load('drift_result.zip')
@@ -82,7 +101,7 @@ class DriftCorrection(AutoSerialize):
     -----
     - Use `align_translation()` for rigid shifts, `align_affine()` for scan-shear or uniform drift,
       and `align_nonrigid()` for flexible per-row or per-image correction.
-    - The class stores resampled images in `self.warped_images` and the control knots in `self.knots`.
+    - The class stores resampled images in `self.images_warped` and the control knots in `self.knots`.
     - Interactive visualization is supported through `plot_merged_images()` and `plot_transformed_images()`.
     """
 
@@ -92,10 +111,6 @@ class DriftCorrection(AutoSerialize):
         self,
         images: List[Dataset2d],
         scan_direction_degrees: NDArray,
-        pad_fraction: float,
-        pad_value: Union[float, str, List[float]],
-        kde_sigma: float,
-        number_knots: int,
         _token: object | None = None,
     ):
         if _token is not self._token:
@@ -104,11 +119,7 @@ class DriftCorrection(AutoSerialize):
             )
 
         self._images = images
-        self._pad_value = pad_value
         self.scan_direction_degrees = scan_direction_degrees
-        self.pad_fraction = pad_fraction
-        self.kde_sigma = kde_sigma
-        self.number_knots = number_knots
 
     @classmethod
     def from_file(
@@ -116,14 +127,11 @@ class DriftCorrection(AutoSerialize):
         file_paths: Sequence[str],
         scan_direction_degrees: Union[Sequence[float], NDArray],
         file_type: str | None = None,
-        pad_fraction: float = 0.25,
-        pad_value: Union[float, str, List[float]] = "median",
-        kde_sigma: float = 0.5,
-        number_knots: int = 1,
     ) -> "DriftCorrection":
         image_list = [Dataset2d.from_file(fp, file_type=file_type) for fp in file_paths]
         return cls.from_data(
-            image_list, scan_direction_degrees, pad_fraction, pad_value, number_knots
+            image_list,
+            scan_direction_degrees,
         )
 
     @classmethod
@@ -131,21 +139,12 @@ class DriftCorrection(AutoSerialize):
         cls,
         images: Union[List[Dataset2d], List[NDArray], Dataset3d, NDArray],
         scan_direction_degrees: Union[List[float], NDArray],
-        pad_fraction: float = 0.25,
-        pad_value: Union[float, str, List[float]] = "median",
-        kde_sigma: float = 0.5,
-        number_knots: int = 1,
     ) -> "DriftCorrection":
         validated_images = validate_list_of_dataset2d(images)
-        validated_pad_value = validate_pad_value(pad_value, validated_images)
 
         return cls(
             images=validated_images,
             scan_direction_degrees=scan_direction_degrees,
-            pad_fraction=pad_fraction,
-            pad_value=validated_pad_value,
-            kde_sigma=kde_sigma,
-            number_knots=number_knots,
             _token=cls._token,
         )
 
@@ -201,9 +200,22 @@ class DriftCorrection(AutoSerialize):
 
     def preprocess(
         self,
+        pad_fraction: float = 0.25,
+        pad_value: Union[float, str, List[float]] = "median",
+        kde_sigma: float = 0.5,
+        number_knots: int = 1,
         show_images: bool = True,
         show_knots: bool = True,
     ):
+        # Validators
+        validated_pad_value = validate_pad_value(pad_value, self._images)
+
+        # Input data
+        self.pad_fraction = pad_fraction
+        self._pad_value = validated_pad_value
+        self.kde_sigma = kde_sigma
+        self.number_knots = number_knots
+
         # Derived data
         self.scan_direction = np.deg2rad(self.scan_direction_degrees)
         self.scan_fast = np.stack(
@@ -264,15 +276,19 @@ class DriftCorrection(AutoSerialize):
             )
 
         # Generate initial resampled images
-        self.warped_images = Dataset3d.from_shape(self.shape)
+        self.images_warped = Dataset3d.from_shape(self.shape)
         for a0 in range(self.shape[0]):
-            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
+            self.images_warped.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
 
         if show_images:
-            self.plot_transformed_images(show_knots=show_knots, title="initial images")
+            self.plot_transformed_images(
+                show_knots=show_knots,
+                title="Initial images",
+                # title = [f"initial image {i}" for i in range(self.shape[0])]
+            )
 
         return self
 
@@ -283,18 +299,24 @@ class DriftCorrection(AutoSerialize):
         max_shift: int = 32,
     ):
         """
-        Solve for the translation between all images in DriftCorrection.warped_images
+        Solve for the translation between all images in DriftCorrection.images_warped
         """
+
+        if not hasattr(self, "knots"):
+            warnings.warn(
+                "No knots found — running .preprocess() with default settings."
+            )
+            self.preprocess()
 
         # init
         dxy = np.zeros((self.shape[0], 2))
 
         # loop over images
-        F_ref = np.fft.fft2(self.warped_images.array[0])
+        F_ref = np.fft.fft2(self.images_warped.array[0])
         for ind in range(1, self.shape[0]):
             shifts, image_shift = cross_correlation_shift(
                 F_ref,
-                np.fft.fft2(self.warped_images.array[ind]),
+                np.fft.fft2(self.images_warped.array[ind]),
                 upsample_factor=upsample_factor,
                 max_shift=max_shift,
                 fft_input=True,
@@ -315,7 +337,7 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for a0 in range(self.shape[0]):
-            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
+            self.images_warped.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
@@ -336,6 +358,13 @@ class DriftCorrection(AutoSerialize):
         """
         Estimate affine drift from the first 2 images.
         """
+
+        if not hasattr(self, "knots"):
+            warnings.simplefilter("always")
+            warnings.warn(
+                "No knots found — running .preprocess() with default settings."
+            )
+            self.preprocess()
 
         if num_tests % 2 == 0:
             raise ValueError("num_tests should be odd.")
@@ -447,7 +476,7 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for a0 in range(self.shape[0]):
-            self.warped_images.array[a0] = self.interpolator[a0].warp_image(
+            self.images_warped.array[a0] = self.interpolator[a0].warp_image(
                 self.images[a0].array,
                 self.knots[a0],
             )
@@ -459,7 +488,8 @@ class DriftCorrection(AutoSerialize):
 
         if show_images:
             self.plot_transformed_images(
-                show_knots=show_knots, title="images after affine transformation"
+                show_knots=show_knots,
+                title="Images after affine transformation",
             )
 
         return self
@@ -480,12 +510,18 @@ class DriftCorrection(AutoSerialize):
         Non-rigid drift correction.
         """
 
+        if not hasattr(self, "knots"):
+            warnings.warn(
+                "No knots found — running .preprocess() with default settings."
+            )
+            self.preprocess()
+
         for iterations in tqdm(
             range(num_iterations),
             desc="Solving nonrigid drift",
         ):
             for ind in range(self.shape[0]):
-                image_ref = np.delete(self.warped_images.array, ind, axis=0).mean(
+                image_ref = np.delete(self.images_warped.array, ind, axis=0).mean(
                     axis=0
                 )
 
@@ -605,14 +641,14 @@ class DriftCorrection(AutoSerialize):
 
             # Update images
             for ind in range(self.shape[0]):
-                self.warped_images.array[ind] = self.interpolator[ind].warp_image(
+                self.images_warped.array[ind] = self.interpolator[ind].warp_image(
                     self.images[ind].array,
                     self.knots[ind],
                 )
 
         if show_images:
             self.plot_transformed_images(
-                show_knots=show_knots, title="images after non-rigid registration"
+                show_knots=show_knots, title="Images after non-rigid registration"
             )
 
         return self
@@ -620,7 +656,7 @@ class DriftCorrection(AutoSerialize):
     def generate_corrected_image(
         self,
         upsample_factor: int = 2,
-        output_original_shape: bool = False,
+        output_original_shape: bool = True,
         fourier_filter: bool = True,
         kde_sigma: float = 0.5,
         show_image: bool = True,
@@ -696,7 +732,7 @@ class DriftCorrection(AutoSerialize):
 
     def plot_transformed_images(self, show_knots: bool = True, **kwargs):
         fig, ax = show_2d(
-            list(self.warped_images.array),
+            list(self.images_warped.array),
             **kwargs,
         )
         if show_knots:
@@ -714,7 +750,8 @@ class DriftCorrection(AutoSerialize):
         Plot the current transformed images, with knot overlays.
         """
         fig, ax = show_2d(
-            self.warped_images.array.mean(0),
+            self.images_warped.array.mean(0),
+            title="Average of transformed images",
             **kwargs,
         )
         if show_knots:
