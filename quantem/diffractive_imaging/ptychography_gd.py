@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 from tqdm import tqdm
@@ -27,7 +27,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         batch_size: int | None = None,
         step_size: float = 0.5,
         constraints: dict = {},
-        device: str | None = None,
+        device: Literal["gpu", "cpu"] | None = None,
     ) -> None:
         # self.device = device
         self._check_preprocessed()
@@ -91,7 +91,12 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
             obj, probe = self.apply_constraints(obj, probe, object_fov_mask=fov_mask)
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
             self._epoch_losses.append(error.item())
-            # TODO add storage and such
+            self._record_lrs(step_size)
+            self._epoch_recon_types.append("GD")
+            if self.store_iterations and (
+                (a0 + 1) % self.store_iterations_every == 0 or a0 == 0
+            ):
+                self.append_recon_iteration(obj, probe)
 
         if self.device == "gpu":
             if isinstance(obj, cp.ndarray):
@@ -102,6 +107,18 @@ class PtychographyGD(PtychographyConstraints, PtychographyBase):
         self.obj = obj
         self.probe = probe
         return
+
+    def _record_lrs(self, step_size) -> None:
+        if "GD" in self._epoch_lrs.keys():
+            self._epoch_lrs["GD"].append(step_size)
+        else:
+            prev_lrs = [0.0] * self.num_epochs
+            prev_lrs.append(step_size)
+            self._epoch_lrs["GD"] = prev_lrs
+        for key in self._epoch_lrs.keys():  # update rest of lrs
+            if key == "GD":
+                continue
+            self._epoch_lrs[key].append(0.0)
 
     # def _move_recon_arrays_to_device(self):
     #     self.obj = self._to_xp(obj)

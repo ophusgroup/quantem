@@ -25,12 +25,12 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
     A class for performing phase retrieval using the Ptychography algorithm.
     """
 
-    OPTIMIZABLE_VALS = ["object", "probe", "descan", "positions"]
+    OPTIMIZABLE_VALS = ["object", "probe", "descan", "scan_positions"]
     DEFAULT_LRS = {
         "object": 5e-3,
         "probe": 1e-3,
         "descan": 1e-3,
-        "positions": 1e-3,  # TODO change to scan_positions
+        "scan_positions": 1e-3,
         "tv_weight_z": 0,
         "tv_weight_yx": 0,
     }
@@ -313,10 +313,10 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 optimizer,
                 mode="min",
                 factor=params.get("factor", 0.5),
-                patience=params.get("patience", 50),
-                threshold=params.get("threshold", 1e-4),
+                patience=params.get("patience", 10),
+                threshold=params.get("threshold", 1e-3),
                 min_lr=params.get("min_lr", base_LR / 20),
-                cooldown=params.get("cooldown", 100),
+                cooldown=params.get("cooldown", 50),
             )
         elif sched_type in ["exp", "gamma", "exponential"]:
             if "gamma" in params.keys():
@@ -474,10 +474,10 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         return loss
 
     def reset_recon(self) -> None:
-        self._losses = []
-        self._recon_types = []
-        self._recon_iterations = []
-        self._lrs = []
+        self._epoch_losses = []
+        self._epoch_recon_types = []
+        self._epoch_snapshots = []
+        self._epoch_lrs = {}
         self._optimizers = {}
         self._schedulers = {}
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
@@ -524,6 +524,22 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
             raise TypeError(f"arr should be ndarray or Tensor, got {type(arr)}")
         return t
 
+    def _record_lrs(self) -> None:
+        optimizers = self.optimizers
+        all_keys = set(self._epoch_lrs.keys()) | set(optimizers.keys())
+        for key in all_keys:
+            if key in self._epoch_lrs.keys():
+                if key in self.optimizers.keys():
+                    self._epoch_lrs[key].append(
+                        self.optimizers[key].param_groups[0]["lr"]
+                    )
+                else:
+                    self._epoch_lrs[key].append(0.0)
+            else:  # new optimizer
+                prev_lrs = [0.0] * (self.num_epochs - 1)
+                prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
+                self._epoch_lrs[key] = prev_lrs
+
     # endregion --- methods ---
 
     # region --- reconstruction ---
@@ -544,6 +560,7 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
         pbar: bool | None = None,
         store_iterations: bool | None = None,
         store_iterations_every: int | None = None,
+        device: Literal["cpu", "gpu"] | None = None,
     ) -> None:
         """
         reason for having a single reconstruct() is so that updating things like constraints
@@ -606,42 +623,9 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 self.constraints["probe"]["fix_probe"] = True
 
         if "descan" in self.optimizer_params.keys():
-            # TODO clean this up, learning descan should/could just be on top of the shifted
-            # amplitudes, so use the same amplitudes, start with zeros
-            _starting_com = np.reshape(
-                self._com_fitted, (2, self.gpts[0] * self.gpts[1])
-            )
-            _starting_com[0] = np.minimum(
-                _starting_com[0] + self.roi_shape[0] / 2,
-                _starting_com[0] - self.roi_shape[0] / 2,
-            )
-            _starting_com[1] = np.minimum(
-                _starting_com[1] + self.roi_shape[1] / 2,
-                _starting_com[1] - self.roi_shape[1] / 2,
-            )
-            initial_coms = _starting_com.squeeze().T
-            t_descan_shifts = torch.tensor(
-                -1 * initial_coms,
-                dtype=self._dtype_real_torch,
-                device=self.device,
-                requires_grad=True,
-            )
-            if new_optimizers:
-                self._add_optimizer(key="descan", params=t_descan_shifts)
-
-            t_amplitudes = (
-                torch.fft.fftshift(
-                    self._to_torch(
-                        self.raw_intensities.reshape(
-                            (np.prod(self.gpts), *self.roi_shape)
-                        ),
-                        dtype=self._dtype_real_torch,
-                    ),
-                    dim=(-2, -1),
-                )
-                ** 0.5
-            )
-
+            # should just use raw amplitudes, and the com_shifts should be learned and
+            # used to shift the predicted amplitudes to the correct position
+            raise NotImplementedError
         else:
             t_descan_shifts = None
             t_amplitudes = self._to_torch(self.shifted_amplitudes)
@@ -713,9 +697,9 @@ class PtychographyML(PtychographyConstraints, PtychographyBase):
                 elif sch is not None:
                     sch.step()
 
-            self._lrs.append(self.optimizers["object"].param_groups[0]["lr"])
-            self._losses.append(loss.item())
-            self._recon_types.append("pixelwise")
+            self._record_lrs()
+            self._epoch_losses.append(loss.item())
+            self._epoch_recon_types.append("pixelwise")
             if self.store_iterations and (
                 (a0 + 1) % self.store_iterations_every == 0 or a0 == 0
             ):

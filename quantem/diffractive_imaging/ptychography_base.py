@@ -94,6 +94,7 @@ class PtychographyBase(AutoSerialize):
     def __init__(  # TODO prevent direct instantiation
         self,
         dset: Dataset4dstem,
+        # TODO move these to preprocess
         object_type: Literal["complex", "pure_phase", "potential"] = "complex",
         num_probes: int = 1,
         num_slices: int = 1,
@@ -121,9 +122,9 @@ class PtychographyBase(AutoSerialize):
         self._object_padding_force_power2_level: int = 0
         self._store_iterations: bool = False
         self._store_iterations_every: int = 1
-        self._epoch_losses: list[float] = []  # losses/errors across epochs
+        self._epoch_losses: list[float] = []
         self._epoch_recon_types: list[str] = []
-        self._epoch_lrs: list[float] = []  # LRs/step_sizes across epochs
+        self._epoch_lrs: dict[str, list] = {}  # LRs/step_sizes across epochs
         self._epoch_snapshots: list[dict[str, int | np.ndarray]] = []
 
     @classmethod
@@ -1414,11 +1415,11 @@ class PtychographyBase(AutoSerialize):
         return self._epoch_recon_types
 
     @property
-    def epoch_lrs(self) -> np.ndarray:
+    def epoch_lrs(self) -> dict[str, np.ndarray]:
         """
         List of step sizes/LRs depending on recon type
         """
-        return np.array(self._epoch_lrs)
+        return {k: np.array(v) for k, v in self._epoch_lrs.items()}
 
     @property
     def probe(self) -> np.ndarray:
@@ -1816,7 +1817,7 @@ class PtychographyBase(AutoSerialize):
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
-        self._epoch_lrs = []
+        self._epoch_lrs = {}
 
     def append_recon_iteration(
         self,
@@ -1928,7 +1929,7 @@ class PtychographyBase(AutoSerialize):
             obj_array = arr.exp(1.0j * obj_array)
         obj_flat = obj_array.reshape(obj_array.shape[0], -1)
         # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
-        # Output shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
+        # Output shape: (num_slicpaes, batch_size, roi_shape[0], roi_shape[1])
         patches = obj_flat[:, patch_indices]
         return patches
 
