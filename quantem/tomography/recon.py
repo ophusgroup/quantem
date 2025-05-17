@@ -11,6 +11,8 @@ from quantem.tomography.dataset_tomo import DatasetTomo
 from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d
 from quantem.core.utils.imaging_utils import cross_correlation_shift
 
+# TODO: Maybe add some filtering after the reconstruction? I.e, masking.
+
 class SIRT_Recon:
     """
     Implements the Simultaneous Iterative Reconstruction Technique (SIRT) for tomographic reconstruction.
@@ -71,14 +73,16 @@ class SIRT_Recon:
         self._device = device
         self._loss = []
         
+        
         self._tilt_series = torch.from_numpy(dataset.array).float().to(self._device)
+        self._num_angles, self._num_rows, self._num_sinograms = self._tilt_series.shape
+        
         self._recon = torch.zeros(
             (self._num_rows, self._num_rows, self._num_sinograms),
             dtype = torch.float32,
             device = self._device,
         )
         self._tilt_angles = torch.from_numpy(dataset.tilt_angles_rad).float().to(self._device)
-        self._num_angles, self._num_rows, self._num_sinograms = self._tilt_series.shape
         
         
     
@@ -169,8 +173,12 @@ class SIRT_Recon:
             - Clamps the reconstructed values to be non-negative.
             - Stores the average loss for the epoch.
         """
-        loss = 0
         
+        # TODO: Incorporate inline alignment
+        #   - Would this mean I have to split the backprojection into different for loops?
+        #   - I wonder if there's a better way to do this vectorized.
+        
+        loss = 0
         
         for ind in range(self._num_sinograms):
             
