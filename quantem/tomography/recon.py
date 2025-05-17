@@ -179,22 +179,6 @@ class SIRT_Recon:
         
         loss = 0
         
-        # for ind in range(self._num_sinograms):
-            
-        #     proj_forward = radon.forward(self._recon[:, :, ind])
-        #     proj_diff = self._tilt_series[:, :, ind] - proj_forward
-            
-        #     loss += torch.mean(torch.abs(proj_diff))
-
-        #     recon_slice_update = radon.backprojection(
-        #         radon.filter_sinogram(
-        #             proj_diff,
-        #         )
-        #     )
-        #     self._recon[:, :, ind] += step_size * recon_slice_update
-            
-        #     # Applying Gaussian smoothing if specified
-        
         proj_forward = radon.forward(self._recon)
         
         proj_diff = self._tilt_series - proj_forward
@@ -206,16 +190,14 @@ class SIRT_Recon:
         )
         self._recon += step_size * recon_update
         
-        # if smoothing_sigma is not None:
-        #     self._recon[:, :, ind] = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)
+        for ind in range(self._num_sinograms):
+            self._recon[:, ind, :] = gaussian_filter_2d(self._recon[:, ind, :], smoothing_sigma, kernel_1d)
         
-        # if smoothing_sigma is not None:
-        #     self._recon = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)   
         if enforce_positivity:
             self._recon = torch.clamp(self._recon, min=0)
             
         # Appending to loss
-        self._loss.append(loss.detach().cpu().numpy()/self._num_sinograms)
+        self._loss.append(loss.detach().cpu().numpy())
     
     
     # --- Properties ---
