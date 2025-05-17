@@ -74,8 +74,8 @@ class SIRT_Recon:
         self._loss = []
         
         
-        self._tilt_series = torch.from_numpy(dataset.array).float().to(self._device)
-        self._num_angles, self._num_rows, self._num_sinograms = self._tilt_series.shape
+        self._tilt_series = torch.from_numpy(np.transpose(dataset.array, axes = (2, 0, 1))).float().to(self._device)
+        self._num_angles, self._num_rows, self._num_sinograms = dataset.array.shape
         
         self._recon = torch.zeros(
             (self._num_rows, self._num_rows, self._num_sinograms),
@@ -145,7 +145,6 @@ class SIRT_Recon:
                 f"SIRT Iteration {a0+1}/{num_iterations} - Loss: {self._loss[-1]:.4f}"
             )
         
-        
     def _run_epoch(
         self, 
         radon: Radon, 
@@ -180,24 +179,38 @@ class SIRT_Recon:
         
         loss = 0
         
-        for ind in range(self._num_sinograms):
+        # for ind in range(self._num_sinograms):
             
-            proj_forward = radon.forward(self._recon[:, :, ind])
-            proj_diff = self._tilt_series[:, :, ind] - proj_forward
+        #     proj_forward = radon.forward(self._recon[:, :, ind])
+        #     proj_diff = self._tilt_series[:, :, ind] - proj_forward
             
-            loss += torch.mean(torch.abs(proj_diff))
+        #     loss += torch.mean(torch.abs(proj_diff))
 
-            recon_slice_update = radon.backprojection(
-                radon.filter_sinogram(
-                    proj_diff,
-                )
+        #     recon_slice_update = radon.backprojection(
+        #         radon.filter_sinogram(
+        #             proj_diff,
+        #         )
+        #     )
+        #     self._recon[:, :, ind] += step_size * recon_slice_update
+            
+        #     # Applying Gaussian smoothing if specified
+        
+        proj_forward = radon.forward(self._recon)
+        
+        proj_diff = self._tilt_series - proj_forward
+        loss += torch.mean(torch.abs(proj_diff))
+        recon_update = radon.backprojection(
+            radon.filter_sinogram(
+                proj_diff,
             )
-            self._recon[:, :, ind] += step_size * recon_slice_update
-            
-            # Applying Gaussian smoothing if specified
-            if smoothing_sigma is not None:
-                self._recon[:, :, ind] = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)
-            
+        )
+        self._recon += step_size * recon_update
+        
+        # if smoothing_sigma is not None:
+        #     self._recon[:, :, ind] = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)
+        
+        # if smoothing_sigma is not None:
+        #     self._recon = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)   
         if enforce_positivity:
             self._recon = torch.clamp(self._recon, min=0)
             
@@ -209,7 +222,7 @@ class SIRT_Recon:
     @property
     def recon(self) -> NDArray:
         """Get the reconstructed dataset."""
-        return self._recon.cpu().numpy()
+        return np.transpose(self._recon.cpu().numpy(), axes = (1, 2, 0))
     
     @property
     def loss(self) -> NDArray:

@@ -69,6 +69,9 @@ class DatasetTomo(Dataset3d):
         print(f"Old COM: {old_mean_com:.2f} ± {old_std_com:.2f}")
         print(f"New COM: {new_mean_com:.2f} ± {new_std_com:.2f}")
         
+        print(new_mean_com/new_std_com)
+        print(old_mean_com/old_std_com)
+        
         if overwrite:
             self.array = aligned_tilt_series
         else:
