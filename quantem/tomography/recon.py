@@ -9,6 +9,7 @@ from tqdm.auto import tqdm
 
 from quantem.tomography.dataset_tomo import DatasetTomo
 from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d
+from quantem.core.utils.imaging_utils import cross_correlation_shift
 
 class SIRT_Recon:
     """
@@ -88,6 +89,7 @@ class SIRT_Recon:
             step_size: float = 0.25,
             enforce_positivity: bool = True,
             smoothing_sigma: Optional[float] = None,
+            inline_alignment: bool = False,
         ):
         """
         Performs iterative tomographic reconstruction using the SIRT algorithm.
@@ -120,17 +122,35 @@ class SIRT_Recon:
             det_count = self._num_rows,
         )
         
+        # Instantiate Gaussian kernel
+        if smoothing_sigma is not None:
+            kernel_1d = gaussian_kernel_1d(smoothing_sigma).to(self._device)
+        else:
+            kernel_1d = None
+        
         pbar = tqdm(range(num_iterations), desc="SIRT Iterations")
         
         for a0 in pbar:
-            self._run_epoch(radon, step_size=step_size, enforce_positivity=enforce_positivity, smoothing_sigma=smoothing_sigma)
+            
+            if inline_alignment and a0 >= 2:
+                self._run_epoch(radon, step_size=step_size, enforce_positivity=enforce_positivity, smoothing_sigma=smoothing_sigma, kernel_1d = kernel_1d, inline_alignment=True)
+            else:
+                self._run_epoch(radon, step_size=step_size, enforce_positivity=enforce_positivity, smoothing_sigma=smoothing_sigma, kernel_1d = kernel_1d, inline_alignment=False)
 
             pbar.set_description(
                 f"SIRT Iteration {a0+1}/{num_iterations} - Loss: {self._loss[-1]:.4f}"
             )
         
         
-    def _run_epoch(self, radon: Radon, step_size: float = 0.25, enforce_positivity: bool = True, smoothing_sigma: Optional[float] = None):
+    def _run_epoch(
+        self, 
+        radon: Radon, 
+        step_size: float, 
+        enforce_positivity: bool , 
+        smoothing_sigma: Optional[float],
+        kernel_1d: Optional[torch.Tensor],
+        inline_alignment: bool,
+        ):
         """
         Performs a single epoch of iterative reconstruction for all sinograms.
         Args:
@@ -151,6 +171,7 @@ class SIRT_Recon:
         """
         loss = 0
         
+        
         for ind in range(self._num_sinograms):
             
             proj_forward = radon.forward(self._recon[:, :, ind])
@@ -167,7 +188,6 @@ class SIRT_Recon:
             
             # Applying Gaussian smoothing if specified
             if smoothing_sigma is not None:
-                kernel_1d = gaussian_kernel_1d(smoothing_sigma).to(self._device)
                 self._recon[:, :, ind] = gaussian_filter_2d(self._recon[:, :, ind], smoothing_sigma, kernel_1d)
             
         if enforce_positivity:

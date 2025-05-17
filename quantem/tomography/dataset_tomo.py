@@ -6,6 +6,8 @@ from numpy.typing import NDArray
 from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.utils.validators import ensure_valid_array
 
+from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
+
 class DatasetTomo(Dataset3d):
     
     def __init__(
@@ -54,6 +56,24 @@ class DatasetTomo(Dataset3d):
             signal_units=signal_units,
             _token=cls._token,
         )
+    
+    # --- Rough cross-correlation alignment of raw tilt series ---
+    
+    def align_tilt_series(self, upsample_factor: int = 1, overwrite: bool = False) -> None:
+        # TODO: Should we return the predicted shifts?
+        aligned_tilt_series, shifts = tilt_series_cross_cor_align(self.array, upsample_factor=upsample_factor)
+        
+        old_mean_com, old_std_com = compute_com_tilt_series(self.array)
+        new_mean_com, new_std_com = compute_com_tilt_series(aligned_tilt_series)
+        
+        print(f"Old COM: {old_mean_com:.2f} ± {old_std_com:.2f}")
+        print(f"New COM: {new_mean_com:.2f} ± {new_std_com:.2f}")
+        
+        if overwrite:
+            self.array = aligned_tilt_series
+        else:
+            print("Set overwrite=True to overwrite the original tilt series.")
+        
     
     # --- Properties ---
     @property
