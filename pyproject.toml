@@ -39,6 +39,7 @@ dependencies = [
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
   "pytest>=8.3.5",
+  "torch>=2.7.0",
 ]
 
 [dependency-groups]
