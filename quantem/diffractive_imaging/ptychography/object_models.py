@@ -13,15 +13,15 @@ class ObjectModelBase(ABC):
     """
 
     @abstractmethod
-    def initialize_object(self, positions_px, *args):
+    def initialize_object(self, *args):
         pass
 
     @abstractmethod
-    def forward_object(self, probe_array, row, col, *args):
+    def forward_object(self, *args):
         pass
 
     @abstractmethod
-    def backward_object(self, gradient_array, positions_px, *args):
+    def backward_object(self, *args):
         pass
 
     def return_patch_indices(
@@ -99,6 +99,7 @@ class ComplexSingleSliceObjectModel(ObjectModelBase):
         """ """
 
         bbox = positions_px.max(dim=0).values - positions_px.min(dim=0).values
+        bbox = torch.round(bbox).to(torch.int)
         obj = torch.ones(*bbox, dtype=torch.complex64)
         obj = F.pad(obj, padding_px, value=1.0)
         obj.requires_grad = True
@@ -111,7 +112,7 @@ class ComplexSingleSliceObjectModel(ObjectModelBase):
         row: torch.Tensor,
         col: torch.Tensor,
     ):
-        obj_patches = self.array[row, col]
+        obj_patches = self.dataset.array[row, col]
         exit_waves = obj_patches * probe_array
         return obj_patches, exit_waves
 

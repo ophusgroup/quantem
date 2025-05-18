@@ -39,9 +39,6 @@ class ConvergedProbe:
         vacuum_probe_intensity: Optional[torch.Tensor | NDArray] = None,
         aberration_coefficients: Optional[dict[str, float]] = None,
         device: str = "cpu",
-        focal_spread: float = 0.0,
-        angular_spread: float = 0.0,
-        gaussian_spread: float = 0.0,
         **kwargs,
     ):
         """ """
@@ -53,9 +50,6 @@ class ConvergedProbe:
         self._vacuum_probe_intensity = vacuum_probe_intensity
         self._semiangle_cutoff = semiangle_cutoff
         self._soft_aperture = soft_aperture
-        self._focal_spread = focal_spread
-        self._angular_spread = angular_spread
-        self._gaussian_spread = gaussian_spread
         self._energy = energy
         self._wavelength = electron_wavelength_angstrom(energy)
         self._gpts = gpts
@@ -237,7 +231,7 @@ class ConvergedProbe:
 
         return array
 
-    def build(self) -> torch.Tensor:
+    def build(self) -> "ConvergedProbe":
         """ """
         fourier_array = self.evaluate()
         array = torch.fft.ifft2(fourier_array)
