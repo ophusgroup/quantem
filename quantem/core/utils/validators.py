@@ -2,6 +2,7 @@ from typing import Any, List, Optional, Tuple, Union
 from warnings import warn
 
 import numpy as np
+import torch
 from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
@@ -44,6 +45,11 @@ def ensure_valid_array(
     if isinstance(array, (np.ndarray, cp.ndarray)):
         if dtype is not None:
             validated_array = array.astype(dtype)  # copies the array
+        else:
+            validated_array = array
+    elif isinstance(array, torch.Tensor):
+        if dtype is not None:
+            validated_array = array.to(dtype)  # copies the array
         else:
             validated_array = array
     else:  # default to numpy
