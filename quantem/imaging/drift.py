@@ -31,22 +31,22 @@ class DriftCorrection(AutoSerialize):
 
     This class supports input data as numpy arrays, Dataset2d, or Dataset3d instances,
     with various padding strategies and configurable spline interpolation of scanline
-    trajectories via Bezier knot control.
+    trajectories via Bézier knot control.
 
     Features
     --------
     - Load data from arrays or files
-    - Apply initial scanline resampling using Bezier curves
+    - Apply initial scanline resampling using Bézier curves
     - Align images using translation, affine, or non-rigid optimization
     - Visualize intermediate and final results with optional knot overlays
     - Serialize state with `.save()` and restore with `.load()`
 
     Parameters (via `from_data` or `from_file`)
-    ----------
-    images : list of 2D arrays, Dataset2d, Dataset3d, or file names, or a 3D numpy array.
+    -------------------------------------------
+    images : list of 2D arrays, Dataset2d, Dataset3d, or file names, or a 3D numpy array
         The image stack to correct for drift.
     scan_direction_degrees : list of float
-        The scan direction angle (in degrees) for each image, relative to vertical.
+        The scan direction angle (in degrees) for each image, measured relative to vertical.
     pad_fraction : float, default 0.25
         Fraction of padding to add around each image during interpolation.
     pad_value : str, float, or list of float, default 'median'
@@ -55,31 +55,36 @@ class DriftCorrection(AutoSerialize):
         - A float quantile value (e.g., 0.25)
         - A list of per-image float values
     number_knots : int, default 1
-        Number of knots to use for Bezier interpolation of scanline trajectories.
-        Note that we strongly recommend number_knots = 1, unless you have fast scan direction error.
+        Number of knots to use for Bézier interpolation of scanline trajectories.
+        We strongly recommend using `number_knots = 1` unless the fast scan direction is
+        expected to vary within the image.
 
     Example
     -------
-    We instantiate the DriftCorrection class, run preprocess,
+    Instantiate the DriftCorrection class, run preprocessing and alignment, and save/load results:
 
     >>> drift = DriftCorrection.from_data(
     ...     images=[
-    ...         image0,  # 2D NDArray, or dataset2d, or file name
+    ...         image0,  # 2D numpy array or Dataset2d
     ...         image1,
     ...     ],
     ...     scan_direction_degrees=[0, 90],
+    ... ).preprocess(
     ...     pad_fraction=0.25,
     ...     pad_value='median',
     ...     number_knots=1,
-    ... ).preprocess()
+    ... )
 
     >>> drift.align_affine()
     >>> drift.align_nonrigid()
     >>> drift.plot_merged_images()
-    >>> image_corr =
-    >>> drift.save("drift_result.zip")
+    >>> image_corr = drift.generate_corrected_image()
 
-    >>> drift_reloaded = quantem.io.load('drift_result.zip')
+    >>> drift.save("drift_result.zip")
+    >>> drift_reloaded = quantem.io.load("drift_result.zip")
+
+    >>> image_corr.save("image_corrected.zip")
+    >>> image_corr_reloaded = quantem.io.load("image_corrected.zip")
 
     Notes
     -----
@@ -188,8 +193,10 @@ class DriftCorrection(AutoSerialize):
         pad_value: Union[float, str, List[float]] = "median",
         kde_sigma: float = 0.5,
         number_knots: int = 1,
-        show_images: bool = True,
+        show_merged: bool = False,
+        show_images: bool = False,
         show_knots: bool = True,
+        **kwargs,
     ):
         # Validators
         validated_pad_value = validate_pad_value(pad_value, self._images)
@@ -267,11 +274,17 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        kwargs.pop("title", None)
+        if show_merged:
+            self.plot_merged_images(
+                show_knots=show_knots, title="Merged: initial", **kwargs
+            )
+
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
-                title="Initial images",
-                # title = [f"initial image {i}" for i in range(self.shape[0])]
+                title=[f"Image {i}: initial" for i in range(self.shape[0])],
+                **kwargs,
             )
 
         return self
@@ -281,6 +294,10 @@ class DriftCorrection(AutoSerialize):
         self,
         upsample_factor: int = 8,
         max_shift: int = 32,
+        show_merged: bool = True,
+        show_images: bool = False,
+        show_knots: bool = True,
+        **kwargs,
     ):
         """
         Solve for the translation between all images in DriftCorrection.images_warped
@@ -326,6 +343,19 @@ class DriftCorrection(AutoSerialize):
                 self.knots[a0],
             )
 
+        kwargs.pop("title", None)
+        if show_merged:
+            self.plot_merged_images(
+                show_knots=show_knots, title="Merged: translation", **kwargs
+            )
+
+        if show_images:
+            self.plot_transformed_images(
+                show_knots=show_knots,
+                title=[f"Image {i}: translation" for i in range(self.shape[0])],
+                **kwargs,
+            )
+
         return self
 
     # Affine alignment
@@ -336,8 +366,10 @@ class DriftCorrection(AutoSerialize):
         refine: bool = True,
         upsample_factor: int = 8,
         max_shift: int = 32,
-        show_images: bool = True,
+        show_merged: bool = True,
+        show_images: bool = False,
         show_knots: bool = True,
+        **kwargs,
     ):
         """
         Estimate affine drift from the first 2 images.
@@ -467,12 +499,24 @@ class DriftCorrection(AutoSerialize):
         # Translation alignment
         self.align_translation(
             max_shift=max_shift,
+            show_images=False,
+            show_merged=False,
+            show_knots=False,
         )
+
+        kwargs.pop("title", None)
+        if show_merged:
+            self.plot_merged_images(
+                show_knots=show_knots,
+                title="Merged: affine",
+                **kwargs,
+            )
 
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
-                title="Images after affine transformation",
+                title=[f"Image {i}: affine" for i in range(self.shape[0])],
+                **kwargs,
             )
 
         return self
@@ -486,8 +530,10 @@ class DriftCorrection(AutoSerialize):
         regularization_poly_order: int = 1,
         regularization_max_shift_px: Optional[float] = None,
         solve_individual_rows: bool = True,
-        show_images: bool = True,
+        show_merged: bool = True,
+        show_images: bool = False,
         show_knots: bool = True,
+        **kwargs,
     ):
         """
         Non-rigid drift correction.
@@ -629,9 +675,19 @@ class DriftCorrection(AutoSerialize):
                     self.knots[ind],
                 )
 
+        kwargs.pop("title", None)
+        if show_merged:
+            self.plot_merged_images(
+                show_knots=show_knots,
+                title="Merged: non-rigid",
+                **kwargs,
+            )
+
         if show_images:
             self.plot_transformed_images(
-                show_knots=show_knots, title="Images after non-rigid registration"
+                show_knots=show_knots,
+                title=[f"Image {i}: non-rigid" for i in range(self.shape[0])],
+                **kwargs,
             )
 
         return self
@@ -643,6 +699,7 @@ class DriftCorrection(AutoSerialize):
         fourier_filter: bool = True,
         kde_sigma: float = 0.5,
         show_image: bool = True,
+        **kwargs,
     ):
         """
         Generate the final output image, after drift correction.
@@ -711,7 +768,7 @@ class DriftCorrection(AutoSerialize):
         )
 
         if show_image:
-            fig, ax = image_corr.show()
+            fig, ax = image_corr.show(**kwargs)
 
         return image_corr
 
@@ -736,7 +793,6 @@ class DriftCorrection(AutoSerialize):
         """
         fig, ax = show_2d(
             self.images_warped.array.mean(0),
-            title="Average of transformed images",
             **kwargs,
         )
         if show_knots:
