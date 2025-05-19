@@ -439,6 +439,18 @@ class DriftCorrection(AutoSerialize):
             self.knots[a0][0] += dxy[ind, 0] * u[:, None]
             self.knots[a0][1] += dxy[ind, 1] * u[:, None]
 
+        # Regenerate images
+        for a0 in range(self.shape[0]):
+            self.images_warped.array[a0] = self.interpolator[a0].warp_image(
+                self.images[a0].array,
+                self.knots[a0],
+            )
+
+        # Translation alignment
+        self.align_translation(
+            max_shift=max_shift,
+        )
+
         # Affine drift refinement
         if refine:
             # Potential drift vectors
@@ -530,6 +542,7 @@ class DriftCorrection(AutoSerialize):
         regularization_poly_order: int = 1,
         regularization_max_shift_px: Optional[float] = None,
         solve_individual_rows: bool = True,
+        max_image_shift: float | None = None,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -675,7 +688,11 @@ class DriftCorrection(AutoSerialize):
                     self.knots[ind],
                 )
 
-        kwargs.pop("title", None)
+            # Translation alignment
+            self.align_translation(
+                max_shift=max_image_shift,
+            )
+
         if show_merged:
             self.plot_merged_images(
                 show_knots=show_knots,
