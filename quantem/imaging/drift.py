@@ -293,7 +293,7 @@ class DriftCorrection(AutoSerialize):
     def align_translation(
         self,
         upsample_factor: int = 8,
-        max_shift: int = 32,
+        max_image_shift: int = 32,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -319,7 +319,7 @@ class DriftCorrection(AutoSerialize):
                 F_ref,
                 np.fft.fft2(self.images_warped.array[ind]),
                 upsample_factor=upsample_factor,
-                max_shift=max_shift,
+                max_shift=max_image_shift,
                 fft_input=True,
                 fft_output=True,
                 return_shifted_image=True,
@@ -365,7 +365,7 @@ class DriftCorrection(AutoSerialize):
         num_tests: int = 9,
         refine: bool = True,
         upsample_factor: int = 8,
-        max_shift: int = 32,
+        max_image_shift: float | None = 32,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -428,7 +428,7 @@ class DriftCorrection(AutoSerialize):
                 fft_input=False,
                 fft_output=False,
                 return_shifted_image=True,
-                max_shift=max_shift,
+                max_shift=max_image_shift,
             )
             cost[a0] = np.mean(np.abs(im0 - image_shift))
 
@@ -448,7 +448,10 @@ class DriftCorrection(AutoSerialize):
 
         # Translation alignment
         self.align_translation(
-            max_shift=max_shift,
+            max_image_shift=max_image_shift,
+            show_images=False,
+            show_merged=False,
+            show_knots=False,
         )
 
         # Affine drift refinement
@@ -487,7 +490,7 @@ class DriftCorrection(AutoSerialize):
                     fft_input=False,
                     fft_output=False,
                     return_shifted_image=True,
-                    max_shift=max_shift,
+                    max_shift=max_image_shift,
                 )
                 cost[a0] = np.mean(np.abs(im0 - image_shift))
 
@@ -510,7 +513,7 @@ class DriftCorrection(AutoSerialize):
 
         # Translation alignment
         self.align_translation(
-            max_shift=max_shift,
+            max_image_shift=max_image_shift,
             show_images=False,
             show_merged=False,
             show_knots=False,
@@ -540,9 +543,9 @@ class DriftCorrection(AutoSerialize):
         max_optimize_iterations: int = 10,
         regularization_sigma_px=1.0,
         regularization_poly_order: int = 1,
-        regularization_max_shift_px: Optional[float] = None,
+        regularization_max_image_shift_px: Optional[float] = None,
         solve_individual_rows: bool = True,
-        max_image_shift: float | None = None,
+        max_image_shift: float | None = 32,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -640,20 +643,20 @@ class DriftCorrection(AutoSerialize):
                     knots_updated = result.x.reshape(shape_knots)
 
                 # apply max shift regularization if needed
-                if regularization_max_shift_px is not None:
+                if regularization_max_image_shift_px is not None:
                     knots_shift = knots_updated - self.knots[ind]
                     knots_dist = np.sqrt(np.sum(knots_shift**2, axis=0))
-                    sub = knots_dist > regularization_max_shift_px
+                    sub = knots_dist > regularization_max_image_shift_px
                     knots_updated[0][sub] = (
                         self.knots[ind][0][sub]
                         + knots_shift[0][sub]
-                        * regularization_max_shift_px
+                        * regularization_max_image_shift_px
                         / knots_dist[sub]
                     )
                     knots_updated[1][sub] = (
                         self.knots[ind][1][sub]
                         + knots_shift[1][sub]
-                        * regularization_max_shift_px
+                        * regularization_max_image_shift_px
                         / knots_dist[sub]
                     )
 
@@ -690,7 +693,10 @@ class DriftCorrection(AutoSerialize):
 
             # Translation alignment
             self.align_translation(
-                max_shift=max_image_shift,
+                max_image_shift=max_image_shift,
+                show_images=False,
+                show_merged=False,
+                show_knots=False,
             )
 
         if show_merged:
