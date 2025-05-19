@@ -6,7 +6,7 @@ from tqdm import trange
 
 from quantem.core import config
 from quantem.core.datastructures import Dataset4dstem
-from quantem.diffractive_imaging.ptycho_utils import generate_batches
+from quantem.core.utils.utils import generate_batches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
 

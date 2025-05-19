@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Generator, Literal, Union, overload
+from typing import TYPE_CHECKING, Literal, Union, overload
 
 import numpy as np
 from scipy.optimize import curve_fit
@@ -21,60 +21,60 @@ else:
 # TODO: figure out what here should be put into ptycho base vs kept in a utilities file
 
 
-def subdivide_into_batches(
-    num_items: int, num_batches: int | None = None, max_batch: int | None = None
-):
-    """
-    Split an n integer into m (almost) equal integers, such that the sum of smaller integers equals n.
+# def subdivide_into_batches(
+#     num_items: int, num_batches: int | None = None, max_batch: int | None = None
+# ):
+#     """
+#     Split an n integer into m (almost) equal integers, such that the sum of smaller integers equals n.
 
-    Parameters
-    ----------
-    n: int
-        The integer to split.
-    m: int
-        The number integers n will be split into.
+#     Parameters
+#     ----------
+#     n: int
+#         The integer to split.
+#     m: int
+#         The number integers n will be split into.
 
-    Returns
-    -------
-    list of int
-    """
-    if (num_batches is not None) & (max_batch is not None):
-        raise RuntimeError("num_batches and max_batch may not both be provided")
+#     Returns
+#     -------
+#     list of int
+#     """
+#     if (num_batches is not None) & (max_batch is not None):
+#         raise RuntimeError("num_batches and max_batch may not both be provided")
 
-    if num_batches is None:
-        if max_batch is not None:
-            num_batches = (num_items + (-num_items % max_batch)) // max_batch
-        else:
-            raise RuntimeError("max_batch must be provided if num_batches is not provided")
+#     if num_batches is None:
+#         if max_batch is not None:
+#             num_batches = (num_items + (-num_items % max_batch)) // max_batch
+#         else:
+#             raise RuntimeError("max_batch must be provided if num_batches is not provided")
 
-    if num_items < num_batches:
-        raise RuntimeError("num_batches may not be larger than num_items")
+#     if num_items < num_batches:
+#         raise RuntimeError("num_batches may not be larger than num_items")
 
-    elif num_items % num_batches == 0:
-        return [num_items // num_batches] * num_batches
-    else:
-        v = []
-        zp = num_batches - (num_items % num_batches)
-        pp = num_items // num_batches
-        for i in range(num_batches):
-            if i >= zp:
-                v = [pp + 1] + v
-            else:
-                v = [pp] + v
-        return v
+#     elif num_items % num_batches == 0:
+#         return [num_items // num_batches] * num_batches
+#     else:
+#         v = []
+#         zp = num_batches - (num_items % num_batches)
+#         pp = num_items // num_batches
+#         for i in range(num_batches):
+#             if i >= zp:
+#                 v = [pp + 1] + v
+#             else:
+#                 v = [pp] + v
+#         return v
 
 
-def generate_batches(
-    num_items: int,
-    num_batches: int | None = None,
-    max_batch: int | None = None,
-    start=0,
-) -> Generator[tuple[int, int], Any, None]:
-    for batch in subdivide_into_batches(num_items, num_batches, max_batch):
-        end = start + batch
-        yield start, end
+# def generate_batches(
+#     num_items: int,
+#     num_batches: int | None = None,
+#     max_batch: int | None = None,
+#     start=0,
+# ) -> Generator[tuple[int, int], Any, None]:
+#     for batch in subdivide_into_batches(num_items, num_batches, max_batch):
+#         end = start + batch
+#         yield start, end
 
-        start = end
+#         start = end
 
 
 @overload

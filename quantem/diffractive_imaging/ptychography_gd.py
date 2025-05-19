@@ -4,15 +4,14 @@ import numpy as np
 from tqdm import tqdm
 
 from quantem.core.utils import array_funcs as arr
-from quantem.diffractive_imaging.ptycho_utils import (
-    generate_batches,
-    sum_patches,
-)
+from quantem.core.utils.utils import generate_batches
+from quantem.diffractive_imaging.ptycho_utils import sum_patches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
+from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
 
-class PtychographyGD(PtychographyConstraints, PtychographyBase):
+class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, PtychographyBase):
     def reconstruct(
         self,
         num_iter: int = 0,

@@ -10,7 +10,12 @@ import quantem.core.utils.array_funcs as arr
 from quantem.core import config
 from quantem.core.datastructures import Dataset, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import electron_wavelength_angstrom, to_numpy, tqdmnd
+from quantem.core.utils.utils import (
+    electron_wavelength_angstrom,
+    generate_batches,
+    to_numpy,
+    tqdmnd,
+)
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
@@ -30,7 +35,6 @@ from quantem.diffractive_imaging.ptycho_utils import (
     center_crop_arr,
     fit_origin,
     fourier_shift,
-    generate_batches,
     get_shifted_array,
     sum_patches,
 )
