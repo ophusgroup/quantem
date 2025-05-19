@@ -148,6 +148,7 @@ def _show_2d_combined(
     cbar: bool = False,
     figax: Optional[Tuple[Any, Any]] = None,
     figsize: Tuple[int, int] = (8, 8),
+    title: Optional[str] = None,
 ) -> Tuple[Any, Any]:
     """Display multiple 2D arrays as a single combined image.
 
@@ -218,7 +219,7 @@ def _show_2d_combined(
         fig, ax = figax
 
     ax.imshow(rgba)
-    ax.set(xticks=[], yticks=[])
+    ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:
         raise NotImplementedError()
@@ -264,6 +265,79 @@ def _normalize_show_input_to_grid(
         return [[cast(NDArray, arr) for arr in arrays]]
     # Convert outer and inner sequences to lists, ensuring proper types
     return [[cast(NDArray, arr) for arr in row] for row in arrays]
+
+
+def _normalize_show_args_to_grid(
+    args: Any,
+    shape: Tuple[int, int],
+) -> List[List[str | bool | float | None]]:
+    """Normalize the arguments for visualization to a grid format.
+
+    This helper function ensures that the arguments passed to the visualization
+    functions are in a consistent grid format.
+
+    Parameters
+    ----------
+    args : Any
+        The arguments to normalize. Can be a single value, a list of values,
+        or a list of lists of values.
+    shape : tuple of int, default=(1, 1)
+        The desired grid shape (nrows, ncols).
+
+    Returns
+    -------
+    list of lists of (str | bool)
+        Normalized grid format where each inner list represents a row of arguments.
+
+    Raises
+    ------
+    ValueError
+        If args cannot be broadcast to the given shape.
+    """
+    nrows, ncols = shape
+
+    if not args:
+        return [[None for _ in range(ncols)] for _ in range(nrows)]
+
+    if isinstance(args, (str, bool, float, int)):
+        return [[args for _ in range(ncols)] for _ in range(nrows)]
+
+    if isinstance(args, (list, tuple)) and not isinstance(args[0], (list, tuple)):
+        # 1D sequence
+        args_list = list(args)
+        if len(args_list) == ncols and nrows == 1:
+            return [[cast(str | bool | float, arg) for arg in args_list]]
+        elif len(args_list) == nrows and ncols == 1:
+            return [[cast(str | bool | float, arg)] for arg in args_list]
+        elif len(args_list) == 1:
+            return [
+                [cast(str | bool | float, args_list[0]) for _ in range(ncols)]
+                for _ in range(nrows)
+            ]
+        elif len(args_list) == ncols and nrows > 1:
+            return [[cast(str | bool | float, arg) for arg in args_list] for _ in range(nrows)]
+        elif len(args_list) == nrows and ncols > 1:
+            return [[cast(str | bool | float, arg)] * ncols for arg in args_list]
+        else:
+            raise ValueError(
+                f"Cannot broadcast 1D args of length {len(args_list)} to shape {shape}"
+            )
+
+    # 2D sequence
+    args_grid = [list(row) for row in args]
+    if len(args_grid) == nrows and all(len(row) == ncols for row in args_grid):
+        return [[cast(str | bool | float, arg) for arg in row] for row in args_grid]
+    elif len(args_grid) == 1 and len(args_grid[0]) == 1:
+        return [
+            [cast(str | bool | float, args_grid[0][0]) for _ in range(ncols)] for _ in range(nrows)
+        ]
+    elif len(args_grid) == 1 and len(args_grid[0]) == ncols:
+        return [[cast(str | bool | float, arg) for arg in args_grid[0]] for _ in range(nrows)]
+    elif len(args_grid) == nrows and all(len(row) == 1 for row in args_grid):
+        return [[cast(str | bool | float, row[0]) for _ in range(ncols)] for row in args_grid]
+    else:
+        # hope the user is doing it correctly and it's not a full grid
+        return [[cast(str | bool | float, arg) for arg in row] for row in args_grid]
 
 
 def show_2d(
@@ -316,13 +390,28 @@ def show_2d(
     nrows = len(grid)
     ncols = max(len(row) for row in grid)
 
-    title = kwargs.pop("title", None)
-
     if combine_images:
         if nrows > 1:
             raise ValueError()
-
         return _show_2d_combined(grid[0], figax=figax, **kwargs)
+
+    # Prepare gridded kwargs
+    # I don't see the point of hiding the combine_images and tight_layout args using update_wrapper
+    # rather than just having them as kwargs and using, e.g. kwargs.get("tight_layout", True)
+    # we could then have default args for norm, scalebar, etc. and wouldn't have to do this
+    griddable_kwargs = {
+        "norm": None,
+        "scalebar": None,
+        "cmap": "gray",
+        "chroma_boost": 1.0,
+        "cbar": False,
+        "title": None,
+    }
+    gridded_kwarg_values = {}
+    for k in griddable_kwargs:
+        gridded_kwarg_values[k] = _normalize_show_args_to_grid(
+            kwargs.get(k, griddable_kwargs[k]), (nrows, ncols)
+        )
 
     if figax is not None:
         fig, axs = figax
@@ -340,30 +429,15 @@ def show_2d(
     for i, row in enumerate(grid):
         for j, array in enumerate(row):
             figax = (fig, axs[i][j])
-            if title is None:
-                t = None
-            elif isinstance(title, str):
-                t = title
-            elif isinstance(title[0], str):
-                # Flat list of titles
-                t = title[i * ncols + j] if i * ncols + j < len(title) else None
-            else:
-                # Grid of titles
-                t = title[i][j] if i < len(title) and j < len(title[i]) else None
-
+            # Prepare kwargs for this subplot
+            subplot_kwargs = kwargs.copy()
+            for k in griddable_kwargs:
+                subplot_kwargs[k] = gridded_kwarg_values[k][i][j]
             _show_2d(
                 array,
                 figax=figax,
-                title=t,
-                **kwargs,
+                **subplot_kwargs,
             )
-
-            # figax = (fig, axs[i][j])
-            # _show_2d(
-            #     array,
-            #     figax=figax,
-            #     **kwargs,
-            # )
 
     # Hide unused axes in incomplete rows
     for i, row in enumerate(grid):
