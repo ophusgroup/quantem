@@ -1,97 +1,10 @@
-from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Self, Tuple
 
 import torch
 
 from quantem.core.datastructures import Dataset2d
+from quantem.core.io.serialize import AutoSerialize
 from quantem.diffractive_imaging.converged_probe import ConvergedProbe
-
-
-class ProbeModelBase(ABC):
-    """
-    Base class for all ProbeModels to inherit from.
-    """
-
-    @abstractmethod
-    def initialize_probe(self, *args):
-        pass
-
-    @abstractmethod
-    def forward_probe(self, *args):
-        pass
-
-    @abstractmethod
-    def backward_probe(self, *args):
-        pass
-
-
-class SingleProbeModel(ProbeModelBase):
-    """ """
-
-    def __init__(
-        self,
-        energy: float,
-        gpts: Tuple[int, int],
-        sampling: Tuple[int, int],
-        semiangle_cutoff: float = torch.inf,
-        soft_aperture: bool = True,
-        vacuum_probe_intensity: Optional[torch.Tensor] = None,
-        aberration_coefficients: Optional[dict[str, float]] = None,
-        **kwargs,
-    ):
-        self.dataset = Dataset2d.from_array(
-            self.initialize_probe(
-                energy,
-                gpts,
-                sampling,
-                semiangle_cutoff,
-                soft_aperture,
-                vacuum_probe_intensity,
-                aberration_coefficients,
-                **kwargs,
-            ),
-            name="ptychographic probe",
-            sampling=sampling,
-            units=("A", "A"),
-        )
-
-    def initialize_probe(
-        self,
-        energy: float,
-        gpts: Tuple[int, int],
-        sampling: Tuple[int, int],
-        semiangle_cutoff: float = torch.inf,
-        soft_aperture: bool = True,
-        vacuum_probe_intensity: Optional[torch.Tensor] = None,
-        aberration_coefficients: Optional[dict[str, float]] = None,
-        **kwargs,
-    ):
-        probe = ConvergedProbe(
-            energy,
-            gpts,
-            sampling,
-            semiangle_cutoff,
-            soft_aperture,
-            vacuum_probe_intensity,
-            aberration_coefficients,
-            **kwargs,
-        ).build()
-
-        return probe._array
-
-    def forward_probe(
-        self,
-        fractional_positions_px: torch.Tensor,
-    ):
-        shifted_probes = fourier_shift(
-            self.dataset.array,
-            fractional_positions_px,
-        )
-
-        return shifted_probes
-
-    def backward_probe(self):
-        pass
 
 
 def fourier_translation_operator(
@@ -121,3 +34,126 @@ def fourier_shift(array: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
     shifted_fourier_array = fourier_array * phase
 
     return torch.fft.ifft2(shifted_fourier_array)
+
+
+class ProbeModelBase(AutoSerialize):
+    """
+    Base class for all ProbeModels to inherit from.
+    """
+
+    def initialize(self, *args):
+        raise NotImplementedError
+
+    def forward(self, *args):
+        raise NotImplementedError
+
+    def backward(self, *args):
+        raise NotImplementedError
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self.dataset.array
+
+
+class SingleProbeModel(ProbeModelBase):
+    """ """
+
+    _token = object()
+
+    def __init__(
+        self,
+        probe_dataset: Dataset2d,
+        _token: object | None = None,
+    ):
+        if _token is not self._token:
+            raise RuntimeError(
+                "Use SingleProbeModel.from_array() or SingleProbeModel.from_aberration_coefficients() to instantiate this class."
+            )
+
+        self.dataset = probe_dataset
+
+    @classmethod
+    def from_array(
+        cls,
+        array: torch.Tensor,
+        mean_diffraction_intensity: float,
+        sampling: Tuple[int, int],
+    ) -> Self:
+        """ """
+
+        probe_array = torch.as_tensor(array).to(torch.cfloat)
+        probe_intensity = torch.sum(
+            torch.square(torch.abs(torch.fft.fft2(probe_array)))
+        )
+        normalized_probe = probe_array * torch.sqrt(
+            mean_diffraction_intensity / probe_intensity
+        )
+
+        probe_dataset = Dataset2d.from_array(
+            normalized_probe,
+            name="ptychographic probe",
+            sampling=sampling,
+            units=("A", "A"),
+        )
+
+        return cls(
+            probe_dataset,
+            cls._token,
+        )
+
+    @classmethod
+    def from_aberration_coefficients(
+        cls,
+        energy: float,
+        gpts: Tuple[int, int],
+        sampling: Tuple[int, int],
+        mean_diffraction_intensity: float,
+        semiangle_cutoff: float = torch.inf,
+        soft_aperture: bool = True,
+        vacuum_probe_intensity: Optional[torch.Tensor] = None,
+        aberration_coefficients: Optional[dict[str, float]] = None,
+        **kwargs,
+    ) -> Self:
+        """ """
+        probe = (
+            ConvergedProbe(
+                energy,
+                gpts,
+                sampling,
+                semiangle_cutoff,
+                soft_aperture,
+                vacuum_probe_intensity,
+                aberration_coefficients,
+                **kwargs,
+            )
+            .build()
+            ._array
+        )
+
+        # Normalize probe to match mean diffraction intensity
+        return cls.from_array(probe, mean_diffraction_intensity, sampling)
+
+    def forward(
+        self,
+        fractional_positions_px: torch.Tensor,
+    ):
+        shifted_probes = fourier_shift(
+            self.tensor,
+            fractional_positions_px,
+        )
+
+        return shifted_probes
+
+    def backward(
+        self,
+        gradient_array,
+        object_array,
+    ):
+        if self.tensor.requires_grad:
+            probe_gradient = torch.mean(
+                gradient_array * torch.conj(object_array), dim=0
+            )
+
+            self.tensor.grad = probe_gradient.clone().detach()
+
+            return probe_gradient

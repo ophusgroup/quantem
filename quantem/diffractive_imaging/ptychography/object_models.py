@@ -1,28 +1,78 @@
-from abc import ABC, abstractmethod
-from typing import Optional, Tuple
+from typing import Optional, Self, Tuple
 
 import torch
 import torch.nn.functional as F
 
 from quantem.core.datastructures import Dataset2d
+from quantem.core.io.serialize import AutoSerialize
 
 
-class ObjectModelBase(ABC):
+def sum_overlapping_patches(
+    patches: torch.Tensor,
+    positions_px: torch.Tensor,
+    obj_shape: Tuple[int, int],
+) -> torch.Tensor:
+    """
+    Sums overlapping patches into a global array using scatter_add, supports complex inputs.
+
+    Parameters
+    ----------
+    patches : (N, sx, sy) torch.Tensor (real or complex)
+        Array of N patches to be summed.
+    positions_px : (N, 2) torch.Tensor
+        Integer (x, y) positions for each patch.
+    object_shape : (Hx, Hy)
+        Shape of the full object array.
+
+    Returns
+    -------
+    summed : (Hx, Hy) torch.Tensor
+        Accumulated object array.
+    """
+
+    device = patches.device
+    dtype = patches.dtype
+
+    N, sx, sy = patches.shape
+    Hx, Hy = obj_shape
+
+    x0 = positions_px[:, 0].round().to(torch.long)
+    y0 = positions_px[:, 1].round().to(torch.long)
+
+    dx = torch.fft.fftfreq(sx, d=1 / sx, device=device).to(torch.long)
+    dy = torch.fft.fftfreq(sy, d=1 / sy, device=device).to(torch.long)
+    dx_grid, dy_grid = torch.meshgrid(dx, dy, indexing="ij")
+
+    x_idx = (x0[:, None, None] + dx_grid[None, :, :]) % Hx
+    y_idx = (y0[:, None, None] + dy_grid[None, :, :]) % Hy
+
+    flat_indices = x_idx * Hy + y_idx
+    flat_indices = flat_indices.reshape(-1)
+    flat_weights = patches.reshape(-1)
+
+    summed = torch.zeros(Hx * Hy, dtype=dtype, device=device)
+    summed = summed.scatter_add(0, flat_indices, flat_weights)
+
+    return summed.reshape(Hx, Hy)
+
+
+class ObjectModelBase(AutoSerialize):
     """
     Base class for all ObjectModels to inherit from.
     """
 
-    @abstractmethod
-    def initialize_object(self, *args):
-        pass
+    def initialize(self, *args):
+        raise NotImplementedError()
 
-    @abstractmethod
-    def forward_object(self, *args):
-        pass
+    def forward(self, *args):
+        raise NotImplementedError()
 
-    @abstractmethod
-    def backward_object(self, *args):
-        pass
+    def backward(self, *args):
+        raise NotImplementedError()
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self.dataset.array
 
     def return_patch_indices(
         self,
@@ -78,43 +128,78 @@ class ObjectModelBase(ABC):
 class ComplexSingleSliceObjectModel(ObjectModelBase):
     """ """
 
+    _token = object()
+
     def __init__(
         self,
-        positions_px: torch.Tensor,
-        padding_px: Tuple[int, int, int, int],
-        sampling: Tuple[int, int],
+        obj_dataset: Dataset2d,
+        _token: object | None = None,
     ):
-        """ """
+        if _token is not self._token:
+            raise RuntimeError(
+                "Use ComplexSingleSliceObjectModel.from_array() or ComplexSingleSliceObjectModel.from_positions() to instantiate this class."
+            )
 
-        self.dataset = Dataset2d.from_array(
-            self.initialize_object(positions_px, padding_px),
+        self.dataset = obj_dataset
+        self.obj_shape = self.dataset.shape
+
+    @classmethod
+    def from_array(
+        cls,
+        array: torch.Tensor,
+        sampling: Tuple[int, int],
+    ) -> Self:
+        obj_dataset = Dataset2d.from_array(
+            torch.as_tensor(array).to(torch.cfloat),
             name="ptychographic object",
             sampling=sampling,
             units=("A", "A"),
         )
 
-    def initialize_object(
-        self, positions_px: torch.Tensor, padding_px: Tuple[int, int, int, int]
-    ):
+        return cls(
+            obj_dataset,
+            cls._token,
+        )
+
+    @classmethod
+    def from_positions(
+        cls,
+        positions_px: torch.Tensor,
+        padding_px: Tuple[int, int, int, int],
+        sampling: Tuple[int, int],
+    ) -> Self:
         """ """
 
         bbox = positions_px.max(dim=0).values - positions_px.min(dim=0).values
         bbox = torch.round(bbox).to(torch.int)
-        obj = torch.ones(*bbox, dtype=torch.complex64)
+        obj = torch.ones(*bbox, dtype=torch.cfloat)
         obj = F.pad(obj, padding_px, value=1.0)
-        obj.requires_grad = True
 
-        return obj
+        return cls.from_array(
+            obj,
+            sampling,
+        )
 
-    def forward_object(
+    def forward(
         self,
         probe_array: torch.Tensor,
         row: torch.Tensor,
         col: torch.Tensor,
     ):
-        obj_patches = self.dataset.array[row, col]
+        obj_patches = self.tensor[row, col]
         exit_waves = obj_patches * probe_array
         return obj_patches, exit_waves
 
-    def backward_object(self, gradient_array, positions_px, *args):
-        pass
+    def backward(self, gradient_array, probe_array, positions_px):
+        if self.tensor.requires_grad:
+            obj_gradient = sum_overlapping_patches(
+                gradient_array * torch.conj(probe_array), positions_px, self.obj_shape
+            )
+
+            self.tensor.grad = obj_gradient.clone().detach()
+
+            return obj_gradient
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self.dataset.array
