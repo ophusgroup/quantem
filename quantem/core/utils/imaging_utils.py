@@ -340,7 +340,7 @@ def fourier_cropping(
         Cropped array containing only the lowest frequencies, still corner-centered.
     """
 
-    H, W = corner_centered_array.shape
+    *rest, H, W = corner_centered_array.shape
     crop_h, crop_w = crop_shape
 
     h1 = crop_h // 2
@@ -348,15 +348,15 @@ def fourier_cropping(
     w1 = crop_w // 2
     w2 = crop_w - w1
 
-    result = np.zeros(crop_shape, dtype=corner_centered_array.dtype)
+    result = np.zeros(rest + [crop_h, crop_w], dtype=corner_centered_array.dtype)
 
     # Top-left
-    result[:h1, :w1] = corner_centered_array[:h1, :w1]
+    result[..., :h1, :w1] = corner_centered_array[..., :h1, :w1]
     # Top-right
-    result[:h1, -w2:] = corner_centered_array[:h1, -w2:]
+    result[..., :h1, -w2:] = corner_centered_array[..., :h1, -w2:]
     # Bottom-left
-    result[-h2:, :w1] = corner_centered_array[-h2:, :w1]
+    result[..., -h2:, :w1] = corner_centered_array[..., -h2:, :w1]
     # Bottom-right
-    result[-h2:, -w2:] = corner_centered_array[-h2:, -w2:]
+    result[..., -h2:, -w2:] = corner_centered_array[..., -h2:, -w2:]
 
     return result
