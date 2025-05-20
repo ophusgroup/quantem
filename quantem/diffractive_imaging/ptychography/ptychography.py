@@ -166,3 +166,5 @@ class PtychographicReconstruction:
 
             if not math.isfinite(total_loss):
                 break
+
+        return self
