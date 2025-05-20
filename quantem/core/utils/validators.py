@@ -402,7 +402,7 @@ def canonical_dtype_str(dtype):
 def validate_array(
     value: "np.ndarray | cp.ndarray | torch.Tensor",
     name: str,
-    dtype: DTypeLike | None = None,
+    dtype: "DTypeLike | torch.dtype | str | None" = None,
     ndim: int | None = None,
     shape: np.ndarray | tuple | None = None,
     expand_dims: bool = False,

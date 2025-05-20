@@ -1,14 +1,21 @@
-from typing import Literal, Self
+from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
 from tqdm import tqdm
 
+from quantem.core import config
 from quantem.core.utils import array_funcs as arr
 from quantem.core.utils.utils import generate_batches
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
+
+if TYPE_CHECKING:
+    import torch
+else:
+    if config.get("has_torch"):
+        import torch
 
 
 class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, PtychographyBase):
@@ -40,7 +47,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         for a0 in tqdm(range(num_iter), disable=not self.verbose):
             error = np.float32(0)
-            np.random.shuffle(shuffled_indices)
+            self.rng.shuffle(shuffled_indices)
             # TODO add get patches here if updating probe positions
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
@@ -92,15 +99,6 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
                 continue
             self._epoch_lrs[key].append(0.0)
 
-    def _move_recon_arrays_to_device(self):
-        self._obj = self._to_xp(self._obj)
-        self._probe = self._to_xp(self._probe)
-        self._patch_indices = self._to_xp(self._patch_indices)
-        self._shifted_amplitudes = self._to_xp(self._shifted_amplitudes)
-        self.positions_px = self._to_xp(self._positions_px)
-        self._fov_mask = self._to_xp(self._obj_fov_mask)
-        self._propagators = self._to_xp(self._propagators)
-
     # endregion
 
     # region --- adjoint ---
@@ -141,7 +139,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
             )
         else:  # necessary for mixed state
             farfield_amplitudes = self.estimate_amplitudes(overlap_array)
-            farfield_amplitudes[farfield_amplitudes == 0] = np.inf
+            farfield_amplitudes[farfield_amplitudes == 0] = torch.inf
             amplitude_modification = measured_amplitudes / farfield_amplitudes
             fourier_modified_overlap = amplitude_modification * fourier_overlap
 
@@ -170,28 +168,28 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
         for s in reversed(range(self.num_slices)):
             probe_slice = shifted_probes[s]
             obj_slice = obj_patches[s]
-            probe_normalization = arr.match_device(np.zeros_like(obj_array[s]), probe_slice)
-            obj_update = arr.match_device(np.zeros_like(obj_array[s]), obj_slice)
+            probe_normalization = torch.zeros_like(obj_array[s])
+            obj_update = torch.zeros_like(obj_array[s])
 
             for a0 in range(self.num_probes):
                 probe = probe_slice[a0]
                 obj = obj_slice
                 grad = gradient[a0]
                 probe_normalization += sum_patches(
-                    np.abs(probe) ** 2,
+                    torch.abs(probe) ** 2,
                     patch_indices,
                     obj_shape,
                 ).max()
 
                 if self.obj_type == "potential":
                     obj_update += step_size * sum_patches(
-                        np.real(-1j * np.conj(obj) * np.conj(probe) * grad),
+                        torch.real(-1j * torch.conj(obj) * torch.conj(probe) * grad),
                         patch_indices,
                         obj_shape,
                     )
                 else:
                     obj_update += step_size * sum_patches(
-                        np.conj(probe) * grad,
+                        torch.conj(probe) * grad,
                         patch_indices,
                         obj_shape,
                     )
@@ -199,15 +197,15 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
             obj_array[s] += obj_update / probe_normalization
 
             # back-transmit
-            gradient *= np.conj(obj_slice)
+            gradient *= torch.conj(obj_slice)
 
             if s > 0:
                 # back-propagate
-                gradient = self._propagate_array(gradient, np.conj(self._propagators[s - 1]))
+                gradient = self._propagate_array(gradient, torch.conj(self._propagators[s - 1]))
             elif not fix_probe:
-                obj_normalization = np.sum(np.abs(obj_slice) ** 2, axis=(0)).max()
+                obj_normalization = torch.sum(torch.abs(obj_slice) ** 2, dim=0).max()
                 probe_array = probe_array + (
-                    step_size * np.sum(gradient, axis=1) / obj_normalization
+                    step_size * torch.sum(gradient, dim=1) / obj_normalization
                 )
         return obj_array, probe_array
 

@@ -149,6 +149,7 @@ class AutoSerialize:
             items = obj.__dict__.items()
 
         torch_tensor_attrs = []
+        torch_scalar_attrs = []
 
         for attr_name, attr_value in items:
             if attr_name in skip_names or isinstance(attr_value, skip_types):
@@ -167,6 +168,12 @@ class AutoSerialize:
                     v for v in attr_value if not self._should_skip(v, skip_names, skip_types)
                 )
                 attr_value = filtered_value
+
+            # Handle torch scalar (0-dim tensor)
+            if config.get("has_torch"):
+                if isinstance(attr_value, torch.Tensor) and attr_value.ndim == 0:
+                    attr_value = attr_value.item()
+                    torch_scalar_attrs.append(attr_name)
 
             # converting cupy and torch tensors to numpy arrays for faster saving
             if config.get("has_cupy"):
@@ -209,6 +216,8 @@ class AutoSerialize:
         # Save torch tensor attribute names as metadata
         if torch_tensor_attrs:
             group.attrs["_torch_tensor_attrs"] = torch_tensor_attrs
+        if torch_scalar_attrs:
+            group.attrs["_torch_scalar_attrs"] = torch_scalar_attrs
 
     @classmethod
     def _recursive_load(
@@ -230,6 +239,8 @@ class AutoSerialize:
                 setattr(obj, f.name, None)
 
         # 1) scalar attrs
+        torch_tensor_attrs = set(group.attrs.get("_torch_tensor_attrs", []))
+        torch_scalar_attrs = set(group.attrs.get("_torch_scalar_attrs", []))
         for attr_name, raw in group.attrs.items():
             if attr_name == "_class_def" or attr_name in skip_names:
                 continue
@@ -240,10 +251,13 @@ class AutoSerialize:
                     val = dill.loads(dec)
                 except Exception:
                     pass
+            # Convert back to torch scalar if needed
+            if attr_name in torch_scalar_attrs:
+                if config.get("has_torch"):
+                    val = torch.tensor(val)
             setattr(obj, attr_name, val)
 
         # 2) array datasets
-        torch_tensor_attrs = set(group.attrs.get("_torch_tensor_attrs", []))
         for ds_name in group.array_keys():
             if ds_name in skip_names:
                 continue

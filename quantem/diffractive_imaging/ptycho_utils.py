@@ -108,16 +108,23 @@ def get_com_2d(ar: ArrayLike, corner_centered: bool = False) -> ArrayLike:
     return com
 
 
-def sum_patches_base(patches: np.ndarray, indices: np.ndarray, obj_shape: tuple) -> np.ndarray:
+def sum_patches_base(
+    patches: torch.Tensor, indices: torch.Tensor, obj_shape: tuple
+) -> torch.Tensor:
     flat_weights = patches.reshape(-1)
     flat_indices = indices.reshape(-1)
-    out = arr.match_device(np.zeros(np.prod(obj_shape), dtype=patches.dtype), patches)
-    np.add.at(out, flat_indices, flat_weights)
+    out = arr.match_device(
+        torch.zeros(
+            int(torch.prod(torch.tensor(obj_shape))), dtype=patches.dtype, device=patches.device
+        ),
+        patches,
+    )
+    out.index_add_(0, flat_indices, flat_weights)
     return out.reshape(obj_shape)
 
 
-def sum_patches(patches: np.ndarray, indices: np.ndarray, obj_shape: tuple) -> np.ndarray:
-    if np.iscomplexobj(patches):
+def sum_patches(patches: torch.Tensor, indices: torch.Tensor, obj_shape: tuple) -> torch.Tensor:
+    if torch.is_complex(patches):
         real = sum_patches_base(patches.real, indices, obj_shape)
         imag = sum_patches_base(patches.imag, indices, obj_shape)
         return real + 1.0j * imag

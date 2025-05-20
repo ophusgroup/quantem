@@ -12,13 +12,10 @@ from quantem.diffractive_imaging.ptychography_constraints import PtychographyCon
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
 if TYPE_CHECKING:
-    import cupy as cp
     import torch
 else:
     if config.get("has_torch"):
         import torch
-    if config.get("has_cupy"):
-        import cupy as cp
 
 
 class PtychographyML(PtychographyConstraints, PtychographyVisualizations, PtychographyBase):
@@ -51,9 +48,6 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         # init required as we're setting up new attributes such as _schedulers
         if _token is not self._token:
             raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
-
-        if not config.get("has_torch"):
-            raise RuntimeError("PtychographyML requires torch to be installed.")
 
         super().__init__(
             dset=dset,
@@ -411,15 +405,6 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
 
     # region --- implicit properties ---
 
-    @property
-    def _dtype_real_torch(self) -> "torch.dtype":
-        # necessary because torch doesn't like passing strings to convert dtypes
-        return getattr(torch, config.get("dtype_real"))
-
-    @property
-    def _dtype_complex_torch(self) -> "torch.dtype":
-        return getattr(torch, config.get("dtype_complex"))
-
     # endregion --- implicit properties ---
 
     # region --- methods ---
@@ -432,7 +417,7 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         for 2D array, only weight_yx is used
 
         """
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
+        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
         if weights is None:
             w = (
                 self.constraints["object"]["tv_weight_z"],
@@ -461,7 +446,7 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         return loss
 
     def _calc_tv_loss(self, array: torch.Tensor, weight: tuple[float, float]) -> torch.Tensor:
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
+        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
         for dim in range(array.ndim):
             if dim == 0 and array.ndim == 3:  # there's surely a cleaner way but whatev
                 w = weight[0]
@@ -477,46 +462,6 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         self._schedulers = {}
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
-    def _to_torch(
-        self, array: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
-    ) -> "torch.Tensor":
-        """
-        dtype can be: "same": same as input array, default
-                      "object": same as object type, real or complex determined by potential/complex
-                      torch.dtype type
-        """
-        if isinstance(dtype, str):
-            dtype = dtype.lower()
-            if dtype == "same":
-                dt = None
-            elif dtype in ["object", "obj"]:
-                if np.iscomplexobj(array):
-                    dt = self._dtype_complex_torch
-                else:
-                    dt = self._dtype_real_torch
-            else:
-                raise ValueError(
-                    f"Unknown string passed {dtype}, dtype should be 'same', 'object' or torch.dtype"
-                )
-        elif isinstance(dtype, torch.dtype):
-            dt = dtype
-        else:
-            raise TypeError(f"dtype should be string or torch.dtype, got {type(dtype)} {dtype}")
-
-        if isinstance(array, np.ndarray):
-            t = torch.tensor(array.copy(), device=self.device, dtype=dt)
-        elif isinstance(array, cp.ndarray):
-            t = torch.tensor(array, device=self.device, dtype=dt)
-        elif isinstance(array, torch.Tensor):
-            t = array.to(self.device)
-            if dt is not None:
-                t = t.type(dt)
-        elif isinstance(array, (list, tuple)):
-            t = torch.tensor(array, device=self.device, dtype=dt)
-        else:
-            raise TypeError(f"arr should be ndarray or Tensor, got {type(array)}")
-        return t
-
     def _record_lrs(self) -> None:
         optimizers = self.optimizers
         all_keys = set(self._epoch_lrs.keys()) | set(optimizers.keys())
@@ -530,15 +475,6 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
                 prev_lrs = [0.0] * (self.num_epochs - 1)
                 prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
                 self._epoch_lrs[key] = prev_lrs
-
-    def _move_recon_arrays_to_device(self):
-        self._obj = self._to_torch(self._obj)
-        self._probe = self._to_torch(self._probe)
-        self._patch_indices = self._to_torch(self._patch_indices)
-        self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
-        self.positions_px = self._to_torch(self._positions_px)
-        self._fov_mask = self._to_torch(self._obj_fov_mask)
-        self._propagators = self._to_torch(self._propagators)
 
     # endregion --- methods ---
 
@@ -614,8 +550,8 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         # TODO add pbar with loss printout
         for a0 in trange(num_iter, disable=not self.verbose):
-            np.random.shuffle(shuffled_indices)
-            loss = torch.tensor(0, device=self.device, dtype=self._dtype_real_torch)
+            self.rng.shuffle(shuffled_indices)
+            loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
 
             if self.mode == "pixelwise":
                 pred_obj = self._obj

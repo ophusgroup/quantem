@@ -41,21 +41,18 @@ from quantem.diffractive_imaging.ptycho_utils import (
 )
 
 if TYPE_CHECKING:
-    import cupy as cp
     import torch
 else:
-    if config.get("has_cupy"):
-        import cupy as cp
     if config.get("has_torch"):
         import torch
 
 """
 design patterns:
     - all outward facing properties ptycho.blah will give numpy arrays
-        - hidden attributes, ptycho._blah can be numpy/cupy/torch depending on GD/ML and device
+        - hidden attributes, ptycho._blah will be torch, living on cpu/gpu depending on config
     - objects are always 3D, if doing a singleslice recon, the shape is just [1, :, :]
     - likewise probes are always stacks for mixed state, if single probe, then shape is [1, :, :]
-    - all preprocessing will be done with numpy/cupy arrays 
+    - all preprocessing will be done with torch tensors 
 """
 
 
@@ -83,13 +80,16 @@ class PtychographyBase(AutoSerialize):
         probe_params: dict | None = None,
         probe: np.ndarray | None = None,
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-        device: Literal["cpu", "gpu"] = "cpu",
+        device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
         _token: None | object = None,
     ):
         if _token is not self._token:
             raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+
+        if not config.get("has_torch"):
+            raise RuntimeError("the quantEM Ptychography module requires torch to be installed.")
 
         self.verbose = verbose
         self.dset = dset
@@ -99,6 +99,8 @@ class PtychographyBase(AutoSerialize):
 
         # initializing default attributes
         self._probe_params = self.DEFAULT_PROBE_PARAMS
+        if probe is not None:
+            self.initial_probe = probe
         self._preprocessed: bool = False
         self._obj_padding_force_power2_level: int = 0
         self._store_iterations: bool = False
@@ -110,7 +112,6 @@ class PtychographyBase(AutoSerialize):
 
         if probe_params is not None:
             self.probe_params = probe_params
-        self._initial_probe = probe
         # would like to run set_initial_probe here, but then need to have defined
         # num_slices, which I feel like is better for pre-processing. hm.
 
@@ -122,7 +123,7 @@ class PtychographyBase(AutoSerialize):
         probe: np.ndarray | None = None,
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         verbose: int | bool = True,
-        device: Literal["cpu", "gpu"] = "cpu",
+        device: str = "cpu",  # "gpu" | "cpu" | "cuda:X"
         rng: np.random.Generator | int | None = None,
     ) -> Self:
         """
@@ -208,14 +209,21 @@ class PtychographyBase(AutoSerialize):
             self._padded_diffraction_shape = self.roi_shape
 
         ## Probe stuff
-        self.set_initial_probe(self.probe_params, self._initial_probe, self.vacuum_probe_intensity)
+        # TODO improve this, issue is that we need to set num_probes before running
+        # set_initial_probe, but we also need the initial probe passed to _init_ or the already
+        # set initial_probe if preprocess is being run again
+        if hasattr(self, "_initial_probe"):
+            init_probe = self.initial_probe
+        else:
+            init_probe = None
+        self.set_initial_probe(self.probe_params, init_probe, self.vacuum_probe_intensity)
         self.obj_padding_px = obj_padding_px
         self._calculate_scan_positions_in_pixels(obj_padding_px=self.obj_padding_px)
         self._set_patch_indices()
         self._compute_propagator_arrays()
         self._set_obj_fov_mask()
 
-        self.obj = np.ones(self.obj_shape_full, dtype=self._obj_dtype)
+        self.obj = torch.ones(tuple(self.obj_shape_full), dtype=self._obj_dtype)
 
         self._preprocessed = True
         self.reset_recon()  # force clear losses and everything
@@ -247,15 +255,8 @@ class PtychographyBase(AutoSerialize):
                 # currently don't really support this, would need to store the initial complex
                 # probe because gets re-set during preprocess if padding diffraction shape
                 probes = probe.build()._array
-            if config.get("has_cupy"):
-                if isinstance(probe, cp.ndarray):
-                    probes = probe
-            if isinstance(probe, np.ndarray):
-                probes = probe
             else:
-                raise NotImplementedError(
-                    f"setting probe currently supports np.ndarray or ComplexProbe, got {type(probe)}"
-                )
+                probes = self._to_numpy(probe)
         else:
             raise ValueError(
                 "must provide either probe_params or probe in the form of a numpy array or ComplexProbe"
@@ -945,40 +946,43 @@ class PtychographyBase(AutoSerialize):
         """
 
         if self.num_slices == 1:
-            self.propagators = np.array([])
+            self.propagators = torch.tensor([])
             return
 
-        kr, kc = tuple(np.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
+        kr, kc = tuple(torch.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
         wavelength = electron_wavelength_angstrom(self.probe_params["energy"])
-        propagators = np.empty((self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=np.complex64)
+        propagators = torch.empty(
+            (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=torch.complex64
+        )
 
+        # TODO vectorize -- allow for optimizing over tilts
         for i, dz in enumerate(self.slice_thicknesses):
-            propagators[i] = np.exp(1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz))
-            propagators[i] *= np.exp(1.0j * (-(kc**2)[None] * np.pi * wavelength * dz))
+            propagators[i] = torch.exp(1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz))
+            propagators[i] *= torch.exp(1.0j * (-(kc**2)[None] * np.pi * wavelength * dz))
 
             if theta_r is not None:
-                propagators[i] *= np.exp(
+                propagators[i] *= torch.exp(
                     1.0j * (-2 * kr[:, None] * np.pi * dz * np.tan(theta_r / 1e3))
                 )
 
             if theta_c is not None:
-                propagators[i] *= np.exp(
+                propagators[i] *= torch.exp(
                     1.0j * (-2 * kc[None] * np.pi * dz * np.tan(theta_c / 1e3))
                 )
 
         self.propagators = propagators
         return
 
-    def _set_patch_indices(self):
-        r0 = np.round(self.positions_px[:, 0]).astype(np.int32)  # can fix here
-        c0 = np.round(self.positions_px[:, 1]).astype(np.int32)
+    def _set_patch_indices(self):  # TODO here
+        r0 = torch.round(self._positions_px[:, 0]).type(torch.int32)
+        c0 = torch.round(self._positions_px[:, 1]).type(torch.int32)
 
-        x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(np.int32)
-        y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(np.int32)
+        x_ind = torch.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).to(self.device)
+        y_ind = torch.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).to(self.device)
         row = (r0[:, None, None] + x_ind[None, :, None]) % self.obj_shape_full[-2]
         col = (c0[:, None, None] + y_ind[None, None, :]) % self.obj_shape_full[-1]
 
-        self._patch_indices = (row * self.obj_shape_full[-1] + col).astype(np.intp)
+        self._patch_indices = (row * self.obj_shape_full[-1] + col).type(torch.int32)
 
     def _set_obj_fov_mask(self, gaussian_sigma: float = 2.0, batch_size=None):
         overlap = self._get_probe_overlap(batch_size)
@@ -990,19 +994,21 @@ class PtychographyBase(AutoSerialize):
         return
 
     def _get_probe_overlap(self, max_batch_size: int | None = None) -> np.ndarray:
-        prb = self._to_numpy(self.probe[0])
+        prb = self._probe[0]
         num_dps = int(np.prod(self.gpts))
-        shifted_probes = np.broadcast_to(prb, (num_dps, *self.roi_shape))
+        shifted_probes = prb.expand(num_dps, *self.roi_shape)
 
         batch_size = num_dps if max_batch_size is None else int(max_batch_size)
-        probe_overlap = np.zeros(self.obj_shape_full[-2:], dtype=config.get("dtype_real"))
+        probe_overlap = torch.zeros(
+            tuple(self.obj_shape_full[-2:]), dtype=self._dtype_real, device=self.device
+        )
         for start, end in generate_batches(num_dps, max_batch=batch_size):
             probe_overlap += sum_patches(
-                np.abs(shifted_probes[start:end]) ** 2,
+                torch.abs(shifted_probes[start:end]) ** 2,
                 self._patch_indices[start:end],
                 tuple(self.obj_shape_full[-2:]),
             )
-        return probe_overlap
+        return self._to_numpy(probe_overlap)
 
     # endregion --- preprocessing ---
 
@@ -1027,14 +1033,14 @@ class PtychographyBase(AutoSerialize):
         return self._to_numpy(self._shifted_amplitudes)
 
     @shifted_amplitudes.setter
-    def shifted_amplitudes(self, arr: "np.ndarray | cp.ndarray | torch.Tensor") -> None:
+    def shifted_amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
         arr = validate_array(
             arr,
             name="shifted_amplitudes",
             dtype=config.get("dtype_real"),
             shape=(np.prod(self.gpts), *self.roi_shape),
         )
-        self._shifted_amplitudes = arr
+        self._shifted_amplitudes = self._to_torch(arr)
 
     @property
     def obj_type(self) -> str:
@@ -1091,7 +1097,7 @@ class PtychographyBase(AutoSerialize):
                 shape=(self.num_slices - 1, *self.roi_shape),
                 expand_dims=False,
             )
-            self._propagators = self._to_xp(prop)
+            self._propagators = self._to_torch(prop)
 
     @property
     def num_probes(self) -> int:
@@ -1101,14 +1107,12 @@ class PtychographyBase(AutoSerialize):
     @num_probes.setter
     def num_probes(self, val: int) -> None:
         new_num = validate_int(validate_gt(val, 0, "num_probes"), "num_probes")
-        self._check_rm_preprocessed(
-            new_num, "_num_probes"
-        )  # TODO make sure this actually requires rerunning preprocess
+        self._check_rm_preprocessed(new_num, "_num_probes")
         self._num_probes = new_num
 
     @property
     def slice_thicknesses(self) -> np.ndarray:
-        return self._slice_thicknesses
+        return self._to_numpy(self._slice_thicknesses)
 
     @slice_thicknesses.setter
     def slice_thicknesses(self, val: float | Sequence | None) -> None:
@@ -1126,7 +1130,7 @@ class PtychographyBase(AutoSerialize):
             if self.num_slices == 1:
                 warn("Single slice reconstruction so not setting slice_thicknesses")
             arr = validate_array(
-                self._to_numpy(val),
+                val,
                 name="slice_thicknesses",
                 dtype=config.get("dtype_real"),
                 ndim=1,
@@ -1134,7 +1138,7 @@ class PtychographyBase(AutoSerialize):
             )
             arr = validate_arr_gt(arr, 0, "slice_thicknesses")
             arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
-            self._slice_thicknesses = arr
+            self._slice_thicknesses = self._to_torch(arr)
 
         if hasattr(self, "_propagators"):  # propagators already set, update with new slices
             self._compute_propagator_arrays()
@@ -1159,18 +1163,18 @@ class PtychographyBase(AutoSerialize):
     @property
     def com_rotation_rad(self) -> float:
         "Best fit rotation of the dc"
-        return self._com_rotation_rad
+        return self._com_rotation_rad.item()
 
     @com_rotation_rad.setter
     def com_rotation_rad(self, rot: float) -> None:
-        self._com_rotation_rad = float(rot)
+        self._com_rotation_rad = torch.tensor(rot, device=self._device, dtype=self._dtype_real)
 
     @property
     def obj(self) -> np.ndarray:
         return self._to_numpy(self._obj)
 
     @obj.setter
-    def obj(self, obj: "np.ndarray | cp.ndarray") -> None:
+    def obj(self, obj: "np.ndarray | torch.Tensor") -> None:
         """Shape [num_slices, height, width]"""
         obj = validate_array(
             obj,
@@ -1180,19 +1184,21 @@ class PtychographyBase(AutoSerialize):
             shape=self.obj_shape_full,
             expand_dims=True,
         )
-        mask = arr.match_device(self._obj_fov_mask, obj)
+        obj = self._to_torch(obj)
+        mask = self._obj_fov_mask
         if self.obj_type in ["complex", "pure_phase"]:
-            masked_obj = arr.abs(obj) * arr.exp(1.0j * arr.angle(obj) * mask)
-            # normalize phase to 0 mean
-            amp = arr.abs(masked_obj)
-            ph = arr.angle(masked_obj)
+            if self.obj_type == "complex":
+                amp = mask * obj.abs()
+            else:
+                amp = obj.abs()
+            ph = obj.angle() * mask
             ph -= ph.mean()
             new_obj = amp * arr.exp(1.0j * ph)
-            self._obj = arr.as_type(new_obj, self._obj_dtype)
+            self._obj = new_obj.type(self._obj_dtype)
         else:
             masked_obj = obj * mask
             masked_obj -= masked_obj.min()
-            self._obj = arr.as_type(masked_obj, self._obj_dtype)
+            self._obj = masked_obj.type(self._obj_dtype)
 
     @property
     def obj_padding_px(self) -> np.ndarray:
@@ -1219,10 +1225,10 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def obj_fov_mask(self) -> np.ndarray:
-        return self._obj_fov_mask
+        return self._to_numpy(self._obj_fov_mask)
 
     @obj_fov_mask.setter
-    def obj_fov_mask(self, mask: "np.ndarray|cp.ndarray|torch.Tensor"):
+    def obj_fov_mask(self, mask: "np.ndarray|torch.Tensor"):
         mask = validate_array(
             mask,
             dtype=config.get("dtype_real"),
@@ -1230,12 +1236,14 @@ class PtychographyBase(AutoSerialize):
             name="obj_fov_mask",
             expand_dims=True,
         )
-        self._obj_fov_mask = mask
+        self._obj_fov_mask = self._to_torch(mask)
 
     @property
     def vacuum_probe_intensity(self) -> np.ndarray | None:
         """corner centered vacuum probe"""
-        return self._vacuum_probe_intensity
+        if self._vacuum_probe_intensity is None:
+            return None
+        return self._to_numpy(self._vacuum_probe_intensity)
 
     @vacuum_probe_intensity.setter
     def vacuum_probe_intensity(self, vp: np.ndarray | Dataset4dstem | None):
@@ -1270,15 +1278,16 @@ class PtychographyBase(AutoSerialize):
             bilinear=True,
         )
 
-        self._vacuum_probe_intensity = vp2
+        self._vacuum_probe_intensity = self._to_torch(vp2)
 
     @property
     def positions_px(self) -> np.ndarray:
         return self._to_numpy(self._positions_px)
 
     @positions_px.setter
-    def positions_px(self, pos: "np.ndarray | cp.ndarray | torch.Tensor"):
+    def positions_px(self, pos: "np.ndarray | torch.Tensor"):
         pos = validate_array(pos, dtype=config.get("dtype_real"), ndim=2, name="positions_px")
+        pos = self._to_torch(pos)
         self._positions_px_fractional = pos - pos.round()
         self._positions_px = pos
 
@@ -1321,7 +1330,7 @@ class PtychographyBase(AutoSerialize):
         return self._to_numpy(self._probe)
 
     @probe.setter
-    def probe(self, prb: "np.ndarray|cp.ndarray|torch.Tensor"):
+    def probe(self, prb: "np.ndarray|torch.Tensor"):
         prb = validate_array(
             prb,
             name="probe",
@@ -1330,7 +1339,7 @@ class PtychographyBase(AutoSerialize):
             shape=(self.num_probes, *self.roi_shape),
             expand_dims=True,
         )
-        self._probe = prb
+        self._probe = self._to_torch(prb)
 
     @property
     def initial_probe(self) -> np.ndarray:
@@ -1340,7 +1349,7 @@ class PtychographyBase(AutoSerialize):
         return self._to_numpy(self._initial_probe)
 
     @initial_probe.setter
-    def initial_probe(self, prb: "np.ndarray|cp.ndarray|torch.Tensor"):
+    def initial_probe(self, prb: "np.ndarray|torch.Tensor"):
         prb = validate_array(
             prb,
             name="probe",
@@ -1349,7 +1358,7 @@ class PtychographyBase(AutoSerialize):
             shape=(self.num_probes, *self.roi_shape),
             expand_dims=True,
         )
-        self._initial_probe = prb
+        self._initial_probe = self._to_torch(prb)
 
     @property
     def probe_params(self) -> dict[str, Any]:
@@ -1400,6 +1409,8 @@ class PtychographyBase(AutoSerialize):
         elif not isinstance(rng, np.random.Generator):
             raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
         self._rng = rng
+        seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed from the generator
+        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
 
     @property
     def store_iterations(self) -> bool:
@@ -1448,28 +1459,41 @@ class PtychographyBase(AutoSerialize):
             return config.get("device")
 
     @device.setter
-    def device(self, device: Literal["cpu", "gpu"] | None):
+    def device(self, device: str | int | None):
         # allow setting gpu/cpu, but not changing the device from the config gpu device
         if device is not None:
-            dev, id = config.validate_device(device)
-            cdev, cid = config.validate_device(config.get("device"))
-            # check the config device
-            if dev != "cpu" and id != cid and id != 0:
-                # allow using the gpu only of the config device
-                raise ValueError(
-                    f"Cannot set device to be {dev}, as it conflicts with the global config device: {cdev}.\n"
-                    + "You can set the device to be 'gpu' which will default to This can be set at at the notebook level with:\n"
-                    + ">> from quantem.core import config\n"
-                    ">> config.set_device('cuda:XX')"
-                )
+            dev, _id = config.validate_device(device)
+            # cdev, cid = config.validate_device(config.get("device"))
+            # # check the config device
+            # if dev != "cpu" and id != cid and id != 0:
+            #     # allow using the gpu only of the config device
+            #     raise ValueError(
+            #         f"Cannot set device to be {dev}, as it conflicts with the global config device: {cdev}.\n"
+            #         + "You can set the device to be 'gpu' which will default to This can be set at at the notebook level with:\n"
+            #         + ">> from quantem.core import config\n"
+            #         ">> config.set_device('cuda:XX')"
+            #     )
             self._device = dev
+            try:
+                self._move_recon_arrays_to_device()
+            except AttributeError:
+                pass
 
     @property
-    def _obj_dtype(self) -> str:
+    def _obj_dtype(self) -> "torch.dtype":
         if self.obj_type == "potential":
-            return config.get("dtype_real")
+            return self._dtype_real
         else:
-            return config.get("dtype_complex")
+            return self._dtype_complex
+
+    @property
+    def _dtype_real(self) -> "torch.dtype":
+        # necessary because torch doesn't like passing strings to convert dtypes
+        return getattr(torch, config.get("dtype_real"))
+
+    @property
+    def _dtype_complex(self) -> "torch.dtype":
+        return getattr(torch, config.get("dtype_complex"))
 
     @property
     def obj_cropped(self) -> np.ndarray:
@@ -1600,16 +1624,6 @@ class PtychographyBase(AutoSerialize):
         if self.verbose:
             print(*args, **kwargs)
 
-    def _to_xp(self, arr: "np.ndarray|cp.ndarray|list|tuple") -> "np.ndarray|cp.ndarray":
-        """returns a copy of arr as a np or cp array"""
-        if config.get("has_torch"):  # strictly could be torch cpu or cuda, so pass
-            if isinstance(arr, torch.Tensor):
-                return arr
-        if "cuda" in self.device:  # this should only be possible if "has_cupy"
-            return cp.asarray(arr)
-        else:
-            return self._to_numpy(arr)
-
     def _check_dset(self):
         if not hasattr(self, "_dset"):
             raise AttributeError(
@@ -1635,12 +1649,52 @@ class PtychographyBase(AutoSerialize):
             if getattr(self, name) != new_val:
                 self._preprocessed = False
 
-    def _to_numpy(self, array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
+    def _to_numpy(self, array: "np.ndarray | torch.Tensor") -> np.ndarray:
         return to_numpy(array)
+
+    def _to_torch(
+        self, array: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
+    ) -> "torch.Tensor":
+        """
+        dtype can be: "same": same as input array, default
+                      "object": same as object type, real or complex determined by potential/complex
+                      torch.dtype type
+        """
+        if isinstance(dtype, str):
+            dtype = dtype.lower()
+            if dtype == "same":
+                dt = None
+            elif dtype == "probe":
+                dt = self._dtype_complex
+            elif dtype in ["object", "obj"]:
+                if np.iscomplexobj(array):
+                    dt = self._dtype_complex
+                else:
+                    dt = self._dtype_real
+            else:
+                raise ValueError(
+                    f"Unknown string passed {dtype}, dtype should be 'same', 'object' or torch.dtype"
+                )
+        elif isinstance(dtype, torch.dtype):
+            dt = dtype
+        else:
+            raise TypeError(f"dtype should be string or torch.dtype, got {type(dtype)} {dtype}")
+
+        if isinstance(array, np.ndarray):
+            t = torch.tensor(array.copy(), device=self.device, dtype=dt)
+        elif isinstance(array, torch.Tensor):
+            t = array.to(self.device)
+            if dt is not None:
+                t = t.type(dt)
+        elif isinstance(array, (list, tuple)):
+            t = torch.tensor(array, device=self.device, dtype=dt)
+        else:
+            raise TypeError(f"arr should be ndarray or Tensor, got {type(array)}")
+        return t
 
     def _crop_rotate_obj_fov(
         self,
-        array: "np.ndarray|cp.ndarray",
+        array: "np.ndarray",
         positions_px: np.ndarray | None = None,
         com_rotation_rad: float | None = None,
         transpose: bool | None = None,
@@ -1678,8 +1732,8 @@ class PtychographyBase(AutoSerialize):
         return rotated_array
 
     def _repeat_arr(
-        self, arr: "np.ndarray|cp.ndarray|torch.Tensor", repeats: int, axis: int
-    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
+        self, arr: "np.ndarray|torch.Tensor", repeats: int, axis: int
+    ) -> "np.ndarray|torch.Tensor":
         """repeat the input array along the desired axis."""
         if config.get("has_torch"):
             if isinstance(arr, torch.Tensor):
@@ -1687,8 +1741,8 @@ class PtychographyBase(AutoSerialize):
         return np.repeat(arr, repeats, axis=axis)
 
     def reset_recon(self) -> None:
-        self.obj = arr.match_device(np.ones(self.obj.shape, dtype=self._obj_dtype), self._obj)
-        self.probe = arr.match_device(self.initial_probe, self._probe)
+        self.obj = torch.ones(self._obj.shape, dtype=self._obj_dtype, device=self.device)
+        self.probe = self._initial_probe.clone()
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
@@ -1751,6 +1805,15 @@ class PtychographyBase(AutoSerialize):
             skip=skips,
         )
 
+    def _move_recon_arrays_to_device(self):
+        self._obj = self._to_torch(self._obj)
+        self._probe = self._to_torch(self._probe)
+        self._patch_indices = self._to_torch(self._patch_indices)
+        self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
+        self.positions_px = self._to_torch(self._positions_px)
+        self._obj_fov_mask = self._to_torch(self._obj_fov_mask)
+        self._propagators = self._to_torch(self._propagators)
+
     # endregion
 
     # region --- ptychography foRcard model ---
@@ -1807,7 +1870,7 @@ class PtychographyBase(AutoSerialize):
 
         return arr.match_device(propagated_probes, overlap), overlap  # type:ignore
 
-    def estimate_amplitudes(self, overlap_array: "np.ndarray | cp.ndarray"):
+    def estimate_amplitudes(self, overlap_array: "torch.Tensor") -> "torch.Tensor":
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
         # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
@@ -1820,8 +1883,8 @@ class PtychographyBase(AutoSerialize):
         return np.sqrt(np.sum(np.abs(overlap_fft + eps) ** 2, axis=0))
 
     def _propagate_array(
-        self, array: "np.ndarray|cp.ndarray", propagator_array: "np.ndarray|cp.ndarray"
-    ) -> "np.ndarray|cp.ndarray|torch.Tensor":
+        self, array: "torch.Tensor", propagator_array: "torch.Tensor"
+    ) -> "torch.Tensor":
         """
         Propagates array by Fourier convolving array with propagator_array.
 
@@ -1837,7 +1900,7 @@ class PtychographyBase(AutoSerialize):
         propagated_array: np.ndarray
             Fourier-convolved array
         """
-        propagated = arr.ifft2(arr.fft2(array) * propagator_array)
+        propagated = torch.fft.ifft2(torch.fft.fft2(array) * propagator_array)
         return propagated
 
     # endregion

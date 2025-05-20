@@ -57,18 +57,6 @@ def to_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
             return array.cpu().detach().numpy()
     if isinstance(array, np.ndarray):
         return np.array(array)
-    # if isinstance(array, (list, tuple)):
-    #     try:
-    #         return np.array(array)
-    #     except (ValueError, TypeError):
-    #         ar2 = [to_numpy(i) for i in array]
-    #         try:
-    #             return np.array(ar2)
-    #         except (ValueError, TypeError):
-    #             pass
-    # try:
-    #     return np.array(array)
-    # except (ValueError, TypeError):
     raise TypeError(f"Input should be np.ndarray, cp.ndarray, or torch.Tensor. Got: {type(array)}")
 
 
