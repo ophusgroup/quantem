@@ -270,7 +270,7 @@ def _normalize_show_input_to_grid(
 def _normalize_show_args_to_grid(
     args: Any,
     shape: Tuple[int, int],
-) -> List[List[str | bool | float | None]]:
+) -> List[List[Any]]:
     """Normalize the arguments for visualization to a grid format.
 
     This helper function ensures that the arguments passed to the visualization
@@ -299,10 +299,10 @@ def _normalize_show_args_to_grid(
     if not args:
         return [[None for _ in range(ncols)] for _ in range(nrows)]
 
-    if isinstance(args, (str, bool, float, int)):
+    if not isinstance(args, (list, tuple)):
         return [[args for _ in range(ncols)] for _ in range(nrows)]
 
-    if isinstance(args, (list, tuple)) and not isinstance(args[0], (list, tuple)):
+    if not isinstance(args[0], (list, tuple)):
         # 1D sequence
         args_list = list(args)
         if len(args_list) == ncols and nrows == 1:

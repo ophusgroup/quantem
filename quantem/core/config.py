@@ -66,6 +66,8 @@ class set:
         self._record = []
 
         if arg is not None:
+            if not isinstance(arg, (Mapping)):
+                raise TypeError(f"arg must be a dictionary, got {type(arg).__name__}")
             for key, value in arg.items():
                 key, value = check_key_val(key, value)
                 self._assign(key.split("."), value, config)
@@ -110,9 +112,7 @@ class set:
             self._assign(keys[1:], value, d[key], path)
 
 
-def refresh(
-    config: dict = config, defaults: list[Mapping] = defaults, **kwargs
-) -> None:
+def refresh(config: dict = config, defaults: list[Mapping] = defaults, **kwargs) -> None:
     """
     Update configuration by re-reading yaml files and env variables
 
@@ -174,9 +174,7 @@ def get(
     return result
 
 
-def update_defaults(
-    new: dict, config: dict = config, defaults: list[Mapping] = defaults
-) -> None:
+def update_defaults(new: dict, config: dict = config, defaults: list[Mapping] = defaults) -> None:
     """Add a new set of defaults to the configuration
 
     It does two things:
@@ -424,9 +422,7 @@ def _load_config_file(path: str) -> dict | None:
     return config
 
 
-def check_key_val(
-    key: str, val: Any, deprecations: dict = deprecations
-) -> tuple[str, Any]:
+def check_key_val(key: str, val: Any, deprecations: dict = deprecations) -> tuple[str, Any]:
     """Check if the provided value has been renamed or removed
 
     Parameters

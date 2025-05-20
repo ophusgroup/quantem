@@ -23,8 +23,8 @@ visualize:
   # The default units to use in reciprocal space
   reciprocal_space_units: "Angstrom"
   # The default colormap to use for plotting
-  cmap: "viridis"
+  cmap: "gray"
   # The default colormap to use for plotting the phase
-  phase_cmap: "hsluv"
+  phase_cmap: "magma"
   
   default_colors: ""

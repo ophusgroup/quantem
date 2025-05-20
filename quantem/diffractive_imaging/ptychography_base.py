@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, Sequence
 from warnings import warn
 
@@ -1300,11 +1301,11 @@ class PtychographyBase(AutoSerialize):
         return len(self.epoch_losses)
 
     @property
-    def epoch_recon_types(self) -> list[str]:
+    def epoch_recon_types(self) -> np.ndarray:
         """
         Keeping track of what reconstruction type was used
         """
-        return self._epoch_recon_types
+        return np.array(self._epoch_recon_types)
 
     @property
     def epoch_lrs(self) -> dict[str, np.ndarray]:
@@ -1548,6 +1549,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def sampling(self) -> np.ndarray:
+        """Realspace sampling of the reconstruction. Units of A"""
         return 1 / (self.roi_shape * self.reciprocal_sampling)
 
     @property
@@ -1562,6 +1564,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def fov(self) -> np.ndarray:
+        """Field of view in real space. Units of self.scan_units"""
         self._check_dset()
         return self.scan_sampling * (self.gpts - 1)
 
@@ -1725,6 +1728,28 @@ class PtychographyBase(AutoSerialize):
             probe = self._to_numpy(probe)
             intensities = np.abs(probe) ** 2
             return intensities.sum(axis=(-2, -1)) / intensities.sum()
+
+    def save(
+        self,
+        path: str | Path,
+        mode: Literal["w", "o"] = "w",
+        store: Literal["auto", "zip", "dir"] = "auto",
+        skip: str | type | Sequence[str | type] = (),
+        compression_level: int | None = 4,
+    ):
+        if isinstance(skip, (str, type)):
+            skip = [skip]
+        skip = list(skip)
+        skips = skip + [torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]
+        super().save(
+            path,
+            mode=mode,
+            store=store,
+            compression_level=compression_level,
+            # skip=["optimizers", "_optimizers"],
+            # skip=torch.optim.Optimizer,
+            skip=skips,
+        )
 
     # endregion
 

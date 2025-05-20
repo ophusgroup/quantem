@@ -9,6 +9,7 @@ from quantem.core.datastructures import Dataset4dstem
 from quantem.core.utils.utils import generate_batches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
+from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
 if TYPE_CHECKING:
     import cupy as cp
@@ -20,7 +21,7 @@ else:
         import cupy as cp
 
 
-class PtychographyML(PtychographyConstraints, PtychographyBase):
+class PtychographyML(PtychographyConstraints, PtychographyVisualizations, PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
     """

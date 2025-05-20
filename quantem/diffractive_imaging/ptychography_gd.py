@@ -84,7 +84,7 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
         if "GD" in self._epoch_lrs.keys():
             self._epoch_lrs["GD"].append(step_size)
         else:
-            prev_lrs = [0.0] * self.num_epochs
+            prev_lrs = [0.0] * (self.num_epochs - 1)
             prev_lrs.append(step_size)
             self._epoch_lrs["GD"] = prev_lrs
         for key in self._epoch_lrs.keys():  # update rest of lrs
