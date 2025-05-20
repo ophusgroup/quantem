@@ -145,7 +145,9 @@ class PtychographyML(PtychographyConstraints, PtychographyVisualizations, Ptycho
         [p.requires_grad_(True) for p in params]
         opt_params = self.optimizer_params[key]
         opt_type = opt_params.pop("type")
-        if opt_type == "adam":
+        if isinstance(opt_type, type):
+            opt = opt_type(params, **opt_params)
+        elif opt_type == "adam":
             opt = torch.optim.Adam(params, **opt_params)
         elif opt_type == "adamw":
             opt = torch.optim.AdamW(params, **opt_params)  # TODO pass all other kwargs
