@@ -7,6 +7,9 @@ from quantem.diffractive_imaging.ptychography.data_loaders import SimpleBatcher
 from quantem.diffractive_imaging.ptychography.object_models import ObjectModelBase
 from quantem.diffractive_imaging.ptychography.optimizers import PolakRibiereCG
 from quantem.diffractive_imaging.ptychography.probe_models import ProbeModelBase
+from quantem.diffractive_imaging.ptychography.ptychography_utils import (
+    return_patch_indices,
+)
 
 
 class PtychographicReconstruction:
@@ -35,7 +38,7 @@ class PtychographicReconstruction:
 
         self.roi_shape = self.probe.dataset.shape
         self.obj_shape = self.object.dataset.shape
-        self.row, self.col = self.object.return_patch_indices(
+        self.row, self.col = return_patch_indices(
             positions_px=self.positions_px,
             roi_shape=self.roi_shape,
             obj_shape=self.obj_shape,

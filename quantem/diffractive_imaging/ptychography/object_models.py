@@ -1,4 +1,4 @@
-from typing import Optional, Self, Tuple
+from typing import Self, Tuple
 
 import torch
 import torch.nn.functional as F
@@ -27,56 +27,6 @@ class ObjectModelBase(AutoSerialize):
     @property
     def tensor(self) -> torch.Tensor:
         return self.dataset.array
-
-    def return_patch_indices(
-        self,
-        positions_px: torch.Tensor,
-        roi_shape: Tuple[int, int],
-        obj_shape: Tuple[int, int],
-        device: Optional[torch.device] = None,
-    ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Compute wrapped patch indices into the object array for each probe position.
-        Note this assumes corner-centered probes.
-
-        Parameters
-        ----------
-        positions_px : torch.Tensor
-            Tensor of shape (N, 2), float32. Probe positions in pixels.
-        roi_shape : tuple of int
-            (Sx, Sy), the shape of the probe (patch).
-        obj_shape : tuple of int
-            (Hx, Hy), the shape of the object array.
-        device : torch.device, optional
-            Where to place tensors. If None, inferred from positions_px.
-
-        Returns
-        -------
-        row : torch.Tensor
-            (N, Sx, Sy), int64 tensor of row indices.
-        col : torch.Tensor
-            (N, Sx, Sy), int64 tensor of col indices.
-        """
-        if device is None:
-            device = positions_px.device
-
-        # Round and convert to int
-        x0: torch.Tensor = torch.round(positions_px[:, 0]).to(torch.int64)
-        y0: torch.Tensor = torch.round(positions_px[:, 1]).to(torch.int64)
-
-        # Frequency-based index grid
-        x_ind: torch.Tensor = torch.fft.fftfreq(
-            roi_shape[0], d=1.0 / roi_shape[0], device=device
-        ).to(torch.int64)
-        y_ind: torch.Tensor = torch.fft.fftfreq(
-            roi_shape[1], d=1.0 / roi_shape[1], device=device
-        ).to(torch.int64)
-
-        # Broadcast and wrap
-        row: torch.Tensor = (x0[:, None, None] + x_ind[None, :, None]) % obj_shape[0]
-        col: torch.Tensor = (y0[:, None, None] + y_ind[None, None, :]) % obj_shape[1]
-
-        return row, col
 
 
 class ComplexSingleSliceObjectModel(ObjectModelBase):
