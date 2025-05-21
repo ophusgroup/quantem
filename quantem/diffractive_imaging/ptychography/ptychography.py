@@ -4,7 +4,7 @@ from typing import Sequence, Tuple
 import torch
 
 from quantem.diffractive_imaging.ptychography.data_loaders import SimpleBatcher
-from quantem.diffractive_imaging.ptychography.object_models import ObjectModelBase
+from quantem.diffractive_imaging.ptychography.object_models import PixelatedObjectModel
 from quantem.diffractive_imaging.ptychography.optimizers import PolakRibiereCG
 from quantem.diffractive_imaging.ptychography.probe_models import ProbeModelBase
 from quantem.diffractive_imaging.ptychography.ptychography_utils import (
@@ -17,7 +17,7 @@ class PtychographicReconstruction:
 
     def __init__(
         self,
-        object_model: ObjectModelBase,
+        object_model: PixelatedObjectModel,
         probe_model: ProbeModelBase,
         positions_px: torch.Tensor,
         intensity_data: torch.Tensor,
@@ -46,16 +46,17 @@ class PtychographicReconstruction:
 
     def set_optimized_parameters(self, optimize_obj: bool, optimize_probe: bool):
         """ """
-        if optimize_obj is not None:
+        # only manually assign leaf tensor
+        if optimize_obj is not None and self.object.tensor.is_leaf:
             self.object.tensor.requires_grad = optimize_obj
-        if optimize_probe is not None:
+        if optimize_probe is not None and self.probe.tensor.is_leaf:
             self.probe.tensor.requires_grad = optimize_probe
 
         self.parameters = []
         if self.object.tensor.requires_grad:
-            self.parameters.append(self.object.tensor)
+            self.parameters.append(self.object.parameters())
         if self.probe.tensor.requires_grad:
-            self.parameters.append(self.probe.tensor)
+            self.parameters.append(self.probe.parameters())
 
     def set_optimizers(
         self,
@@ -67,12 +68,12 @@ class PtychographicReconstruction:
         optimizers = []
         for param, optimizer_type, lr in zip(self.parameters, optimizer_types, lrs):
             if optimizer_type == "adam":
-                optimizer = torch.optim.Adam(params=[param], lr=lr)
+                optimizer = torch.optim.Adam(params=param, lr=lr)
             elif optimizer_type == "sgd":
-                optimizer = torch.optim.SGD(params=[param], lr=lr)
+                optimizer = torch.optim.SGD(params=param, lr=lr)
             elif optimizer_type == "cg":
                 optimizer = PolakRibiereCG(
-                    params=[param],
+                    params=param,
                     lr=lr,
                     line_search=True,
                 )
@@ -123,8 +124,8 @@ class PtychographicReconstruction:
                 torch.mean(
                     torch.sum(
                         torch.square(
-                            torch.sqrt(simulated_intensities + 1e-10)
-                            - torch.sqrt(measured_intensities + 1e-10)
+                            torch.sqrt(simulated_intensities + 1e-8)
+                            - torch.sqrt(measured_intensities + 1e-8)
                         ),
                         dim=(-1, -2),
                     )
@@ -137,7 +138,7 @@ class PtychographicReconstruction:
             else:
                 gradient = torch.fft.ifft2(
                     fourier_exit_waves
-                    - torch.sqrt(measured_intensities)
+                    - torch.sqrt(measured_intensities + 1e-8)
                     * torch.exp(1j * torch.angle(fourier_exit_waves)),
                     norm="ortho",
                 )

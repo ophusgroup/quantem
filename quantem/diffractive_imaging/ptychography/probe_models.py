@@ -1,4 +1,4 @@
-from typing import Optional, Self, Tuple
+from typing import List, Optional, Self, Tuple
 
 import torch
 
@@ -55,7 +55,7 @@ class PixelatedProbeModel(ProbeModelBase):
             torch.square(torch.abs(torch.fft.fft2(probe_array, norm="ortho")))
         )
         normalized_probe = probe_array * torch.sqrt(
-            mean_diffraction_intensity / probe_intensity
+            mean_diffraction_intensity / probe_intensity + 1e-8
         )
 
         probe_dataset = Dataset2d.from_array(
@@ -129,3 +129,6 @@ class PixelatedProbeModel(ProbeModelBase):
             self.tensor.grad = probe_gradient.clone().detach()
 
             return probe_gradient
+
+    def parameters(self) -> List[torch.Tensor]:
+        return [self.tensor]
