@@ -5,35 +5,7 @@ import torch
 from quantem.core.datastructures import Dataset2d
 from quantem.core.io.serialize import AutoSerialize
 from quantem.diffractive_imaging.converged_probe import ConvergedProbe
-
-
-def fourier_translation_operator(
-    positions: torch.Tensor,
-    shape: tuple,
-    device: torch.device = torch.device("cpu"),
-) -> torch.Tensor:
-    """Returns phase ramp for fourier-shifting array of shape `shape`."""
-
-    nx, ny = shape[-2:]
-    x = positions[..., 0][:, None, None]
-    y = positions[..., 1][:, None, None]
-
-    kx = torch.fft.fftfreq(nx, d=1.0, device=device)
-    ky = torch.fft.fftfreq(ny, d=1.0, device=device)
-    ramp_x = torch.exp(-2.0j * torch.pi * kx[None, :, None] * x)
-    ramp_y = torch.exp(-2.0j * torch.pi * ky[None, None, :] * y)
-
-    ramp = ramp_x * ramp_y
-    return ramp
-
-
-def fourier_shift(array: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
-    """Fourier-shift array by flat array of positions"""
-    phase = fourier_translation_operator(positions, array.shape, device=array.device)
-    fourier_array = torch.fft.fft2(array)
-    shifted_fourier_array = fourier_array * phase
-
-    return torch.fft.ifft2(shifted_fourier_array)
+from quantem.diffractive_imaging.ptychography.ptychography_utils import fourier_shift
 
 
 class ProbeModelBase(AutoSerialize):

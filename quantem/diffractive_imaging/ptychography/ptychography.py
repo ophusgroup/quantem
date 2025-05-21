@@ -22,7 +22,7 @@ class PtychographicReconstruction:
         optimize_probe: bool = True,
         use_autograd: bool = False,
         optimizer_type: Sequence[str] = ["sgd", "sgd"],
-        lr: Sequence[float] = [1e-1, 1e-2],
+        lr: Sequence[float] = [0.5, 0.5],
     ):
         self.object = object_model
         self.probe = probe_model
