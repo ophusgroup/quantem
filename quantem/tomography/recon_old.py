@@ -4,12 +4,11 @@ from typing import Optional
 import torch
 import numpy as np
 
-# from torch_radon.radon import BaseRadon as Radon
-from torch_radon.radon import ParallelBeam as Radon
+from torch_radon.radon import BaseRadon as Radon
 from tqdm.auto import tqdm
 
-from quantem.tomography.dataset_tomo import Tilt_Series
-from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d_stack, apply_circular_masks_all_axes
+from quantem.tomography.dataset_tomo import DatasetTomo
+from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d
 from quantem.core.utils.imaging_utils import cross_correlation_shift
 
 # TODO: Maybe add some filtering after the reconstruction? I.e, masking.
@@ -23,7 +22,7 @@ class SIRT_Recon:
 
     Parameters
     ----------
-    dataset : Tilt_Series
+    dataset : DatasetTomo
         The tomographic dataset containing the tilt series and tilt angles.
     device : str, optional
         The device to use for computation ('cpu' or 'cuda'). Default is 'cpu'.
@@ -45,16 +44,16 @@ class SIRT_Recon:
     
     def __init__(
         self,
-        dataset: Tilt_Series,
+        dataset: DatasetTomo,
         device: str = "cpu",
     ):
         """
         Initializes the reconstruction object for tomography.
         Args:
-            dataset (Tilt_Series): The tomography dataset containing the tilt series and tilt angles.
+            dataset (DatasetTomo): The tomography dataset containing the tilt series and tilt angles.
             device (str, optional): The device to use for computation ('cpu' or 'cuda'). Defaults to "cpu".
         Raises:
-            TypeError: If the provided dataset is not an instance of Tilt_Series.
+            TypeError: If the provided dataset is not an instance of DatasetTomo.
         Attributes initialized:
             _device (str): The computation device.
             _loss (list): List to store loss values during reconstruction.
@@ -66,8 +65,8 @@ class SIRT_Recon:
             _num_sinograms (int): Number of sinograms (projections per angle).
         """
         
-        if not isinstance(dataset, Tilt_Series):
-            raise TypeError("dataset must be a Tilt_Series instance") # Make into a setter
+        if not isinstance(dataset, DatasetTomo):
+            raise TypeError("dataset must be a DatasetTomo instance") # Make into a setter
         if "cuda" not in device:
             raise NotImplementedError("Only CUDA is supported for now")
         
@@ -75,9 +74,7 @@ class SIRT_Recon:
         self._loss = []
         
         
-        # self._tilt_series = torch.from_numpy(np.transpose(dataset.array, axes = (2, 0, 1))).float().to(self._device)
-        self._tilt_series = torch.from_numpy(dataset.array).float().to(self._device)
-        
+        self._tilt_series = torch.from_numpy(np.transpose(dataset.array, axes = (2, 0, 1))).float().to(self._device)
         self._num_angles, self._num_rows, self._num_sinograms = dataset.array.shape
         
         self._recon = torch.zeros(
@@ -97,9 +94,6 @@ class SIRT_Recon:
             enforce_positivity: bool = True,
             smoothing_sigma: Optional[float] = None,
             inline_alignment: bool = False,
-            batched_recon: bool = False, # TODO: Fix batched recon
-            circular_mask: bool = False,
-            radii: Optional[tuple[float, float, float]] = None,
         ):
         """
         Performs iterative tomographic reconstruction using the SIRT algorithm.
@@ -116,16 +110,6 @@ class SIRT_Recon:
             Appends loss values to `self._loss` after each iteration.
         """
         
-        if inline_alignment:
-            raise NotImplementedError("Inline alignment is not yet implemented.")
-        
-        if circular_mask:
-            if radii is None:
-                raise ValueError("Radii must be provided for circular masking.")
-            if len(radii) != 3:
-                raise ValueError("Radii must be a tuple of three values for each axis.")
-            
-        
         if reset:
             self._recon = torch.zeros(
                 (self._num_rows, self._num_rows, self._num_sinograms),
@@ -136,10 +120,10 @@ class SIRT_Recon:
         
         # Instantiate the Radon transform
         radon = Radon(
-            det_count = self._num_rows,
+            resolution = self._num_rows,
             angles = self._tilt_angles,
-            # clip_to_circle=True,
-            # det_count = self._num_rows,
+            clip_to_circle=True,
+            det_count = self._num_rows,
         )
         
         # Instantiate Gaussian kernel
@@ -153,38 +137,22 @@ class SIRT_Recon:
         for a0 in pbar:
             
             if inline_alignment and a0 >= 2:
-                self._run_epoch(radon, 
-                                step_size=step_size,
-                                enforce_positivity=enforce_positivity,
-                                kernel_1d = kernel_1d, 
-                                inline_alignment=True,
-                                batched_recon=batched_recon,
-                                )
+                self._run_epoch(radon, step_size=step_size, enforce_positivity=enforce_positivity, smoothing_sigma=smoothing_sigma, kernel_1d = kernel_1d, inline_alignment=True)
             else:
-                self._run_epoch(radon, 
-                                step_size=step_size, 
-                                enforce_positivity=enforce_positivity, 
-                                kernel_1d = kernel_1d, 
-                                inline_alignment=False,
-                                batched_recon=batched_recon,
-                                )
+                self._run_epoch(radon, step_size=step_size, enforce_positivity=enforce_positivity, smoothing_sigma=smoothing_sigma, kernel_1d = kernel_1d, inline_alignment=False)
 
             pbar.set_description(
                 f"SIRT Iteration {a0+1}/{num_iterations} - Loss: {self._loss[-1]:.4f}"
             )
-            
-        # Apply circular mask if specified
-        if circular_mask:
-            self._recon = apply_circular_masks_all_axes(self._recon, radii)
         
     def _run_epoch(
         self, 
         radon: Radon, 
         step_size: float, 
         enforce_positivity: bool , 
+        smoothing_sigma: Optional[float],
         kernel_1d: Optional[torch.Tensor],
-        inline_alignment: bool, # TODO: Implement inline alignment
-        batched_recon: bool = False, # TODO: Fix batched recon
+        inline_alignment: bool,
         ):
         """
         Performs a single epoch of iterative reconstruction for all sinograms.
@@ -211,60 +179,35 @@ class SIRT_Recon:
         
         loss = 0
         
-        # --- Batching whole sinogram in ---
-        if batched_recon:
-            proj_forward = radon.forward(self._recon)
-            
-            proj_diff = self._tilt_series - proj_forward
-            loss += torch.mean(torch.abs(proj_diff))
-            recon_update = radon.backward(
-                radon.filter_sinogram(
-                    proj_diff,
-                )
-            )
-            self._recon += step_size * recon_update
+        proj_forward = radon.forward(self._recon)
         
-        # --- Looping through each sinogram ---
-        else:
-            for i in range(self._num_sinograms):
-                proj_forward = radon.forward(self._recon[:, :, i])
-
-                proj_diff = self._tilt_series[:, :, i] - proj_forward
-                loss += torch.mean(torch.abs(proj_diff))
-                recon_update = radon.backward(
-                    radon.filter_sinogram(
-                        proj_diff,
-                        filter_name = 'hamming'
-                    )
-                )
-                self._recon[:, :, i] += step_size * recon_update
-            
-            loss /= self._num_sinograms
-
-        if kernel_1d is not None:
-            self._recon = gaussian_filter_2d_stack(self._recon, kernel_1d)
+        proj_diff = self._tilt_series - proj_forward
+        loss += torch.mean(torch.abs(proj_diff))
+        recon_update = radon.backprojection(
+            radon.filter_sinogram(
+                proj_diff,
+            )
+        )
+        self._recon += step_size * recon_update
+        
+        for ind in range(self._num_sinograms):
+            self._recon[:, ind, :] = gaussian_filter_2d(self._recon[:, ind, :], smoothing_sigma, kernel_1d)
         
         if enforce_positivity:
             self._recon = torch.clamp(self._recon, min=0)
-        
-        # Circular mask
-        
-        
+            
         # Appending to loss
         self._loss.append(loss.detach().cpu().numpy())
     
-
+    
     # --- Properties ---
     @property
     def recon(self) -> NDArray:
         """Get the reconstructed dataset."""
-        # return np.transpose(self._recon.cpu().numpy(), axes = (1, 2, 0))
-        return self._recon.cpu().numpy()
-    
+        return np.transpose(self._recon.cpu().numpy(), axes = (1, 2, 0))
     
     @property
     def loss(self) -> NDArray:
         return self._loss
     
     
-

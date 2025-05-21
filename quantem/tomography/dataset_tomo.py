@@ -1,15 +1,15 @@
-from typing import Any, Self, Union
+from typing import Any, Self, Union, List
 
 import numpy as np
 from numpy.typing import NDArray
 
-from quantem.core.datastructures.dataset3d import Dataset3d
+from quantem.core.datastructures.dataset3d import Dataset3d, Dataset2d
 from quantem.core.utils.validators import ensure_valid_array
 
 from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
 
-class DatasetTomo(Dataset3d):
-    
+class Tilt_Series(Dataset3d):
+
     def __init__(
         self,
         array: NDArray | Any,
@@ -37,48 +37,30 @@ class DatasetTomo(Dataset3d):
     @classmethod
     def from_array(
         cls,
-        array: NDArray | Any,
+        array: NDArray | List[Dataset2d] | Any,
+        tilt_angles: list | NDArray = None,
         name: str | None = None,
         origin: NDArray | tuple | list | float | int | None = None,
         sampling: NDArray | tuple | list | float | int | None = None,
         units: list[str] | tuple | list | None = None,
-        tilt_angles: list | NDArray = None,
         signal_units: str = "arb. units",
     ) -> Self:
-        array = ensure_valid_array(array, ndim=3)
+        # array = ensure_valid_array(array, ndim=3) # Redundant check, since `Dataset3d` already does this?
         return cls(
             array=array,
-            name=name if name is not None else "3D dataset",
+            tilt_angles=tilt_angles if tilt_angles is not None else ["duck" for _ in range(array.shape[0])],
+            name=name if name is not None else "Tilt Series Dataset",
             origin=origin if origin is not None else np.zeros(3),
             sampling=sampling if sampling is not None else np.ones(3),
             units=units if units is not None else ["index", "pixels", "pixels"],
-            tilt_angles=tilt_angles if tilt_angles is not None else ["duck" for _ in range(array.shape[0])],
             signal_units=signal_units,
             _token=cls._token,
         )
     
-    # --- Rough cross-correlation alignment of raw tilt series ---
-    
-    def align_tilt_series(self, upsample_factor: int = 1, overwrite: bool = False) -> None:
-        # TODO: Should we return the predicted shifts?
-        aligned_tilt_series, shifts = tilt_series_cross_cor_align(self.array, upsample_factor=upsample_factor)
-        
-        old_mean_com, old_std_com = compute_com_tilt_series(self.array)
-        new_mean_com, new_std_com = compute_com_tilt_series(aligned_tilt_series)
-        
-        print(f"Old COM: {old_mean_com:.2f} ± {old_std_com:.2f}")
-        print(f"New COM: {new_mean_com:.2f} ± {new_std_com:.2f}")
-        
-        print(new_mean_com/new_std_com)
-        print(old_mean_com/old_std_com)
-        
-        if overwrite:
-            self.array = aligned_tilt_series
-        else:
-            print("Set overwrite=True to overwrite the original tilt series.")
-        
+
     
     # --- Properties ---
+    
     @property
     def tilt_angles(self) -> NDArray:
         """Get the tilt angles of the dataset."""
