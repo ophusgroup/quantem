@@ -192,8 +192,20 @@ class ComplexSingleSliceObjectModel(ObjectModelBase):
 
     def backward(self, gradient_array, probe_array, positions_px):
         if self.tensor.requires_grad:
-            obj_gradient = sum_overlapping_patches(
-                gradient_array * torch.conj(probe_array), positions_px, self.obj_shape
+            probe_normalization = (
+                sum_overlapping_patches(
+                    torch.square(torch.abs(probe_array)), positions_px, self.obj_shape
+                )
+                + 1e-10
+            )
+
+            obj_gradient = (
+                sum_overlapping_patches(
+                    gradient_array * torch.conj(probe_array),
+                    positions_px,
+                    self.obj_shape,
+                )
+                / probe_normalization
             )
 
             self.tensor.grad = obj_gradient.clone().detach()

@@ -83,7 +83,7 @@ class SingleProbeModel(ProbeModelBase):
 
         probe_array = torch.as_tensor(array).to(torch.cfloat)
         probe_intensity = torch.sum(
-            torch.square(torch.abs(torch.fft.fft2(probe_array)))
+            torch.square(torch.abs(torch.fft.fft2(probe_array, norm="ortho")))
         )
         normalized_probe = probe_array * torch.sqrt(
             mean_diffraction_intensity / probe_intensity
@@ -150,8 +150,11 @@ class SingleProbeModel(ProbeModelBase):
         object_array,
     ):
         if self.tensor.requires_grad:
-            probe_gradient = torch.mean(
-                gradient_array * torch.conj(object_array), dim=0
+            obj_normalization = torch.sum(torch.square(torch.abs(object_array)), dim=0)
+
+            probe_gradient = (
+                torch.sum(gradient_array * torch.conj(object_array), dim=0)
+                / obj_normalization
             )
 
             self.tensor.grad = probe_gradient.clone().detach()
