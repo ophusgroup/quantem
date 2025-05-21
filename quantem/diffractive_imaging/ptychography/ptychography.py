@@ -6,7 +6,7 @@ import torch
 from quantem.diffractive_imaging.ptychography.data_loaders import SimpleBatcher
 from quantem.diffractive_imaging.ptychography.object_models import PixelatedObjectModel
 from quantem.diffractive_imaging.ptychography.optimizers import PolakRibiereCG
-from quantem.diffractive_imaging.ptychography.probe_models import ProbeModelBase
+from quantem.diffractive_imaging.ptychography.probe_models import PixelatedProbeModel
 from quantem.diffractive_imaging.ptychography.ptychography_utils import (
     return_patch_indices,
 )
@@ -18,7 +18,7 @@ class PtychographicReconstruction:
     def __init__(
         self,
         object_model: PixelatedObjectModel,
-        probe_model: ProbeModelBase,
+        probe_model: PixelatedProbeModel,
         positions_px: torch.Tensor,
         intensity_data: torch.Tensor,
         optimize_obj: bool = True,

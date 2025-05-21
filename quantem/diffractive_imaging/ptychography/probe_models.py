@@ -7,24 +7,10 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.diffractive_imaging.converged_probe import ConvergedProbe
 from quantem.diffractive_imaging.ptychography.ptychography_utils import fourier_shift
 
-
-class ProbeModelBase(AutoSerialize):
-    """
-    Base class for all ProbeModels to inherit from.
-    """
-
-    def forward(self, *args):
-        raise NotImplementedError
-
-    def backward(self, *args):
-        raise NotImplementedError
-
-    @property
-    def tensor(self) -> torch.Tensor:
-        return self.dataset.array
+# region --- Pixelated Probe ---
 
 
-class PixelatedProbeModel(ProbeModelBase):
+class PixelatedProbeModel(AutoSerialize):
     """ """
 
     _token = object()
@@ -36,7 +22,7 @@ class PixelatedProbeModel(ProbeModelBase):
     ):
         if _token is not self._token:
             raise RuntimeError(
-                "Use SingleProbeModel.from_array() or SingleProbeModel.from_aberration_coefficients() to instantiate this class."
+                "Use PixelatedProbeModel.from_array() or PixelatedProbeModel.from_aberration_coefficients() to instantiate this class."
             )
 
         self.dataset = probe_dataset
@@ -130,5 +116,12 @@ class PixelatedProbeModel(ProbeModelBase):
 
             return probe_gradient
 
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self.dataset.array
+
     def parameters(self) -> List[torch.Tensor]:
         return [self.tensor]
+
+
+# endregion --- Pixelated Probe ---
