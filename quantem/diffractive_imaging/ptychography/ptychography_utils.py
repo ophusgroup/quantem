@@ -2,6 +2,8 @@ from typing import Optional, Tuple
 
 import torch
 
+from quantem.core.utils.scattering_utils import electron_wavelength_angstrom
+
 
 def return_patch_indices(
     positions_px: torch.Tensor,
@@ -122,10 +124,31 @@ def fourier_translation_operator(
     return ramp
 
 
+def fourier_convolve_array(array: torch.Tensor, fourier_kernel: torch.Tensor):
+    """ """
+    return torch.fft.ifft2(torch.fft.fft2(array) * fourier_kernel)
+
+
 def fourier_shift(array: torch.Tensor, positions: torch.Tensor) -> torch.Tensor:
     """Fourier-shift array by flat array of positions"""
     phase = fourier_translation_operator(positions, array.shape, device=array.device)
-    fourier_array = torch.fft.fft2(array)
-    shifted_fourier_array = fourier_array * phase
+    return fourier_convolve_array(array, phase)
 
-    return torch.fft.ifft2(shifted_fourier_array)
+
+def compute_propagator_array(
+    energy: float,
+    gpts: Tuple[int, int],
+    sampling: Tuple[float, float],
+    slice_thickness: float,
+) -> torch.Tensor:
+    """ " """
+    kx = torch.fft.fftfreq(gpts[0], sampling[0])
+    ky = torch.fft.fftfreq(gpts[1], sampling[1])
+
+    wavelength = electron_wavelength_angstrom(energy)
+    propagator = torch.exp(
+        -1.0j * (torch.square(kx)[:, None] * torch.pi * wavelength * slice_thickness)
+    ) * torch.exp(
+        -1.0j * (torch.square(ky)[None, :] * torch.pi * wavelength * slice_thickness)
+    )
+    return propagator

@@ -13,9 +13,6 @@ class ProbeModelBase(AutoSerialize):
     Base class for all ProbeModels to inherit from.
     """
 
-    def initialize(self, *args):
-        raise NotImplementedError
-
     def forward(self, *args):
         raise NotImplementedError
 
@@ -27,7 +24,7 @@ class ProbeModelBase(AutoSerialize):
         return self.dataset.array
 
 
-class SingleProbeModel(ProbeModelBase):
+class PixelatedProbeModel(ProbeModelBase):
     """ """
 
     _token = object()

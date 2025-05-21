@@ -37,7 +37,7 @@ class PtychographicReconstruction:
         self.set_optimizers(optimizer_type, lr)
 
         self.roi_shape = self.probe.dataset.shape
-        self.obj_shape = self.object.dataset.shape
+        self.obj_shape = self.object.obj_shape
         self.row, self.col = return_patch_indices(
             positions_px=self.positions_px,
             roi_shape=self.roi_shape,
@@ -91,7 +91,7 @@ class PtychographicReconstruction:
         shifted_probes = self.probe.forward(frac_pos)
         row = self.row[batch_idx]
         col = self.col[batch_idx]
-        obj_patches, exit_waves = self.object.forward(
+        probes, obj_patches, exit_waves = self.object.forward(
             shifted_probes,
             row,
             col,
@@ -99,7 +99,7 @@ class PtychographicReconstruction:
         fourier_exit_waves = torch.fft.fft2(exit_waves, norm="ortho")
         simulated_intensities = torch.square(torch.abs(fourier_exit_waves))
         return (
-            shifted_probes,
+            probes,
             obj_patches,
             exit_waves,
             fourier_exit_waves,
@@ -142,13 +142,13 @@ class PtychographicReconstruction:
                     norm="ortho",
                 )
 
-                self.object.backward(
-                    gradient, shifted_probes, self.positions_px[batch_idx]
+                gradient = self.object.backward(
+                    gradient, shifted_probes, obj_patches, self.positions_px[batch_idx]
                 )
 
                 self.probe.backward(
                     gradient,
-                    obj_patches,
+                    obj_patches[0],
                 )
 
         return loss
