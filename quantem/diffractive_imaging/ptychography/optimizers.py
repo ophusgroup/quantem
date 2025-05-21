@@ -69,8 +69,9 @@ class PolakRibiereCG(Optimizer):
                     direction = state["direction"]
 
                     y = grad - prev_grad
-                    beta = torch.dot(grad.view(-1), y.view(-1)) / torch.dot(
-                        prev_grad.view(-1), prev_grad.view(-1)
+                    beta = (
+                        torch.dot(grad.view(-1), y.view(-1)).real
+                        / torch.dot(prev_grad.view(-1), prev_grad.view(-1)).real
                     )
                     beta = torch.clamp(beta, min=0.0)  # PR+
 
@@ -83,7 +84,7 @@ class PolakRibiereCG(Optimizer):
                     orig = p.clone()
                     alpha = lr
                     loss_before = loss
-                    grad_dot_dir = torch.dot(grad.view(-1), direction.view(-1))
+                    grad_dot_dir = torch.dot(grad.view(-1), direction.view(-1)).real
 
                     for _ in range(group["ls_max_iter"]):
                         p.copy_(orig + alpha * direction)

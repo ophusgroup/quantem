@@ -177,33 +177,38 @@ class PtychographicReconstruction:
             total_loss = 0.0
 
             for batch_idx in batcher:
+                # prevent gradient accumulation across batches
                 for opt in self.optimizers:
                     opt.zero_grad()
 
-                # Forward
-                (
-                    shifted_probes,
-                    obj_patches,
-                    exit_waves,
-                    fourier_exit_waves,
-                    simulated_intensities,
-                ) = self.forward(batch_idx)
+                def closure():
+                    """ """
+                    with torch.set_grad_enabled(self.use_autograd):
+                        # Forward
+                        (
+                            shifted_probes,
+                            obj_patches,
+                            exit_waves,
+                            fourier_exit_waves,
+                            simulated_intensities,
+                        ) = self.forward(batch_idx)
 
-                # Backward
-                loss = self.backward(
-                    batch_idx,
-                    shifted_probes,
-                    obj_patches,
-                    exit_waves,
-                    fourier_exit_waves,
-                    simulated_intensities,
-                )
-
-                total_loss += loss.item()
+                        # Backward
+                        loss = self.backward(
+                            batch_idx,
+                            shifted_probes,
+                            obj_patches,
+                            exit_waves,
+                            fourier_exit_waves,
+                            simulated_intensities,
+                        )
+                    return loss
 
                 # Optimizers Step
                 for opt in self.optimizers:
-                    opt.step()
+                    loss = opt.step(closure)
+
+                total_loss += loss.item()
 
                 # Constraints
                 with torch.no_grad():
