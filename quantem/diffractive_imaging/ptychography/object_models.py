@@ -101,9 +101,10 @@ class PixelatedObjectModel(AutoSerialize):
         """ """
         num_slices = self.num_slices
         propagator = self.propagator_array
-        obj_patches = self.tensor[..., row, col]
+        obj_patches = torch.unsqueeze(self.tensor[..., row, col], 2)
 
-        propagated_probes = torch.empty_like(obj_patches)
+        shape = (num_slices,) + probe_array.shape
+        propagated_probes = torch.empty(shape, dtype=probe_array.dtype)
         propagated_probes[0] = probe_array
 
         for s in range(num_slices):

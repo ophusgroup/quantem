@@ -36,7 +36,7 @@ class PtychographicReconstruction:
         self.set_optimized_parameters(optimize_obj, optimize_probe)
         self.set_optimizers(optimizer_type, lr)
 
-        self.roi_shape = self.probe.dataset.shape
+        self.roi_shape = self.probe.roi_shape
         self.obj_shape = self.object.obj_shape
         self.row, self.col = return_patch_indices(
             positions_px=self.positions_px,
@@ -98,7 +98,7 @@ class PtychographicReconstruction:
             col,
         )
         fourier_exit_waves = torch.fft.fft2(exit_waves, norm="ortho")
-        simulated_intensities = torch.square(torch.abs(fourier_exit_waves))
+        simulated_intensities = torch.square(torch.abs(fourier_exit_waves)).sum(1)
         return (
             probes,
             obj_patches,

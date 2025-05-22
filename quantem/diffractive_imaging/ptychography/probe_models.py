@@ -2,10 +2,13 @@ from typing import List, Optional, Self, Tuple
 
 import torch
 
-from quantem.core.datastructures import Dataset2d
+from quantem.core.datastructures import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
 from quantem.diffractive_imaging.converged_probe import ConvergedProbe
-from quantem.diffractive_imaging.ptychography.ptychography_utils import fourier_shift
+from quantem.diffractive_imaging.ptychography.ptychography_utils import (
+    fourier_shift,
+    fourier_translation_operator,
+)
 
 # region --- Pixelated Probe ---
 
@@ -17,7 +20,7 @@ class PixelatedProbeModel(AutoSerialize):
 
     def __init__(
         self,
-        probe_dataset: Dataset2d,
+        probe_dataset: Dataset3d,
         _token: object | None = None,
     ):
         if _token is not self._token:
@@ -26,6 +29,9 @@ class PixelatedProbeModel(AutoSerialize):
             )
 
         self.dataset = probe_dataset
+        self.roi_shape = self.dataset.shape[-2:]
+        self.sampling = self.dataset.sampling[-2:]
+        self.num_probes = self.dataset.shape[0]
 
     @classmethod
     def from_array(
@@ -37,18 +43,27 @@ class PixelatedProbeModel(AutoSerialize):
         """ """
 
         probe_array = torch.as_tensor(array).to(torch.cfloat)
+
+        if probe_array.ndim == 2:
+            return cls.from_single_probe(
+                probe_array,
+                num_probes=1,
+                mean_diffraction_intensity=mean_diffraction_intensity,
+                sampling=sampling,
+            )
+
         probe_intensity = torch.sum(
-            torch.square(torch.abs(torch.fft.fft2(probe_array, norm="ortho")))
+            torch.square(torch.abs(torch.fft.fft2(probe_array, norm="ortho"))),
         )
         normalized_probe = probe_array * torch.sqrt(
             mean_diffraction_intensity / probe_intensity + 1e-8
         )
 
-        probe_dataset = Dataset2d.from_array(
+        probe_dataset = Dataset3d.from_array(
             normalized_probe,
             name="ptychographic probe",
-            sampling=sampling,
-            units=("A", "A"),
+            sampling=(1,) + tuple(sampling),
+            units=("index", "A", "A"),
         )
 
         return cls(
@@ -57,8 +72,32 @@ class PixelatedProbeModel(AutoSerialize):
         )
 
     @classmethod
+    def from_single_probe(
+        cls,
+        array: torch.Tensor,
+        num_probes: int,
+        mean_diffraction_intensity: float,
+        sampling: Tuple[int, int],
+    ) -> Self:
+        """ """
+
+        gpts = array.shape
+        probe = torch.empty((num_probes,) + gpts, dtype=torch.cfloat)
+        probe[0] = torch.as_tensor(array).to(torch.cfloat)
+
+        phase_ramps = fourier_translation_operator(
+            torch.rand(num_probes, 2) - 0.5, gpts
+        )
+        for s in range(1, num_probes):
+            probe[s] = probe[s - 1] * phase_ramps[s]
+
+        # Normalize probe to match mean diffraction intensity
+        return cls.from_array(probe, mean_diffraction_intensity, sampling)
+
+    @classmethod
     def from_aberration_coefficients(
         cls,
+        num_probes: int,
         energy: float,
         gpts: Tuple[int, int],
         sampling: Tuple[int, int],
@@ -85,8 +124,9 @@ class PixelatedProbeModel(AutoSerialize):
             ._array
         )
 
-        # Normalize probe to match mean diffraction intensity
-        return cls.from_array(probe, mean_diffraction_intensity, sampling)
+        return cls.from_single_probe(
+            probe, num_probes, mean_diffraction_intensity, sampling
+        )
 
     def forward(
         self,
@@ -94,7 +134,7 @@ class PixelatedProbeModel(AutoSerialize):
     ):
         shifted_probes = fourier_shift(
             self.tensor,
-            fractional_positions_px,
+            fractional_positions_px[:, None, :],
         )
 
         return shifted_probes
