@@ -216,10 +216,15 @@ class PtychographicReconstruction:
 
                 # Constraints
                 with torch.no_grad():
+                    # threshold constraint
                     obj = self.object.tensor
                     amp = torch.clamp(torch.abs(obj), max=1.0)
                     phase = torch.angle(obj)
                     self.object.tensor.data = amp * torch.exp(1j * phase)
+
+                    # orthogonalization constraint
+                    if self.probe.num_probes > 1:
+                        self.probe.orthogonalize()
 
             print(f"[Epoch {epoch + 1:02d}] Loss: {total_loss:.4e}")
 

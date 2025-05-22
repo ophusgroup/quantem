@@ -156,6 +156,27 @@ class PixelatedProbeModel(AutoSerialize):
 
             return probe_gradient
 
+    def orthogonalize(
+        self,
+    ):
+        """ """
+        num_probes = self.num_probes
+        probe = self.tensor.clone()
+        pairwise_dot_product = torch.empty((num_probes, num_probes), dtype=probe.dtype)
+
+        for i in range(num_probes):
+            for j in range(num_probes):
+                pairwise_dot_product[i, j] = torch.sum(probe[i].conj() * probe[j])
+
+        _, evecs = torch.linalg.eigh(pairwise_dot_product, UPLO="U")
+        probe = torch.tensordot(evecs.T, probe, dims=1)
+
+        intensities = torch.sum(probe.abs().square(), dim=(-2, -1))
+        intensities_order = torch.argsort(intensities).flip(0)
+
+        self.tensor.data = probe[intensities_order]
+        return self.tensor
+
     @property
     def tensor(self) -> torch.Tensor:
         return self.dataset.array
