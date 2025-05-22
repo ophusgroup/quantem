@@ -19,6 +19,7 @@ class PtychographyVisualizations(PtychographyBase):
         obj: np.ndarray | None = None,
         cbar: bool = False,
         interval_type: Literal["quantile", "manual"] = "quantile",
+        **kwargs,
     ):
         if obj is None:
             obj = self.obj_cropped
@@ -65,6 +66,7 @@ class PtychographyVisualizations(PtychographyBase):
             norm=norm,
             cbar=cbar,
             scalebar=scalebar,
+            **kwargs,
         )
 
     def show_probe(self, probe: np.ndarray | None = None):
@@ -185,11 +187,14 @@ class PtychographyVisualizations(PtychographyBase):
 
         lines = []
         epochs = np.arange(len(self.epoch_losses))
-        colors = ["b", "orange", "r", "g"]
-        lines.extend(ax.semilogy(epochs, self.epoch_losses, c=colors[0], label="loss"))
-        ax.set_ylabel("Loss", color=colors[0])
-        ax.tick_params(axis="y", which="both", colors=colors[0])
-        ax.spines["left"].set_color(colors[0])
+        # colors = plt.cm.tab20.colors # type:ignore  # TODO make a better dual categorical cmap
+        # colors = ["blue", "royalblue", "darkorange", "orange", "green", "limegreen", "red", "coral"]
+        # colors = ["royalblue", "darkorange", "limegreen", "coral"]
+        colors = plt.cm.Set1.colors  # type:ignore
+        lines.extend(ax.semilogy(epochs, self.epoch_losses, c="k", label="loss"))
+        ax.set_ylabel("Loss", color="k")
+        ax.tick_params(axis="y", which="both", colors="k")
+        ax.spines["left"].set_color("k")
         # for label in ax.get_yticklabels():
         #     label.set_color(colors[0])
         ax.set_xlabel("Epochs")
@@ -197,57 +202,50 @@ class PtychographyVisualizations(PtychographyBase):
         nx.spines["left"].set_visible(False)
 
         if plot_lrs:
-            GD_inds = np.where(self.epoch_recon_types == "GD")[0]
-            pixelwise_inds = np.where(self.epoch_recon_types == "pixelwise")[0]
-            model_inds = np.where(self.epoch_recon_types == "model")[0]
+            obj_recon_types = np.array([mode.split("-")[0] for mode in self.epoch_recon_types])
+            probe_recon_types = np.array([mode.split("-")[1] for mode in self.epoch_recon_types])
+            obj_modes = np.unique(obj_recon_types)
+            probe_modes = np.unique(probe_recon_types)
 
-            if len(GD_inds) > 0:
-                lines.extend(
-                    nx.plot(
-                        GD_inds, self.epoch_lrs["GD"][GD_inds], c=colors[2], label="GD step size"
+            for i, (omode, pmode) in enumerate(zip(obj_modes, probe_modes)):
+                if "GD" in omode or "GD" in pmode:
+                    GD_inds = np.where(obj_recon_types == omode)[0]
+                    lines.append(
+                        ax.axvspan(
+                            min(epochs[GD_inds]) - 0.1,
+                            max(epochs[GD_inds]) + 0.1,
+                            color=colors[1],
+                            alpha=0.3,
+                            label="GD",
+                        )
                     )
-                )
-                nx.set_ylabel("GD step size", c=colors[2])
-                nx.spines["right"].set_color(colors[2])
-                nx.tick_params(axis="y", which="both", colors=colors[2])
-                # lines.append(
-                #     ax.axvspan(
-                #         min(epochs[GD_inds]) - 0.1,
-                #         max(epochs[GD_inds]) + 0.1,
-                #         color=colors[1],
-                #         alpha=0.3,
-                #         label="GD",
-                #     )
-                # )
-
-            if len(pixelwise_inds) > 0:
-                lines.extend(
-                    nx.semilogy(
-                        epochs[pixelwise_inds],
-                        self.epoch_lrs["object"][pixelwise_inds],
-                        c=colors[2],
-                        label="object pixelwise LR",
+                else:
+                    obj_inds = np.where(obj_recon_types == omode)[0]
+                    lines.extend(
+                        nx.semilogy(
+                            epochs[obj_inds],
+                            self.epoch_lrs["object"][obj_inds],
+                            c=colors[i],
+                            label=omode + " LR",
+                        )
                     )
-                )
-                nx.set_ylabel("LR", c=colors[2])
-                nx.spines["right"].set_color(colors[2])
-                nx.tick_params(axis="y", which="both", colors=colors[2])
-
-            if len(model_inds) > 0:
-                lines.extend(
-                    nx.semilogy(
-                        epochs[model_inds],
-                        self.epoch_lrs["object"][model_inds],
-                        c=colors[3],
-                        label="object model LR",
+                    probe_inds = np.where(probe_recon_types == pmode)[0]
+                    lines.extend(
+                        nx.semilogy(
+                            epochs[probe_inds],
+                            self.epoch_lrs["probe"][probe_inds],
+                            c=colors[i],
+                            label=pmode + " LR",
+                            linestyle="--",
+                        )
                     )
-                )
-                nx.set_ylabel("LR", c=colors[3])
-                nx.spines["right"].set_color(colors[3])
-                nx.tick_params(axis="y", which="both", colors=colors[3])
+                nx.set_ylabel("LR", c=colors[0])
+                nx.spines["right"].set_color(colors[0])
+                nx.tick_params(axis="y", which="both", colors=colors[0])
 
         labs = [lin.get_label() for lin in lines]
-        nx.legend(lines, labs)
+        nx.legend(lines, labs, loc="upper center")
+        nx.set_ylabel("LRs")
         ax.set_xbound(-2, np.max(epochs if np.any(epochs) else [1]) + 2)
         if figax is None:
             plt.tight_layout()

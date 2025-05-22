@@ -20,22 +20,17 @@ from quantem.core.utils.utils import (
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
-    validate_dict_keys,
     validate_gt,
     validate_int,
     validate_np_len,
     validate_xplike,
 )
-from quantem.diffractive_imaging.complexprobe import (
-    POLAR_ALIASES,
-    POLAR_SYMBOLS,
-    ComplexProbe,
-)
+from quantem.diffractive_imaging.object_models import ObjectPixelized
+from quantem.diffractive_imaging.probe_models import ProbePixelized
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
     center_crop_arr,
     fit_origin,
-    fourier_shift,
     get_shifted_array,
     sum_patches,
 )
@@ -45,6 +40,10 @@ if TYPE_CHECKING:
 else:
     if config.get("has_torch"):
         import torch
+
+
+ObjectModelType = ObjectPixelized  # | ProbeDIP | ProbeImplicit
+ProbeModelType = ProbePixelized  # | ProbeParameterized
 
 """
 design patterns:
@@ -64,22 +63,25 @@ class PtychographyBase(AutoSerialize):
     It is designed to be subclassed by specific Ptychography algorithms.
     """
 
-    _token = object()
-
-    DEFAULT_PROBE_PARAMS = {
-        "energy": None,
-        "defocus": None,
-        "semiangle_cutoff": None,
-        "rolloff": 2,
-        "polar_parameters": {},
+    DEFAULT_CONSTRAINTS = {
+        "object": {
+            "fix_potential_baseline": False,
+            "identical_slices": False,
+            "tv_weight_yx": 0.0,
+            "tv_weight_z": 0.0,
+            "apply_fov_mask": False,
+        },
+        "probe": {
+            "fix_probe": False,
+            "fix_probe_com": False,
+        },
     }
+
+    _token = object()
 
     def __init__(  # TODO prevent direct instantiation
         self,
         dset: Dataset4dstem,
-        probe_params: dict | None = None,
-        probe: np.ndarray | None = None,
-        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
@@ -95,12 +97,8 @@ class PtychographyBase(AutoSerialize):
         self.dset = dset
         self.device = device
         self.rng = rng
-        self.vacuum_probe_intensity = vacuum_probe_intensity
 
         # initializing default attributes
-        self._probe_params = self.DEFAULT_PROBE_PARAMS
-        if probe is not None:
-            self.initial_probe = probe
         self._preprocessed: bool = False
         self._obj_padding_force_power2_level: int = 0
         self._store_iterations: bool = False
@@ -109,19 +107,12 @@ class PtychographyBase(AutoSerialize):
         self._epoch_recon_types: list[str] = []
         self._epoch_lrs: dict[str, list] = {}  # LRs/step_sizes across epochs
         self._epoch_snapshots: list[dict[str, int | np.ndarray]] = []
-
-        if probe_params is not None:
-            self.probe_params = probe_params
-        # would like to run set_initial_probe here, but then need to have defined
-        # num_slices, which I feel like is better for pre-processing. hm.
+        self._constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     @classmethod
     def from_dataset4dstem(
         cls,
         dset: Dataset4dstem,
-        probe_params: dict | None = None,
-        probe: np.ndarray | None = None,
-        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         verbose: int | bool = True,
         device: str = "cpu",  # "gpu" | "cpu" | "cuda:X"
         rng: np.random.Generator | int | None = None,
@@ -143,9 +134,6 @@ class PtychographyBase(AutoSerialize):
         """
         slf = cls(
             dset=dset,
-            probe_params=probe_params,
-            probe=probe,
-            vacuum_probe_intensity=vacuum_probe_intensity,
             verbose=verbose,
             device=device,
             rng=rng,
@@ -154,8 +142,17 @@ class PtychographyBase(AutoSerialize):
         return slf
 
     # region --- preprocessing ---
+    ## hopefully will be able to remove some of thes preprocessing flags,
+    ## convert plotting and vectorized to kwargs
+    ## could also force users to initialize object and probe models externally, but I prefer
+    ## having the flexibility of passing the types in here and initializing them internally
     def preprocess(
         self,
+        obj_model: ObjectModelType | type | None = None,
+        probe_model: ProbeModelType | type | None = None,
+        probe_params: dict = {},
+        initial_probe: np.ndarray | None = None,
+        vacuum_probe_intensity: np.ndarray | None = None,
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         obj_padding_px: tuple[int, int] = (0, 0),
         com_fit_function: Literal["none", "plane", "parabola", "bezier_two", "constant"] = "plane",
@@ -176,10 +173,6 @@ class PtychographyBase(AutoSerialize):
         """
         self._check_dset()
         # TODO add a reset here?
-        self.set_obj_type(obj_type, force=True)
-        self.num_probes = num_probes
-        self.num_slices = num_slices
-        self.slice_thicknesses = slice_thicknesses
 
         # calculate CoM
         self._calculate_intensities_center_of_mass(
@@ -199,101 +192,37 @@ class PtychographyBase(AutoSerialize):
 
         if padded_diffraction_intensities_shape is not None:
             self._padded_diffraction_shape = np.array(padded_diffraction_intensities_shape)
-            self.dset.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
+            self.dset.pad(
+                output_shape=(
+                    self.dset.shape[0],
+                    self.dset.shape[1],
+                    *padded_diffraction_intensities_shape,
+                ),
+                in_place=True,
+            )
 
-            if self.vacuum_probe_intensity is not None:
-                vppad = Dataset.from_array(np.fft.fftshift(self.vacuum_probe_intensity))
+            if vacuum_probe_intensity is not None:
+                vppad = Dataset.from_array(np.fft.fftshift(vacuum_probe_intensity))
                 vppad.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
-                self.vacuum_probe_intensity = np.fft.fftshift(vppad.array)
+                vacuum_probe_intensity = np.fft.fftshift(vppad.array)
         else:
             self._padded_diffraction_shape = self.roi_shape
 
-        ## Probe stuff
-        # TODO improve this, issue is that we need to set num_probes before running
-        # set_initial_probe, but we also need the initial probe passed to _init_ or the already
-        # set initial_probe if preprocess is being run again
-        if hasattr(self, "_initial_probe"):
-            init_probe = self.initial_probe
-        else:
-            init_probe = None
-        self.set_initial_probe(self.probe_params, init_probe, self.vacuum_probe_intensity)
+        self.set_probe_model(
+            probe_model, num_probes, probe_params, vacuum_probe_intensity, initial_probe
+        )
+
         self.obj_padding_px = obj_padding_px
+        self.set_obj_model(obj_model, num_slices, obj_type)
+        self.slice_thicknesses = slice_thicknesses
         self._calculate_scan_positions_in_pixels(obj_padding_px=self.obj_padding_px)
         self._set_patch_indices()
         self._compute_propagator_arrays()
         self._set_obj_fov_mask()
 
-        self.obj = torch.ones(tuple(self.obj_shape_full), dtype=self._obj_dtype)
-
         self._preprocessed = True
         self.reset_recon()  # force clear losses and everything
         return self
-
-    def set_initial_probe(
-        self,
-        probe_params: dict | None,
-        probe: np.ndarray | None = None,
-        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-    ):
-        self.vacuum_probe_intensity = vacuum_probe_intensity
-        if probe_params is not None:
-            self.probe_params = probe_params
-            prb = ComplexProbe(
-                gpts=tuple(self.roi_shape),
-                sampling=tuple(self.sampling),
-                energy=self.probe_params["energy"],
-                semiangle_cutoff=self.probe_params["semiangle_cutoff"],
-                defocus=self.probe_params["defocus"],
-                rolloff=self.probe_params["rolloff"],
-                vacuum_probe_intensity=self.vacuum_probe_intensity,
-                parameters=self.probe_params["polar_parameters"],
-                device="cpu",
-            )
-            probes = prb.build()._array
-        elif probe is not None:
-            if isinstance(probe, ComplexProbe):
-                # currently don't really support this, would need to store the initial complex
-                # probe because gets re-set during preprocess if padding diffraction shape
-                probes = probe.build()._array
-            else:
-                probes = self._to_numpy(probe)
-        else:
-            raise ValueError(
-                "must provide either probe_params or probe in the form of a numpy array or ComplexProbe"
-            )
-
-        if probes.ndim != 3:
-            probes = probes[None]
-        if probes.shape[0] != self.num_probes:
-            probes = np.tile(probes, (self.num_probes, 1, 1))
-
-        # apply random phase shifts for initializing mixed state
-        for a0 in range(1, self.num_probes):
-            shift_y = np.exp(
-                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[0])
-            ).astype(config.get("dtype_complex"))
-            shift_x = np.exp(
-                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[1])
-            ).astype(config.get("dtype_complex"))
-            probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
-
-        probes = self._normalize_initial_probe(probes)
-
-        self.initial_probe = probes
-        self.probe = probes
-        return
-
-    def _normalize_initial_probe(self, probe: np.ndarray | None = None) -> np.ndarray:
-        # Normalize probe to match mean diffraction intensity
-        if hasattr(self, "_mean_diffraction_intensity"):
-            probe = self.initial_probe.copy() if probe is None else probe
-            probe_intensity = np.sum(np.abs(np.fft.fft2(probe)) ** 2)
-            intensity_norm = np.sqrt(self._mean_diffraction_intensity / probe_intensity)
-            return probe * intensity_norm
-        else:
-            raise AttributeError(
-                "_mean_diffraction_intensity has not yet been set. Run preprocess."
-            )
 
     def _calculate_intensities_center_of_mass(
         self,
@@ -950,7 +879,7 @@ class PtychographyBase(AutoSerialize):
             return
 
         kr, kc = tuple(torch.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
-        wavelength = electron_wavelength_angstrom(self.probe_params["energy"])
+        wavelength = electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
         propagators = torch.empty(
             (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=torch.complex64
         )
@@ -994,7 +923,7 @@ class PtychographyBase(AutoSerialize):
         return
 
     def _get_probe_overlap(self, max_batch_size: int | None = None) -> np.ndarray:
-        prb = self._probe[0]
+        prb = self.probe_model.probe[0]
         num_dps = int(np.prod(self.gpts))
         shifted_probes = prb.expand(num_dps, *self.roi_shape)
 
@@ -1042,38 +971,24 @@ class PtychographyBase(AutoSerialize):
         )
         self._shifted_amplitudes = self._to_torch(arr)
 
+    ## TODO -- make an "intensities" property that is the raw intensities as torch tensor
+
     @property
     def obj_type(self) -> str:
-        return self._obj_type
+        return self.obj_model._obj_type
 
     def set_obj_type(self, t: str | None, force: bool = False) -> None:
-        if t is None:
-            return
-        t_str = str(t).lower()
-        if t_str in ["potential", "pot", "potentials"]:
-            new_obj_type = "potential"
-        elif t_str in ["pure_phase", "purephase", "pure phase", "pure"]:
-            new_obj_type = "pure_phase"
-        elif t_str in ["complex", "c"]:
-            new_obj_type = "complex"
-        else:
-            raise ValueError(
-                f"Object type should be 'potential', 'complex', or 'pure_phase', got {t}"
-            )
-        if self.num_epochs > 0 and new_obj_type != self._obj_type and not force:
+        new_obj_type = self.obj_model._process_obj_type(t)
+        if self.num_epochs > 0 and new_obj_type != self.obj_model.obj_type and not force:
             raise ValueError(
                 "Cannot change object type after training. Run with reset=True or rerun preprocess."
             )
-        self._obj_type = new_obj_type
+        self.obj_model.obj_type = new_obj_type
 
     @property
     def num_slices(self) -> int:
         """if num_slices > 1, then it is multislice reconstruction"""
-        return self._num_slices
-
-    @num_slices.setter
-    def num_slices(self, val: int) -> None:
-        self._num_slices = validate_int(validate_gt(val, 0, "num_slices"), "num_slices")
+        return self.obj_model.num_slices
 
     @property
     def propagators(self) -> np.ndarray:
@@ -1102,13 +1017,7 @@ class PtychographyBase(AutoSerialize):
     @property
     def num_probes(self) -> int:
         """if num_probes > 1, then it is a mixed-state reconstruction"""
-        return self._num_probes
-
-    @num_probes.setter
-    def num_probes(self, val: int) -> None:
-        new_num = validate_int(validate_gt(val, 0, "num_probes"), "num_probes")
-        self._check_rm_preprocessed(new_num, "_num_probes")
-        self._num_probes = new_num
+        return self.probe_model.num_probes
 
     @property
     def slice_thicknesses(self) -> np.ndarray:
@@ -1171,34 +1080,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def obj(self) -> np.ndarray:
-        return self._to_numpy(self._obj)
-
-    @obj.setter
-    def obj(self, obj: "np.ndarray | torch.Tensor") -> None:
-        """Shape [num_slices, height, width]"""
-        obj = validate_array(
-            obj,
-            name="obj",
-            dtype=self._obj_dtype,
-            ndim=3,
-            shape=self.obj_shape_full,
-            expand_dims=True,
-        )
-        obj = self._to_torch(obj)
-        mask = self._obj_fov_mask
-        if self.obj_type in ["complex", "pure_phase"]:
-            if self.obj_type == "complex":
-                amp = mask * obj.abs()
-            else:
-                amp = obj.abs()
-            ph = obj.angle() * mask
-            ph -= ph.mean()
-            new_obj = amp * arr.exp(1.0j * ph)
-            self._obj = new_obj.type(self._obj_dtype)
-        else:
-            masked_obj = obj * mask
-            masked_obj -= masked_obj.min()
-            self._obj = masked_obj.type(self._obj_dtype)
+        return self._to_numpy(self.obj_model.obj)
 
     @property
     def obj_padding_px(self) -> np.ndarray:
@@ -1218,7 +1100,7 @@ class PtychographyBase(AutoSerialize):
         if self._obj_padding_force_power2_level > 0:
             p2 = adjust_padding_power2(
                 p2,
-                self.obj_shape_crop,
+                self._obj_shape_crop_2d,
                 self._obj_padding_force_power2_level,
             )
         self._obj_padding_px = p2
@@ -1238,47 +1120,47 @@ class PtychographyBase(AutoSerialize):
         )
         self._obj_fov_mask = self._to_torch(mask)
 
-    @property
-    def vacuum_probe_intensity(self) -> np.ndarray | None:
-        """corner centered vacuum probe"""
-        if self._vacuum_probe_intensity is None:
-            return None
-        return self._to_numpy(self._vacuum_probe_intensity)
+    # @property
+    # def vacuum_probe_intensity(self) -> np.ndarray | None:
+    #     """corner centered vacuum probe"""
+    #     if self._vacuum_probe_intensity is None:
+    #         return None
+    #     return self._to_numpy(self._vacuum_probe_intensity)
 
-    @vacuum_probe_intensity.setter
-    def vacuum_probe_intensity(self, vp: np.ndarray | Dataset4dstem | None):
-        if vp is None:
-            self._vacuum_probe_intensity = None
-            return
-        elif isinstance(vp, np.ndarray):
-            vp2 = vp.astype(config.get("dtype_real"))
-        elif isinstance(vp, (Dataset4dstem, Dataset)):
-            vp2 = vp.array
-        else:
-            raise NotImplementedError(f"Unknown vacuum probe type: {type(vp)}")
+    # @vacuum_probe_intensity.setter
+    # def vacuum_probe_intensity(self, vp: np.ndarray | Dataset4dstem | None):
+    #     if vp is None:
+    #         self._vacuum_probe_intensity = None
+    #         return
+    #     elif isinstance(vp, np.ndarray):
+    #         vp2 = vp.astype(config.get("dtype_real"))
+    #     elif isinstance(vp, (Dataset4dstem, Dataset)):
+    #         vp2 = vp.array
+    #     else:
+    #         raise NotImplementedError(f"Unknown vacuum probe type: {type(vp)}")
 
-        if vp2.ndim == 4:
-            vp2 = np.mean(vp2, axis=(0, 1))
-        elif vp2.ndim != 2:
-            raise ValueError(f"Weird number of dimensions for vacuum probe, shape: {vp.shape}")
+    #     if vp2.ndim == 4:
+    #         vp2 = np.mean(vp2, axis=(0, 1))
+    #     elif vp2.ndim != 2:
+    #         raise ValueError(f"Weird number of dimensions for vacuum probe, shape: {vp.shape}")
 
-        # vacuum probe should be corner centered
-        corner_vals = vp2[:10, :10].mean()
-        if corner_vals < 0.01 * vp2.max():
-            warn("Looks like vacuum probe is not corner centered, fft shifting now)")
-        else:
-            vp2 = np.fft.fftshift(vp2)
+    #     # vacuum probe should be corner centered
+    #     corner_vals = vp2[:10, :10].mean()
+    #     if corner_vals < 0.01 * vp2.max():
+    #         warn("Looks like vacuum probe is not corner centered, fft shifting now)")
+    #     else:
+    #         vp2 = np.fft.fftshift(vp2)
 
-        # fix centering
-        com: list | tuple = ndi.center_of_mass(vp2)
-        vp2 = get_shifted_array(
-            vp2,
-            -com[0],
-            -com[1],
-            bilinear=True,
-        )
+    #     # fix centering
+    #     com: list | tuple = ndi.center_of_mass(vp2)
+    #     vp2 = get_shifted_array(
+    #         vp2,
+    #         -com[0],
+    #         -com[1],
+    #         bilinear=True,
+    #     )
 
-        self._vacuum_probe_intensity = self._to_torch(vp2)
+    #     self._vacuum_probe_intensity = self._to_torch(vp2)
 
     @property
     def positions_px(self) -> np.ndarray:
@@ -1327,74 +1209,7 @@ class PtychographyBase(AutoSerialize):
     def probe(self) -> np.ndarray:
         """Complex valued probe(s). Shape [num_probes, roi_reight, roi_width]"""
         self._check_probe()
-        return self._to_numpy(self._probe)
-
-    @probe.setter
-    def probe(self, prb: "np.ndarray|torch.Tensor"):
-        prb = validate_array(
-            prb,
-            name="probe",
-            dtype=config.get("dtype_complex"),
-            ndim=3,
-            shape=(self.num_probes, *self.roi_shape),
-            expand_dims=True,
-        )
-        self._probe = self._to_torch(prb)
-
-    @property
-    def initial_probe(self) -> np.ndarray:
-        self._check_initial_probe()
-        if self._initial_probe is None:
-            raise ValueError("Initial probe not set")
-        return self._to_numpy(self._initial_probe)
-
-    @initial_probe.setter
-    def initial_probe(self, prb: "np.ndarray|torch.Tensor"):
-        prb = validate_array(
-            prb,
-            name="probe",
-            dtype=config.get("dtype_complex"),
-            ndim=3,
-            shape=(self.num_probes, *self.roi_shape),
-            expand_dims=True,
-        )
-        self._initial_probe = self._to_torch(prb)
-
-    @property
-    def probe_params(self) -> dict[str, Any]:
-        return self._probe_params
-
-    @probe_params.setter
-    def probe_params(self, params: dict[str, Any] = {}):
-        validate_dict_keys(
-            params,
-            [*self.DEFAULT_PROBE_PARAMS.keys(), *POLAR_SYMBOLS, *POLAR_ALIASES.keys()],
-        )
-        polar_parameters: dict[str, float] = dict(zip(POLAR_SYMBOLS, [0.0] * len(POLAR_SYMBOLS)))
-
-        def process_polar_params(p: dict):
-            bads = []
-            for symbol, value in p.items():
-                if isinstance(value, dict):
-                    process_polar_params(value)  # Recursively process nested dictionaries
-                elif value is None:
-                    continue
-                elif symbol in polar_parameters.keys():
-                    polar_parameters[symbol] = float(value)
-                    bads.append(symbol)
-                elif symbol == "defocus":
-                    polar_parameters[POLAR_ALIASES[symbol]] = -1 * float(value)
-                elif symbol in POLAR_ALIASES:
-                    polar_parameters[POLAR_ALIASES[symbol]] = float(value)
-                    bads.append(symbol)
-            [p.pop(bad) for bad in bads]
-            # Ignore other parameters (energy, semiangle_cutoff, etc.)
-
-        process_polar_params(params)
-        params["polar_parameters"] = polar_parameters
-        self._probe_params = (
-            self.DEFAULT_PROBE_PARAMS | self._probe_params | params
-        )  # prioritize new values
+        return self._to_numpy(self.probe_model.probe)
 
     @property
     def rng(self) -> np.random.Generator:
@@ -1441,6 +1256,130 @@ class PtychographyBase(AutoSerialize):
                 return snapshot
         raise ValueError(f"No snapshot found at iteration: {iteration}")
 
+    @property
+    def obj_model(self) -> ObjectModelType:
+        return self._obj_model
+
+    # @obj_model.setter
+    # def obj_model(self, *args):
+    #     raise AttributeError("Use tycho.set_obj_model to set the obj_model")
+
+    def set_obj_model(
+        self,
+        model: ObjectModelType | type | None,
+        num_slices: int,
+        obj_type: Literal["complex", "pure_phase", "potential"],
+    ):
+        # TODO -- here can transfer obj from existing to new model if applicable?
+        if model is None:
+            if hasattr(self, "_obj_model"):
+                return
+            else:
+                raise ValueError("obj_model must be a subclass of ObjectModelType")
+
+        if isinstance(model, type):
+            if not issubclass(model, ObjectModelType):
+                raise TypeError(
+                    f"obj_model must be a subclass of ObjectModelType, got {type(model)}"
+                )
+        elif not isinstance(model, ObjectModelType):
+            raise TypeError(f"obj_model must be a subclass of ObjectModelType, got {type(model)}")
+
+        # setting object shape manually here as haven't yet set slices
+        cshape = self._obj_shape_crop_2d
+        rotshape = np.floor(
+            [
+                abs(cshape[-1] * np.sin(self.com_rotation_rad))
+                + abs(cshape[-2] * np.cos(self.com_rotation_rad)),
+                abs(cshape[-2] * np.sin(self.com_rotation_rad))
+                + abs(cshape[-1] * np.cos(self.com_rotation_rad)),
+            ]
+        ).astype("int")
+        rotshape += rotshape % 2
+        rotshape += 2 * self.obj_padding_px
+        obj_shape_full = (num_slices, *rotshape)
+
+        if isinstance(model, type):
+            self._obj_model = model(
+                shape=obj_shape_full,
+                device=self.device,
+                obj_type=obj_type,
+            )
+        elif isinstance(model, ObjectModelType):  # FIXME
+            self._obj_model = model
+        else:
+            raise TypeError(f"obj_modelect must be a ObjectModelType, got {type(model)}")
+
+    @property
+    def probe_model(self) -> ProbeModelType:
+        return self._probe_model
+
+    def set_probe_model(
+        self,
+        probe_model: ProbeModelType | type | None,
+        num_probes: int = 1,
+        probe_params: dict[str, float] = {},
+        vacuum_probe_intensity: np.ndarray | Dataset4dstem | None = None,
+        initial_probe: np.ndarray | None = None,
+    ):
+        if probe_model is None:
+            if hasattr(self, "_probe_model"):
+                return
+            else:
+                raise ValueError("probe_model must be a subclass of ProbeModelType")
+
+        if isinstance(probe_model, type):
+            if not issubclass(probe_model, ProbeModelType):
+                raise TypeError(
+                    f"probe_model must be a subclass of ProbeModelType, got {type(probe_model)}"
+                )
+
+            self._probe_model = probe_model(
+                shape=(num_probes, *self.roi_shape),
+                probe_params=probe_params,
+                vacuum_probe_intensity=vacuum_probe_intensity,
+                reciprocal_sampling=self.reciprocal_sampling,
+                mean_diffraction_intensity=self._mean_diffraction_intensity,
+                initial_probe=initial_probe,
+                dtype=self._dtype_complex,
+                device=self.device,
+                rng=self.rng,
+            )
+        elif isinstance(probe_model, ProbeModelType):
+            # add protections for changing num_probes and such
+            self._probe_model = probe_model
+
+    @property
+    def constraints(self) -> dict[str, Any]:
+        return self._constraints
+
+    @constraints.setter
+    def constraints(self, c: dict[str, Any]):
+        """Sets both self._constraints as well as the constraints in the object and probe models"""
+        for key, value in c.items():
+            if key not in self.DEFAULT_CONSTRAINTS:
+                raise KeyError(
+                    f"Invalid constraint key '{key}', allowed keys are {list(self.DEFAULT_CONSTRAINTS.keys())}"
+                )
+
+            if not isinstance(value, dict):
+                raise ValueError(f"Constraint '{key}' must be a dictionary.")
+
+            allowed_subkeys = self.DEFAULT_CONSTRAINTS[key].keys()
+            for subkey, subvalue in value.items():
+                if subkey not in allowed_subkeys:
+                    raise KeyError(
+                        f"Invalid subkey '{subkey}' for constraint '{key}', allowed subkeys are {list(allowed_subkeys)}"
+                    )
+
+                self._constraints[key][subkey] = subvalue
+        for k, v in self._constraints["object"].items():
+            if k in self.obj_model.DEFAULT_CONSTRAINTS.keys():
+                self.obj_model.add_constraint(k, v)
+        for k, v in self._constraints["probe"].items():
+            if k in self.probe_model.DEFAULT_CONSTRAINTS.keys():
+                self.probe_model.add_constraint(k, v)
+
     # endregion --- explicit class properties ---
 
     # region --- implicit class properties ---
@@ -1481,10 +1420,7 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def _obj_dtype(self) -> "torch.dtype":
-        if self.obj_type == "potential":
-            return self._dtype_real
-        else:
-            return self._dtype_complex
+        return self.obj_model.dtype
 
     @property
     def _dtype_real(self) -> "torch.dtype":
@@ -1524,9 +1460,11 @@ class PtychographyBase(AutoSerialize):
         if units[0] == "A^-1":
             pass
         elif units[0] == "mrad":
-            if self.probe_params["energy"] is not None:  # convert mrad -> A^-1
+            if self.probe_model.probe_params["energy"] is not None:  # convert mrad -> A^-1
                 sampling = (
-                    sampling / electron_wavelength_angstrom(self.probe_params["energy"]) / 1e3
+                    sampling
+                    / electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
+                    / 1e3
                 )
             else:
                 raise ValueError("dc units given in mrad but no energy defined to convert to A^-1")
@@ -1553,9 +1491,11 @@ class PtychographyBase(AutoSerialize):
         if units[0] == "mrad":
             pass
         elif units[0] == "A^-1":
-            if self.probe_params["energy"] is not None:
+            if self.probe_model.probe_params["energy"] is not None:
                 sampling = (
-                    sampling * electron_wavelength_angstrom(self.probe_params["energy"]) * 1e3
+                    sampling
+                    * electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
+                    * 1e3
                 )
             else:
                 raise ValueError("dc units given in A^-1 but no energy defined to convert to mrad")
@@ -1601,20 +1541,28 @@ class PtychographyBase(AutoSerialize):
         return shp.astype("int")
 
     @property
+    def _obj_shape_crop_2d(self) -> np.ndarray:
+        """All object shapes are 2D"""
+        shp = np.floor(self.fov / self.sampling)
+        shp += shp % 2
+        shp = shp.astype("int")
+        return shp
+
+    @property
     def obj_shape_full(self) -> np.ndarray:
-        cshape = self.obj_shape_crop.copy()
-        rotshape = np.floor(
-            [
-                abs(cshape[-1] * np.sin(self.com_rotation_rad))
-                + abs(cshape[-2] * np.cos(self.com_rotation_rad)),
-                abs(cshape[-2] * np.sin(self.com_rotation_rad))
-                + abs(cshape[-1] * np.cos(self.com_rotation_rad)),
-            ]
-        )
-        rotshape += rotshape % 2
-        rotshape += 2 * self.obj_padding_px
-        shape = np.concatenate([[self.num_slices], rotshape])
-        return shape.astype("int")
+        # cshape = self.obj_shape_crop.copy()
+        # rotshape = np.floor(
+        #     [
+        #         abs(cshape[-1] * np.sin(self.com_rotation_rad))
+        #         + abs(cshape[-2] * np.cos(self.com_rotation_rad)),
+        #         abs(cshape[-2] * np.sin(self.com_rotation_rad))
+        #         + abs(cshape[-1] * np.cos(self.com_rotation_rad)),
+        #     ]
+        # )
+        # rotshape += rotshape % 2
+        # rotshape += 2 * self.obj_padding_px
+        # shape = np.concatenate([[self.num_slices], rotshape])
+        return np.array(self.obj_model.shape).astype("int")
 
     # endregion --- implicit class properties ---
 
@@ -1631,12 +1579,8 @@ class PtychographyBase(AutoSerialize):
             )
 
     def _check_probe(self):
-        if not hasattr(self, "_probe"):
+        if not hasattr(self, "_probe_model"):
             raise AttributeError("No probe set. Run Ptycho.set_initial_probe()")
-
-    def _check_initial_probe(self):
-        if not hasattr(self, "_initial_probe") or getattr(self, "_initial_probe") is None:
-            raise AttributeError("No initial probe set. Run Ptycho.set_initial_probe()")
 
     def _check_preprocessed(self):
         if not self._preprocessed:
@@ -1741,12 +1685,13 @@ class PtychographyBase(AutoSerialize):
         return np.repeat(arr, repeats, axis=axis)
 
     def reset_recon(self) -> None:
-        self.obj = torch.ones(self._obj.shape, dtype=self._obj_dtype, device=self.device)
-        self.probe = self._initial_probe.clone()
+        self.obj_model.reset()
+        self.probe_model.reset()
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
         self._epoch_lrs = {}
+        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     def append_recon_iteration(
         self,
@@ -1806,8 +1751,8 @@ class PtychographyBase(AutoSerialize):
         )
 
     def _move_recon_arrays_to_device(self):
-        self._obj = self._to_torch(self._obj)
-        self._probe = self._to_torch(self._probe)
+        self.obj_model.to_device(self.device)
+        self.probe_model.to_device(self.device)
         self._patch_indices = self._to_torch(self._patch_indices)
         self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
         self.positions_px = self._to_torch(self._positions_px)
@@ -1818,12 +1763,28 @@ class PtychographyBase(AutoSerialize):
 
     # region --- ptychography foRcard model ---
 
-    def forward_operator(self, obj, probe, patch_indices, fract_positions, descan_shifts=None):
-        obj_patches = self._get_obj_patches(obj, patch_indices)
-        ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
-        shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
-        ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probe)
+    # def forward_operator(self, obj, probe, patch_indices, fract_positions, descan_shifts=None):
+    #     obj_patches = self._get_obj_patches(obj, patch_indices)
+    #     ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
+    #     shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
+    #     ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+    #     propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probe)
+    #     ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
+    #     ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+    #     if descan_shifts is not None:
+    #         # TODO move applying plane wave descan shift here
+    #         ### applying plane wave shift here to overlap, reduce need for extra FFT
+    #         #     shifts = fourier_translation_operator(
+    #         #         descan_shifts, self.roi_shape, device=self.device
+    #         #     )
+    #         #     shifts = shifts[:, None]
+    #         #     overlap *= shifts
+    #         raise NotImplementedError("move descan shift stuff to here")
+
+    #     return obj_patches, propagated_probes, overlap
+
+    def forward_operator(self, obj_patches, shifted_input_probes, descan_shifts=None):
+        propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probes)
         ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         if descan_shifts is not None:
@@ -1836,7 +1797,7 @@ class PtychographyBase(AutoSerialize):
             #     overlap *= shifts
             raise NotImplementedError("move descan shift stuff to here")
 
-        return obj_patches, propagated_probes, overlap
+        return propagated_probes, overlap
 
     def error_estimate(
         self,
@@ -1844,17 +1805,21 @@ class PtychographyBase(AutoSerialize):
         true_amplitudes,
     ) -> "float":
         farfield_amplitudes = self.estimate_amplitudes(overlap)
-        return arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
+        raw_error = arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
+        ave_error = raw_error / farfield_amplitudes.shape[0]  # normalize by # patterns
+        return ave_error
+        # return ((farfield_amplitudes - true_amplitudes) ** 2).abs().sum(dim=(1, 2)).mean()
+        # return torch.mean(torch.sum(torch.abs(farfield_amplitudes - true_amplitudes) ** 2), dim=(1,2))
 
-    def _get_obj_patches(self, obj_array, patch_indices):
-        """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
-        if self.obj_type == "potential":
-            obj_array = arr.exp(1.0j * obj_array)
-        obj_flat = obj_array.reshape(obj_array.shape[0], -1)
-        # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
-        # Output shape: (num_slicpaes, batch_size, roi_shape[0], roi_shape[1])
-        patches = obj_flat[:, patch_indices]
-        return patches
+    # def _get_obj_patches(self, obj_array, patch_indices):
+    #     """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
+    #     if self.obj_type == "potential":
+    #         obj_array = arr.exp(1.0j * obj_array)
+    #     obj_flat = obj_array.reshape(obj_array.shape[0], -1)
+    #     # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
+    #     # Output shape: (num_slicpaes, batch_size, roi_shape[0], roi_shape[1])
+    #     patches = obj_flat[:, patch_indices]
+    #     return patches
 
     def overlap_projection(self, obj_patches, input_probe):
         """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
@@ -1875,12 +1840,8 @@ class PtychographyBase(AutoSerialize):
         # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
         eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
-        if config.get("has_torch"):
-            if isinstance(overlap_array, torch.Tensor):
-                overlap_fft = torch.fft.fft2(overlap_array)
-                return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
-        overlap_fft = np.fft.fft2(overlap_array)
-        return np.sqrt(np.sum(np.abs(overlap_fft + eps) ** 2, axis=0))
+        overlap_fft = torch.fft.fft2(overlap_array)
+        return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
 
     def _propagate_array(
         self, array: "torch.Tensor", propagator_array: "torch.Tensor"

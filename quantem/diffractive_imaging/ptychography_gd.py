@@ -8,8 +8,6 @@ from quantem.core.utils import array_funcs as arr
 from quantem.core.utils.utils import generate_batches
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-from quantem.diffractive_imaging.ptychography_constraints import PtychographyConstraints
-from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
 if TYPE_CHECKING:
     import torch
@@ -18,8 +16,8 @@ else:
         import torch
 
 
-class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, PtychographyBase):
-    def reconstruct(
+class PtychographyGD(PtychographyBase):
+    def reconstruct_gd(
         self,
         num_iter: int = 0,
         reset: bool = False,
@@ -80,14 +78,14 @@ class PtychographyGD(PtychographyConstraints, PtychographyVisualizations, Ptycho
             )
             error /= self._mean_diffraction_intensity * np.prod(self.gpts)
             self._epoch_losses.append(error.item())
-            self._record_lrs(step_size)
+            self._record_lrs_gd(step_size)
             self._epoch_recon_types.append("GD")
             if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self._obj, self._probe)
 
         return self
 
-    def _record_lrs(self, step_size) -> None:
+    def _record_lrs_gd(self, step_size) -> None:
         if "GD" in self._epoch_lrs.keys():
             self._epoch_lrs["GD"].append(step_size)
         else:

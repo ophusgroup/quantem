@@ -57,7 +57,14 @@ def to_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
             return array.cpu().detach().numpy()
     if isinstance(array, np.ndarray):
         return np.array(array)
-    raise TypeError(f"Input should be np.ndarray, cp.ndarray, or torch.Tensor. Got: {type(array)}")
+    elif isinstance(array, (tuple, list)):
+        return np.array(array)
+    #     return np.array([to_numpy(i) for i in array])
+    # elif isinstance(array, (float, int, bool)):
+    # return np.array(array)
+    raise TypeError(
+        f"Input should be np.ndarray, cp.ndarray, or torch.Tensor, tuple, or list. Got: {type(array)}"
+    )
 
 
 def to_cpu(arrs: Any) -> np.ndarray | Sequence:
