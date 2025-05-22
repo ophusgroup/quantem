@@ -1,6 +1,7 @@
 from typing import Optional, Tuple
 
 import torch
+import torch.nn as nn
 from numpy.typing import NDArray
 
 from quantem.core.utils.scattering_utils import electron_wavelength_angstrom
@@ -34,11 +35,13 @@ class ConvergedProbe:
         energy: float,
         gpts: Tuple[int, int],
         sampling: Tuple[float, float],
-        semiangle_cutoff: float = torch.inf,
         soft_aperture: bool = True,
+        semiangle_cutoff: float | torch.Tensor = torch.inf,
         vacuum_probe_intensity: Optional[torch.Tensor | NDArray] = None,
-        aberration_coefficients: Optional[dict[str, float]] = None,
-        device: str = "cpu",
+        fourier_intensity_normalization: float | torch.Tensor = 1.0,
+        aberration_coefficients: Optional[
+            dict[str, float] | nn.ParameterDict[str, torch.Tensor]
+        ] = None,
         **kwargs,
     ):
         """ """
@@ -47,32 +50,33 @@ class ConvergedProbe:
             if (key not in polar_symbols) and (key not in polar_aliases.keys()):
                 raise ValueError("{} not a recognized parameter".format(key))
 
+        if aberration_coefficients is None:
+            aberration_coefficients: dict[str, float | torch.Tensor] = {}
+        aberration_coefficients.update(kwargs)
+
+        self._aberration_coefficients = torch.nn.ParameterDict(
+            (k, 0.0) for k in polar_symbols
+        )
+        self._aberration_coefficients.update(
+            self.standardize_aberration_coefficients(aberration_coefficients)
+        )
+
         self._vacuum_probe_intensity = vacuum_probe_intensity
+        self._fourier_intensity_normalization = fourier_intensity_normalization
         self._semiangle_cutoff = semiangle_cutoff
         self._soft_aperture = soft_aperture
         self._energy = energy
         self._wavelength = electron_wavelength_angstrom(energy)
         self._gpts = gpts
         self._sampling = sampling
-        self._device = device
-
-        self._aberration_coefficients = dict(
-            zip(polar_symbols, [0.0] * len(polar_symbols))
-        )
-
-        if aberration_coefficients is None:
-            aberration_coefficients: dict[str, float] = {}
-
-        aberration_coefficients.update(kwargs)
-        self.set_aberration_coefficients(aberration_coefficients)
-
         self._angular_sampling = tuple(
             self._wavelength * 1e3 / s / n for s, n in zip(self._sampling, self._gpts)
         )
 
-        return None
-
-    def set_aberration_coefficients(self, aberration_coefficients: dict[str, float]):
+    @staticmethod
+    def standardize_aberration_coefficients(
+        aberration_coefficients: dict[str, float | torch.Tensor],
+    ) -> dict[str, float | torch.Tensor]:
         """
         Parameters
         ----------
@@ -80,20 +84,23 @@ class ConvergedProbe:
             Mapping from aberration symbols to their corresponding values.
         """
 
+        keys_to_pop = []
         for symbol, value in aberration_coefficients.items():
-            if symbol in self._aberration_coefficients.keys():
-                self._aberration_coefficients[symbol] = value
-
+            if symbol in polar_symbols:
+                pass
             elif symbol == "defocus":
-                self._aberration_coefficients[polar_aliases[symbol]] = -value
-
+                keys_to_pop.append(symbol)
+                aberration_coefficients[polar_aliases[symbol]] = -value
             elif symbol in polar_aliases.keys():
-                self._aberration_coefficients[polar_aliases[symbol]] = value
-
+                keys_to_pop.append(symbol)
+                aberration_coefficients[polar_aliases[symbol]] = value
             else:
                 raise ValueError("{} not a recognized parameter".format(symbol))
 
-        return None
+        for key in keys_to_pop:
+            aberration_coefficients.pop(key)
+
+        return aberration_coefficients
 
     def get_scattering_angles(self):
         """ """
@@ -112,30 +119,32 @@ class ConvergedProbe:
         alpha: torch.Tensor,
         phi: torch.Tensor,
     ) -> torch.Tensor:
-        semiangle_cutoff_rad = self._semiangle_cutoff / 1000
+        """ """
+        semiangle_cutoff = self._semiangle_cutoff
         soft_aperture = self._soft_aperture
         vacuum_probe_intensity = self._vacuum_probe_intensity
         angular_sampling = self._angular_sampling
 
         if vacuum_probe_intensity is not None:
-            vacuum_probe_intensity = (
-                torch.Tensor(vacuum_probe_intensity).to(torch.float).clip(0)
-            )
-            return torch.sqrt(vacuum_probe_intensity)
+            vacuum_probe_intensity = torch.as_tensor(
+                vacuum_probe_intensity, dtype=torch.float
+            ).clip(0)
+            return torch.sqrt(vacuum_probe_intensity + 1e-8)
 
-        if semiangle_cutoff_rad == torch.inf:
+        if semiangle_cutoff == torch.inf:
             return torch.ones_like(alpha)
 
         if soft_aperture:
             denominator = torch.sqrt(
                 (torch.cos(phi) * angular_sampling[0] * 1e-3) ** 2
                 + (torch.sin(phi) * angular_sampling[1] * 1e-3) ** 2
+                + 1e-8
             )
             array = torch.clip(
-                (semiangle_cutoff_rad - alpha) / denominator + 0.5, 0.0, 1.0
+                (semiangle_cutoff / 1000 - alpha) / denominator + 0.5, 0.0, 1.0
             )
         else:
-            array = (alpha < semiangle_cutoff_rad).to(torch.float)
+            array = (alpha < semiangle_cutoff / 1000).to(torch.float)
 
         return array
 
@@ -234,9 +243,11 @@ class ConvergedProbe:
     def build(self) -> "ConvergedProbe":
         """ """
         fourier_array = self.evaluate()
-        array = torch.fft.ifft2(fourier_array)
-        normalization = torch.sqrt(torch.sum(torch.square(torch.abs(array))))
-        self._array = array / normalization
+        fourier_intensity = torch.sum(torch.square(torch.abs(fourier_array)))
+        normalization = torch.sqrt(
+            fourier_intensity / self._fourier_intensity_normalization
+        )
         self._fourier_array = fourier_array / normalization
+        self._array = torch.fft.ifft2(self._fourier_array, norm="ortho")
 
         return self

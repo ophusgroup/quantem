@@ -322,4 +322,4 @@ class DeepImagePriorObjectModel(PixelatedObjectModel):
         return self.net.parameters()
 
 
-# region --- DIP ---
+# endregion --- DIP ---

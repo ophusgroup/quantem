@@ -1,6 +1,7 @@
 from typing import List, Optional, Self, Tuple
 
 import torch
+import torch.nn as nn
 
 from quantem.core.datastructures import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
@@ -114,9 +115,10 @@ class PixelatedProbeModel(AutoSerialize):
                 energy,
                 gpts,
                 sampling,
-                semiangle_cutoff,
                 soft_aperture,
+                semiangle_cutoff,
                 vacuum_probe_intensity,
+                mean_diffraction_intensity,
                 aberration_coefficients,
                 **kwargs,
             )
@@ -188,3 +190,133 @@ class PixelatedProbeModel(AutoSerialize):
 
 
 # endregion --- Pixelated Probe ---
+
+
+# region --- Parametrized Probe ---
+
+
+class ParametrizedProbeModel(PixelatedProbeModel):
+    """ """
+
+    _token = object()
+
+    def __init__(
+        self,
+        energy: float,
+        gpts: Tuple[int, int],
+        sampling: Tuple[int, int],
+        mean_diffraction_intensity: float,
+        semiangle_cutoff: float,
+        aberration_coefficients: nn.ParameterDict[str, float | torch.Tensor],
+        _token: object | None = None,
+    ):
+        """ """
+
+        if _token is not self._token:
+            raise RuntimeError(
+                "Use ParametrizedProbeModel.from_aberration_coefficients() to instantiate this class."
+            )
+
+        self.energy = energy
+        self.sampling = sampling
+        self.roi_shape = gpts
+        self.num_probes = 1
+
+        self._parameters = (
+            nn.ParameterDict(
+                {
+                    "mean_diffraction_intensity": nn.Parameter(
+                        torch.as_tensor(mean_diffraction_intensity, dtype=torch.float)
+                    ),
+                    "semiangle_cutoff": nn.Parameter(
+                        torch.as_tensor(semiangle_cutoff, dtype=torch.float)
+                    ),
+                }
+            )
+            | aberration_coefficients
+        )
+
+    @classmethod
+    def from_aberration_coefficients(
+        cls,
+        energy: float,
+        gpts: Tuple[int, int],
+        sampling: Tuple[int, int],
+        mean_diffraction_intensity: float,
+        semiangle_cutoff: float = torch.inf,
+        soft_aperture: bool = True,
+        vacuum_probe_intensity: Optional[torch.Tensor] = None,
+        aberration_coefficients: Optional[dict[str, float]] = None,
+        **kwargs,
+    ) -> Self:
+        """ """
+        if vacuum_probe_intensity is not None:
+            raise NotImplementedError(
+                "Use PixelatedProbeModel.from_aberration_coefficients() instead."
+            )
+
+        if soft_aperture is not True:
+            raise NotImplementedError()
+
+        probe = ConvergedProbe(
+            energy,
+            gpts,
+            sampling,
+            True,
+            semiangle_cutoff,
+            vacuum_probe_intensity,
+            mean_diffraction_intensity,
+            aberration_coefficients,
+            **kwargs,
+        )
+
+        return cls(
+            energy,
+            gpts,
+            sampling,
+            mean_diffraction_intensity,
+            semiangle_cutoff,
+            probe._aberration_coefficients,
+            cls._token,
+        )
+
+    def build_probe(self) -> torch.Tensor:
+        """Rebuild probe from current parameters."""
+        parameters = self.parameters()
+        semiangle_cutoff = parameters["semiangle_cutoff"]
+        mean_diffraction_intensity = parameters["mean_diffraction_intensity"]
+        aberrations = {
+            k: v
+            for k, v in parameters.items()
+            if k.startswith("phi") or k.startswith("C")
+        }
+
+        probe = (
+            ConvergedProbe(
+                self.energy,
+                self.roi_shape,
+                self.sampling,
+                soft_aperture=True,
+                semiangle_cutoff=semiangle_cutoff,
+                vacuum_probe_intensity=None,
+                fourier_intensity_normalization=mean_diffraction_intensity,
+                aberration_coefficients=aberrations,
+            )
+            .build()
+            ._array
+        )
+
+        return probe[None]
+
+    def backward(self, *args, **kwargs):
+        raise NotImplementedError("Use autograd for ParametrizedProbeModel.")
+
+    @property
+    def tensor(self) -> torch.Tensor:
+        return self.build_probe()
+
+    def parameters(self) -> List[nn.Parameter]:
+        return self._parameters
+
+
+# endregion --- Parametrized Probe ---

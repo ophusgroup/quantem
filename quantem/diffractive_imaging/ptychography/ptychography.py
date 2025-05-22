@@ -55,7 +55,11 @@ class PtychographicReconstruction:
         self.parameters = []
         if self.object.tensor.requires_grad:
             self.parameters.append(self.object.parameters())
-        if self.probe.tensor.requires_grad:
+        if isinstance(self.probe.parameters(), torch.nn.ParameterDict):
+            self.parameters.append(
+                list(filter(torch.is_tensor, self.probe.parameters().values()))
+            )
+        elif self.probe.tensor.requires_grad:
             self.parameters.append(self.probe.parameters())
 
     def set_optimizers(
@@ -224,16 +228,16 @@ class PtychographicReconstruction:
                 total_loss += loss.item()
 
                 # Constraints
-                # with torch.no_grad():
-                #     # threshold constraint
-                #     obj = self.object.tensor
-                #     amp = torch.clamp(torch.abs(obj), max=1.0)
-                #     phase = torch.angle(obj)
-                #     self.object.tensor.data = amp * torch.exp(1j * phase)
+                with torch.no_grad():
+                    # threshold constraint
+                    obj = self.object.tensor
+                    amp = torch.clamp(torch.abs(obj), max=1.0)
+                    phase = torch.angle(obj)
+                    self.object.tensor.data = amp * torch.exp(1j * phase)
 
-                #     # orthogonalization constraint
-                #     if self.probe.num_probes > 1:
-                #         self.probe.orthogonalize()
+                    # orthogonalization constraint
+                    if self.probe.num_probes > 1:
+                        self.probe.orthogonalize()
 
             print(f"[Epoch {epoch + 1:02d}] Loss: {total_loss:.4e}")
 
