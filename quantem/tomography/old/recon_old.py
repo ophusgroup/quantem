@@ -4,10 +4,10 @@ from typing import Optional
 import torch
 import numpy as np
 
-from torch_radon.radon import BaseRadon as Radon
+from torch_radon.radon import ParallelBeam as Radon
 from tqdm.auto import tqdm
 
-from quantem.tomography.dataset_tomo import DatasetTomo
+from quantem.tomography.tilt_series_dataset import DatasetTomo
 from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d
 from quantem.core.utils.imaging_utils import cross_correlation_shift
 

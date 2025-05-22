@@ -8,7 +8,7 @@ from quantem.core.utils.validators import ensure_valid_array
 
 from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
 
-class Tilt_Series(Dataset3d):
+class TiltSeries(Dataset3d):
 
     def __init__(
         self,
@@ -45,10 +45,15 @@ class Tilt_Series(Dataset3d):
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
     ) -> Self:
-        # array = ensure_valid_array(array, ndim=3) # Redundant check, since `Dataset3d` already does this?
+
+        if tilt_angles is not None:
+            validated_tilt_angles = ensure_valid_array(tilt_angles, ndim=1)
+        else:
+            validated_tilt_angles = None
+            
         return cls(
             array=array,
-            tilt_angles=tilt_angles if tilt_angles is not None else ["duck" for _ in range(array.shape[0])],
+            tilt_angles=validated_tilt_angles if validated_tilt_angles is not None else ["duck" for _ in range(array.shape[0])],
             name=name if name is not None else "Tilt Series Dataset",
             origin=origin if origin is not None else np.zeros(3),
             sampling=sampling if sampling is not None else np.ones(3),

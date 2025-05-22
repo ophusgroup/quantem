@@ -8,7 +8,7 @@ import numpy as np
 from torch_radon.radon import ParallelBeam as Radon
 from tqdm.auto import tqdm
 
-from quantem.tomography.dataset_tomo import Tilt_Series
+from quantem.tomography.tilt_series_dataset import Tilt_Series
 from quantem.tomography.utils import gaussian_kernel_1d, gaussian_filter_2d_stack, apply_circular_masks_all_axes
 from quantem.core.utils.imaging_utils import cross_correlation_shift
 

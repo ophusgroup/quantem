@@ -119,15 +119,6 @@ def validate_ndinfo(
 
     return arr
 
-def validate_volumetric_data(
-    array: NDArray, dtype: DTypeLike = None, ndim: int = 3,
-):
-    """
-    Validate and convert volumetric data to a Dataset3D.
-    """
-    
-    raise NotImplementedError("This function is not implemented yet.")
-
 
 def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List[str]:
     """
