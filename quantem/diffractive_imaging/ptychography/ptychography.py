@@ -136,12 +136,21 @@ class PtychographicReconstruction:
             if self.use_autograd:
                 loss.backward()
             else:
+                simulated_amplitudes = torch.sqrt(simulated_intensities + 1e-8)
+                amplitude_modification = (
+                    torch.sqrt(measured_intensities + 1e-8) / simulated_amplitudes
+                )
                 gradient = torch.fft.ifft2(
                     fourier_exit_waves
-                    - torch.sqrt(measured_intensities + 1e-8)
-                    * torch.exp(1j * torch.angle(fourier_exit_waves)),
+                    - amplitude_modification[:, None] * fourier_exit_waves,
                     norm="ortho",
                 )
+                # gradient = torch.fft.ifft2(
+                #     fourier_exit_waves
+                #     - torch.sqrt(measured_intensities + 1e-8)
+                #     * torch.exp(1j * torch.angle(fourier_exit_waves)),
+                #     norm="ortho",
+                # )
 
                 gradient = self.object.backward(
                     gradient, shifted_probes, obj_patches, self.positions_px[batch_idx]
@@ -215,16 +224,16 @@ class PtychographicReconstruction:
                 total_loss += loss.item()
 
                 # Constraints
-                with torch.no_grad():
-                    # threshold constraint
-                    obj = self.object.tensor
-                    amp = torch.clamp(torch.abs(obj), max=1.0)
-                    phase = torch.angle(obj)
-                    self.object.tensor.data = amp * torch.exp(1j * phase)
+                # with torch.no_grad():
+                #     # threshold constraint
+                #     obj = self.object.tensor
+                #     amp = torch.clamp(torch.abs(obj), max=1.0)
+                #     phase = torch.angle(obj)
+                #     self.object.tensor.data = amp * torch.exp(1j * phase)
 
-                    # orthogonalization constraint
-                    if self.probe.num_probes > 1:
-                        self.probe.orthogonalize()
+                #     # orthogonalization constraint
+                #     if self.probe.num_probes > 1:
+                #         self.probe.orthogonalize()
 
             print(f"[Epoch {epoch + 1:02d}] Loss: {total_loss:.4e}")
 

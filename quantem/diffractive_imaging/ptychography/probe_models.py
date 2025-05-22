@@ -145,11 +145,13 @@ class PixelatedProbeModel(AutoSerialize):
         object_array,
     ):
         if self.tensor.requires_grad:
-            obj_normalization = torch.sum(torch.square(torch.abs(object_array)), dim=0)
+            obj_normalization = torch.sum(
+                torch.square(torch.abs(object_array)), dim=(0, 1)
+            )
 
             probe_gradient = (
                 torch.sum(gradient_array * torch.conj(object_array), dim=0)
-                / obj_normalization
+                / obj_normalization[None]
             )
 
             self.tensor.grad = probe_gradient.clone().detach()

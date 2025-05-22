@@ -103,16 +103,13 @@ class PixelatedObjectModel(AutoSerialize):
         propagator = self.propagator_array
         obj_patches = torch.unsqueeze(self.tensor[..., row, col], 2)
 
-        shape = (num_slices,) + probe_array.shape
-        propagated_probes = torch.empty(shape, dtype=probe_array.dtype)
-        propagated_probes[0] = probe_array
-
+        propagated_probes = [probe_array]
         for s in range(num_slices):
             exit_waves = obj_patches[s] * propagated_probes[s]
             if s + 1 < num_slices:
-                propagated_probes[s + 1] = fourier_convolve_array(
-                    exit_waves, propagator
-                )
+                propagated_probes.append(fourier_convolve_array(exit_waves, propagator))
+
+        propagated_probes = torch.stack(propagated_probes, dim=0)
 
         return propagated_probes, obj_patches, exit_waves
 
@@ -120,28 +117,33 @@ class PixelatedObjectModel(AutoSerialize):
         """ """
         if self.tensor.requires_grad:
             num_slices = self.num_slices
+            num_probes = probe_array.shape[2]
+            obj_shape = self.obj_shape
             propagator = self.propagator_array.conj()
-            obj_gradient = torch.empty_like(self.tensor)
+            obj_gradient = torch.zeros_like(self.tensor)
 
             for s in reversed(range(num_slices)):
                 probe = probe_array[s]
                 obj = obj_patches[s]
 
-                probe_normalization = (
-                    sum_overlapping_patches(
-                        torch.square(torch.abs(probe)), positions_px, self.obj_shape
+                probe_normalization = torch.zeros(obj_shape)
+                for probe_idx in range(num_probes):
+                    probe_normalization += (
+                        sum_overlapping_patches(
+                            torch.square(torch.abs(probe[:, probe_idx])),
+                            positions_px,
+                            obj_shape,
+                        )
+                        + 1e-10
                     )
-                    + 1e-10
-                )
 
-                obj_gradient[s] = (
-                    sum_overlapping_patches(
-                        gradient_array * torch.conj(probe),
+                    obj_gradient[s] += sum_overlapping_patches(
+                        gradient_array[:, probe_idx] * torch.conj(probe[:, probe_idx]),
                         positions_px,
-                        self.obj_shape,
+                        obj_shape,
                     )
-                    / probe_normalization
-                )
+
+                obj_gradient[s] /= probe_normalization
 
                 if s > 0:
                     gradient_array *= torch.conj(obj)  # back-transmit
