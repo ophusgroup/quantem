@@ -3,7 +3,9 @@ from typing import Sequence, Tuple
 
 import torch
 
-from quantem.diffractive_imaging.ptychography.data_loaders import SimpleBatcher
+from quantem.diffractive_imaging.ptychography.detector_models import (
+    PixelatedDetectorModel,
+)
 from quantem.diffractive_imaging.ptychography.object_models import PixelatedObjectModel
 from quantem.diffractive_imaging.ptychography.optimizers import PolakRibiereCG
 from quantem.diffractive_imaging.ptychography.probe_models import PixelatedProbeModel
@@ -19,8 +21,8 @@ class PtychographicReconstruction:
         self,
         object_model: PixelatedObjectModel,
         probe_model: PixelatedProbeModel,
+        detector_model: PixelatedDetectorModel,
         positions_px: torch.Tensor,
-        intensity_data: torch.Tensor,
         optimize_obj: bool = True,
         optimize_probe: bool = True,
         use_autograd: bool = False,
@@ -29,7 +31,7 @@ class PtychographicReconstruction:
     ):
         self.object = object_model
         self.probe = probe_model
-        self.intensity_data = intensity_data
+        self.detector = detector_model
         self.positions_px = positions_px
         self.use_autograd = use_autograd
 
@@ -123,7 +125,7 @@ class PtychographicReconstruction:
         """ """
 
         with torch.set_grad_enabled(self.use_autograd):
-            measured_intensities = self.intensity_data[batch_idx]
+            measured_intensities = self.detector.forward(batch_idx)
             loss = (
                 torch.mean(
                     torch.sum(
@@ -185,15 +187,13 @@ class PtychographicReconstruction:
         if optimizer_type is not None:
             self.set_optimizers(optimizer_type, lr)
 
-        indices = torch.arange(
-            self.intensity_data.shape[0], device=self.intensity_data.device
-        ).to(torch.long)
-        batcher = SimpleBatcher(indices, batch_size, shuffle=True)
+        data_loader = self.detector.data_loader
+        data_loader.batch_size = batch_size
 
         for epoch in range(n_epochs):
             total_loss = 0.0
 
-            for batch_idx in batcher:
+            for batch_idx in data_loader:
                 # prevent gradient accumulation across batches
                 for opt in self.optimizers:
                     opt.zero_grad()
