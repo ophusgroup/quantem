@@ -114,7 +114,7 @@ class Tomography(AutoSerialize):
     
     # --- Reconstruction Algorithms ---
     
-    def reconstruct(
+    def sirt_reconstruct(
         self,
         num_iterations: int = 10,
         reset: bool = True,
@@ -141,4 +141,5 @@ class Tomography(AutoSerialize):
             If True, performs inline alignment during reconstruction (default is False).
         """
         
-        self.sirt = SIRT_Recon
+        
+        for a0 in 

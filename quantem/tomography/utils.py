@@ -44,36 +44,18 @@ def gaussian_filter_2d_stack(stack: torch.Tensor, kernel_1d: torch.Tensor) -> to
 
 # Circular mask
 
-def circular_mask(shape, radius, center=None, dtype=torch.float32, device='cpu'):
-    """Generate a 2D circular mask of given shape and radius."""
-    H, W = shape
-    if center is None:
-        center = (H // 2, W // 2)
-    y = torch.arange(H, dtype=dtype, device=device).view(-1, 1)
-    x = torch.arange(W, dtype=dtype, device=device).view(1, -1)
-    dist_sq = (x - center[1])**2 + (y - center[0])**2
-    return (dist_sq <= radius**2).to(dtype)
+def torch_phase_cross_correlation(im1, im2):
+    f1 = torch.fft.fft2(im1)
+    f2 = torch.fft.fft2(im2)
+    cc = torch.fft.ifft2(f1 * torch.conj(f2))
+    cc_abs = torch.abs(cc)
 
-def apply_circular_masks_all_axes(volume, radii):
-    """
-    Apply 2D circular masks along all three axes of a 3D volume.
-    
-    Args:
-        volume (torch.Tensor): 3D tensor of shape (H, W, D)
-        radii (tuple): (r0, r1, r2) for axes 0, 1, 2
-    Returns:
-        masked_volume: tensor with all masks applied
-    """
-    H, W, D = volume.shape
-    device = volume.device
-    dtype = volume.dtype
+    max_idx = torch.argmax(cc_abs)
+    shifts = torch.tensor(np.unravel_index(max_idx.item(), im1.shape), device=im1.device).float()
 
-    # Masks for each axis
-    mask0 = circular_mask((W, D), radii[0], dtype=dtype, device=device).unsqueeze(0)      # shape (1, W, D)
-    mask1 = circular_mask((H, D), radii[1], dtype=dtype, device=device).unsqueeze(1)      # shape (H, 1, D)
-    mask2 = circular_mask((H, W), radii[2], dtype=dtype, device=device).unsqueeze(2)      # shape (H, W, 1)
+    for i, dim in enumerate(im1.shape):
+        if shifts[i] > dim // 2:
+            shifts[i] -= dim
 
-    # Broadcast and multiply all masks together
-    total_mask = mask0 * mask1 * mask2  # shape (H, W, D)
-
-    return volume * total_mask
+    # return shifts.flip(0)  # (dx, dy)
+    return shifts

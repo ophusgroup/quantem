@@ -30,7 +30,8 @@ class TomographyML(TomographyBase):
         
     # --- Reconstruction Methods ---
 
-    def reconstruct
+    def reconstruct(self):
+        pass
     
     """
     TODO

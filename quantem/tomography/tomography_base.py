@@ -1,6 +1,9 @@
 from typing import Any, Self, Union, Self
 
 import numpy as np
+import torch
+import matplotlib.pyplot as plt
+
 from numpy.typing import NDArray
 
 from quantem.core.io.serialize import AutoSerialize
@@ -8,6 +11,7 @@ from quantem.core.datastructures.dataset3d import Dataset3d
 
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.utils.compound_validators import validate_list_of_dataset2d
+from quantem.core.visualization.visualization import show_2d
 
 from quantem.tomography.tilt_series_dataset import TiltSeries
 
@@ -63,8 +67,6 @@ class TomographyBase(AutoSerialize):
         
         
         device = device.lower()
-        if "cuda" not in device or "gpu" not in device:
-            raise NotImplementedError("Tomography not currently supported on CPU.")
         
         tilt_series = TiltSeries.from_array(
             array = tilt_series,
@@ -87,7 +89,19 @@ class TomographyBase(AutoSerialize):
                     signal_units = signal_units,
                 )
         else:
-            recon_volume = None
+            empty_recon_vol = np.zeros(
+                (tilt_series.array.shape[2], tilt_series.array.shape[2], tilt_series.array.shape[2]),
+                dtype = tilt_series.array.dtype,
+            )
+
+            recon_volume = Dataset3d.from_array(
+                    array = empty_recon_vol,
+                    name = name,
+                    origin = origin,
+                    sampling = sampling,
+                    units = units,
+                    signal_units = signal_units,
+                )
             
         return cls(
             tilt_series = tilt_series,
@@ -160,9 +174,9 @@ class TomographyBase(AutoSerialize):
     @device.setter
     def device(self, device: str):
         """Set the computation device."""
-        
-        if "cuda" not in device or "gpu" not in device:
-            raise NotImplementedError("Tomography not currently supported on CPU.")
+
+        # if "cuda" not in device or "gpu" not in device:
+        #     raise NotImplementedError("Tomography not currently supported on CPU.")
         
         self._device = device
         
@@ -198,3 +212,106 @@ class TomographyBase(AutoSerialize):
     4. Masking
     5. Drift Correction
     """
+    
+    # --- Postprocessing ---
+    
+    """
+    TODO
+    1. Apply circular mask
+    """
+    
+    def circular_mask(self, shape, radius, center=None, dtype=torch.float32, device='cpu'):
+        """Generate a 2D circular mask of given shape and radius."""
+        H, W = shape
+        
+        if center is None:
+            center = (H // 2, W // 2)
+        y = torch.arange(H, dtype=dtype, device=device).view(-1, 1)
+        x = torch.arange(W, dtype=dtype, device=device).view(1, -1)
+        dist_sq = (x - center[1])**2 + (y - center[0])**2
+        return (dist_sq <= radius**2).to(dtype)
+
+    def recon_vol_circular_mask(self, radii):
+        """
+        Apply 2D circular masks along all three axes of a 3D volume.
+        
+        Args:
+            volume (torch.Tensor): 3D tensor of shape (H, W, D)
+            radii (tuple): (r0, r1, r2) for axes 0, 1, 2
+        Returns:
+            masked_volume: tensor with all masks applied
+        """
+        H, W, D = self.recon_volume.array.shape
+        device = self.device
+        dtype = torch.float32
+        recon_volume = torch.tensor(
+            self.recon_volume.array,
+            device=self.device,
+            dtype=dtype,
+        )
+        # Masks for each axis
+        mask0 = self.circular_mask((W, D), radii[0], dtype=dtype, device=device).unsqueeze(0)      # shape (1, W, D)
+        mask1 = self.circular_mask((H, D), radii[1], dtype=dtype, device=device).unsqueeze(1)      # shape (H, 1, D)
+        mask2 = self.circular_mask((H, W), radii[2], dtype=dtype, device=device).unsqueeze(2)      # shape (H, W, 1)
+
+        # Broadcast and multiply all masks together
+        total_mask = mask0 * mask1 * mask2  # shape (H, W, D)
+
+        recon_volume = recon_volume * total_mask
+        recon_volume = recon_volume.detach().cpu().numpy()
+        self.recon_volume= Dataset3d.from_array(
+            array = recon_volume,
+            name = self.recon_volume.name,
+            origin = self.recon_volume.origin,
+            sampling = self.recon_volume.sampling,
+            units = self.recon_volume.units,
+            signal_units = self.recon_volume.signal_units,
+        )
+        
+    
+    # --- Visualizations ---
+    
+    def plot_projections(
+        self,
+        cmap = 'turbo',
+        loss = False,
+    ):  
+        if loss == True:
+            fig, ax = plt.subplots(ncols = 4, figsize = (25, 8))
+            ax[3].semilogy(
+                self.loss,
+            )
+            ax[3].set_title("Loss")
+        else:
+            fig, ax = plt.subplots(ncols = 3, figsize = (20, 8))
+        
+        show_2d(
+            self.recon_volume.array.sum(axis = 0),
+            figax = (fig, ax[0]),
+            cmap = cmap,
+            title = "Z-X Projection"
+        )
+        show_2d(
+            self.recon_volume.array.sum(axis = 1),
+            figax = (fig, ax[1]),
+            cmap = cmap,
+            title = "Y-X Projection"
+        )
+        show_2d(
+            self.recon_volume.array.sum(axis = 2),
+            figax = (fig, ax[2]),
+            cmap = cmap,
+            title = "Y-Z Projection"
+        )
+        
+    def plot_loss(
+        self,
+        figsize: tuple = (8, 8),
+    ):
+        
+        fig, ax = plt.subplots(figsize = figsize)
+        
+        ax.semilogy(
+            self.loss,
+            label = "Loss",
+        )

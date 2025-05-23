@@ -6,7 +6,7 @@ from numpy.typing import NDArray
 from quantem.core.datastructures.dataset3d import Dataset3d, Dataset2d
 from quantem.core.utils.validators import ensure_valid_array
 
-from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
+# from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
 
 class TiltSeries(Dataset3d):
 
