@@ -39,9 +39,7 @@ class ConvergedProbe:
         semiangle_cutoff: float | torch.Tensor = torch.inf,
         vacuum_probe_intensity: Optional[torch.Tensor | NDArray] = None,
         fourier_intensity_normalization: float | torch.Tensor = 1.0,
-        aberration_coefficients: Optional[
-            dict[str, float] | nn.ParameterDict[str, torch.Tensor]
-        ] = None,
+        aberration_coefficients: Optional[dict[str, float] | nn.ParameterDict] = None,
         **kwargs,
     ):
         """ """
@@ -63,7 +61,7 @@ class ConvergedProbe:
 
         self._vacuum_probe_intensity = vacuum_probe_intensity
         self._fourier_intensity_normalization = fourier_intensity_normalization
-        self._semiangle_cutoff = semiangle_cutoff
+        self._semiangle_cutoff_rad = semiangle_cutoff / 1000.0
         self._soft_aperture = soft_aperture
         self._energy = energy
         self._wavelength = electron_wavelength_angstrom(energy)
@@ -120,7 +118,7 @@ class ConvergedProbe:
         phi: torch.Tensor,
     ) -> torch.Tensor:
         """ """
-        semiangle_cutoff = self._semiangle_cutoff
+        semiangle_cutoff_rad = self._semiangle_cutoff_rad
         soft_aperture = self._soft_aperture
         vacuum_probe_intensity = self._vacuum_probe_intensity
         angular_sampling = self._angular_sampling
@@ -131,7 +129,7 @@ class ConvergedProbe:
             ).clip(0)
             return torch.sqrt(vacuum_probe_intensity + 1e-8)
 
-        if semiangle_cutoff == torch.inf:
+        if semiangle_cutoff_rad == torch.inf:
             return torch.ones_like(alpha)
 
         if soft_aperture:
@@ -141,10 +139,10 @@ class ConvergedProbe:
                 + 1e-8
             )
             array = torch.clip(
-                (semiangle_cutoff / 1000 - alpha) / denominator + 0.5, 0.0, 1.0
+                (semiangle_cutoff_rad - alpha) / denominator + 0.5, 0.0, 1.0
             )
         else:
-            array = (alpha < semiangle_cutoff / 1000).to(torch.float)
+            array = (alpha < semiangle_cutoff_rad).to(torch.float)
 
         return array
 

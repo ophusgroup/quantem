@@ -207,7 +207,7 @@ class ParametrizedProbeModel(PixelatedProbeModel):
         sampling: Tuple[int, int],
         mean_diffraction_intensity: float,
         semiangle_cutoff: float,
-        aberration_coefficients: nn.ParameterDict[str, float | torch.Tensor],
+        aberration_coefficients: nn.ParameterDict,
         _token: object | None = None,
     ):
         """ """
