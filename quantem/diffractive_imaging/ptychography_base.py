@@ -174,22 +174,6 @@ class PtychographyBase(AutoSerialize):
         self._check_dset()
         # TODO add a reset here?
 
-        # calculate CoM
-        self._calculate_intensities_center_of_mass(
-            self.raw_intensities,
-            fit_function=com_fit_function,
-            vectorized_calculation=vectorized,
-        )
-        self._solve_for_center_of_mass_relative_rotation(
-            plot_rotation=plot_rotation,
-            plot_center_of_mass=plot_center_of_mass,
-            force_com_rotation=force_com_rotation,
-            force_com_transpose=force_com_transpose,
-        )
-
-        # corner-center amplitudes
-        self._normalize_diffraction_intensities()
-
         if padded_diffraction_intensities_shape is not None:
             self._padded_diffraction_shape = np.array(padded_diffraction_intensities_shape)
             self.dset.pad(
@@ -207,6 +191,22 @@ class PtychographyBase(AutoSerialize):
                 vacuum_probe_intensity = np.fft.fftshift(vppad.array)
         else:
             self._padded_diffraction_shape = self.roi_shape
+
+        # calculate CoM
+        self._calculate_intensities_center_of_mass(
+            self.raw_intensities,
+            fit_function=com_fit_function,
+            vectorized_calculation=vectorized,
+        )
+        self._solve_for_center_of_mass_relative_rotation(
+            plot_rotation=plot_rotation,
+            plot_center_of_mass=plot_center_of_mass,
+            force_com_rotation=force_com_rotation,
+            force_com_transpose=force_com_transpose,
+        )
+
+        # corner-center amplitudes
+        self._normalize_diffraction_intensities()
 
         self.set_probe_model(
             probe_model, num_probes, probe_params, vacuum_probe_intensity, initial_probe
@@ -712,33 +712,27 @@ class PtychographyBase(AutoSerialize):
         # Aggressive cropping for when off-centered high scattering angle data was recorded
         if crop_patterns:
             crop_r = int(
-                np.minimum(
-                    diff_intensities.shape[2] - com_fitted_r.max(),
-                    com_fitted_r.min(),
-                )
+                np.minimum(diff_intensities.shape[2] - com_fitted_r.max(), com_fitted_r.min())
             )
             crop_c = int(
-                np.minimum(
-                    diff_intensities.shape[3] - com_fitted_c.max(),
-                    com_fitted_c.min(),
-                )
+                np.minimum(diff_intensities.shape[3] - com_fitted_c.max(), com_fitted_c.min())
             )
-
             crop_m = np.minimum(crop_c, crop_r)
 
-            crop_mask = np.zeros(self.roi_shape, dtype="bool")
-            crop_mask[:crop_m, :crop_m] = True
-            crop_mask[-crop_m:, :crop_m] = True
-            crop_mask[:crop_m:, -crop_m:] = True
-            crop_mask[-crop_m:, -crop_m:] = True
-
-            crop_mask_shape = (crop_m * 2, crop_m * 2)
+            pattern_crop_mask = np.zeros(self.roi_shape, dtype="bool")
+            pattern_crop_mask[:crop_m, :crop_m] = True
+            pattern_crop_mask[-crop_m:, :crop_m] = True
+            pattern_crop_mask[:crop_m:, -crop_m:] = True
+            pattern_crop_mask[-crop_m:, -crop_m:] = True
+            pattern_crop_mask_shape = (crop_m * 2, crop_m * 2)
 
         else:
-            crop_mask = None
-            crop_mask_shape = self.roi_shape
+            pattern_crop_mask = None
+            pattern_crop_mask_shape = self.roi_shape
 
         mean_intensity = 0
+        shifted_amplitudes = np.zeros(diff_intensities.shape, dtype=config.get("dtype_real"))
+        corner_amplitudes = np.zeros(diff_intensities.shape, dtype=config.get("dtype_real"))
         for Rr, Rc in tqdmnd(
             range(diff_intensities.shape[0]),
             range(diff_intensities.shape[1]),
@@ -750,34 +744,44 @@ class PtychographyBase(AutoSerialize):
                 if not positions_mask[Rr, Rc]:
                     continue
 
-            intensities = get_shifted_array(
-                diff_intensities[Rr, Rc],
+            intensity = np.maximum(diff_intensities[Rr, Rc], 0)
+            mean_intensity += np.sum(intensity)
+            ### shifting amplitude rather than intensity to minimize ringing artifacts
+            amplitude = np.sqrt(intensity)
+            corner_amplitudes[Rr, Rc] = np.fft.fftshift(amplitude)
+
+            shift_amplitude = get_shifted_array(
+                amplitude,
                 -(com_fitted_r[Rr, Rc] + 0.0),
                 -(com_fitted_c[Rr, Rc] + 0.0),
                 bilinear=bilinear,
             )
-
-            mean_intensity += np.sum(intensities)
-            if return_intensities_instead:
-                diff_intensities[Rr, Rc] = np.maximum(intensities, 0)
-            else:
-                diff_intensities[Rr, Rc] = np.sqrt(np.maximum(intensities, 0))
+            shift_amplitude = np.maximum(shift_amplitude, 0)
+            shifted_amplitudes[Rr, Rc] = shift_amplitude
 
         if positions_mask is not None:
-            diff_intensities = diff_intensities[positions_mask]
+            corner_amplitudes = corner_amplitudes[positions_mask]
+            shifted_amplitudes = shifted_amplitudes[positions_mask]
         else:
-            Qr, Qc = self.roi_shape
-            diff_intensities = diff_intensities.reshape((-1, Qr, Qc))
+            corner_amplitudes = corner_amplitudes.reshape((-1, *self.roi_shape))
+            shifted_amplitudes = shifted_amplitudes.reshape((-1, *self.roi_shape))
 
         if crop_patterns:
-            diff_intensities = diff_intensities[:, crop_mask].reshape((-1, *crop_mask_shape))
+            corner_amplitudes = corner_amplitudes[:, pattern_crop_mask].reshape(
+                (-1, *pattern_crop_mask_shape)
+            )
+            shifted_amplitudes = shifted_amplitudes[:, pattern_crop_mask].reshape(
+                (-1, *pattern_crop_mask_shape)
+            )
 
-        mean_intensity /= diff_intensities.shape[0]
+        mean_intensity /= corner_amplitudes.shape[0]
 
-        self.shifted_amplitudes = diff_intensities
+        self.shifted_amplitudes = shifted_amplitudes
+        self.corner_amplitudes = corner_amplitudes
+
         self._mean_diffraction_intensity = mean_intensity
-        self._crop_mask = crop_mask
-        self._crop_mask_shape = crop_mask_shape
+        self._pattern_crop_mask = pattern_crop_mask
+        self._pattern_crop_mask_shape = pattern_crop_mask_shape
         return
 
     def _calculate_scan_positions_in_pixels(
@@ -971,6 +975,24 @@ class PtychographyBase(AutoSerialize):
         )
         self._shifted_amplitudes = self._to_torch(arr)
 
+    @property
+    def corner_amplitudes(self) -> np.ndarray:
+        """
+        gives the amplitudes that have had descan corrected and which are corner centered
+        shaped as (rr*ry, qx, qy)
+        """
+        return self._to_numpy(self._corner_amplitudes)
+
+    @corner_amplitudes.setter
+    def corner_amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
+        arr = validate_array(
+            arr,
+            name="corner_amplitudes",
+            dtype=config.get("dtype_real"),
+            shape=(np.prod(self.gpts), *self.roi_shape),
+        )
+        self._corner_amplitudes = self._to_torch(arr)
+
     ## TODO -- make an "intensities" property that is the raw intensities as torch tensor
 
     @property
@@ -1119,48 +1141,6 @@ class PtychographyBase(AutoSerialize):
             expand_dims=True,
         )
         self._obj_fov_mask = self._to_torch(mask)
-
-    # @property
-    # def vacuum_probe_intensity(self) -> np.ndarray | None:
-    #     """corner centered vacuum probe"""
-    #     if self._vacuum_probe_intensity is None:
-    #         return None
-    #     return self._to_numpy(self._vacuum_probe_intensity)
-
-    # @vacuum_probe_intensity.setter
-    # def vacuum_probe_intensity(self, vp: np.ndarray | Dataset4dstem | None):
-    #     if vp is None:
-    #         self._vacuum_probe_intensity = None
-    #         return
-    #     elif isinstance(vp, np.ndarray):
-    #         vp2 = vp.astype(config.get("dtype_real"))
-    #     elif isinstance(vp, (Dataset4dstem, Dataset)):
-    #         vp2 = vp.array
-    #     else:
-    #         raise NotImplementedError(f"Unknown vacuum probe type: {type(vp)}")
-
-    #     if vp2.ndim == 4:
-    #         vp2 = np.mean(vp2, axis=(0, 1))
-    #     elif vp2.ndim != 2:
-    #         raise ValueError(f"Weird number of dimensions for vacuum probe, shape: {vp.shape}")
-
-    #     # vacuum probe should be corner centered
-    #     corner_vals = vp2[:10, :10].mean()
-    #     if corner_vals < 0.01 * vp2.max():
-    #         warn("Looks like vacuum probe is not corner centered, fft shifting now)")
-    #     else:
-    #         vp2 = np.fft.fftshift(vp2)
-
-    #     # fix centering
-    #     com: list | tuple = ndi.center_of_mass(vp2)
-    #     vp2 = get_shifted_array(
-    #         vp2,
-    #         -com[0],
-    #         -com[1],
-    #         bilinear=True,
-    #     )
-
-    #     self._vacuum_probe_intensity = self._to_torch(vp2)
 
     @property
     def positions_px(self) -> np.ndarray:
@@ -1763,26 +1743,6 @@ class PtychographyBase(AutoSerialize):
 
     # region --- ptychography foRcard model ---
 
-    # def forward_operator(self, obj, probe, patch_indices, fract_positions, descan_shifts=None):
-    #     obj_patches = self._get_obj_patches(obj, patch_indices)
-    #     ## obj_patches shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
-    #     shifted_input_probe = fourier_shift(probe, fract_positions).swapaxes(0, 1)
-    #     ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-    #     propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probe)
-    #     ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
-    #     ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-    #     if descan_shifts is not None:
-    #         # TODO move applying plane wave descan shift here
-    #         ### applying plane wave shift here to overlap, reduce need for extra FFT
-    #         #     shifts = fourier_translation_operator(
-    #         #         descan_shifts, self.roi_shape, device=self.device
-    #         #     )
-    #         #     shifts = shifts[:, None]
-    #         #     overlap *= shifts
-    #         raise NotImplementedError("move descan shift stuff to here")
-
-    #     return obj_patches, propagated_probes, overlap
-
     def forward_operator(self, obj_patches, shifted_input_probes, descan_shifts=None):
         propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probes)
         ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
@@ -1808,18 +1768,6 @@ class PtychographyBase(AutoSerialize):
         raw_error = arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
         ave_error = raw_error / farfield_amplitudes.shape[0]  # normalize by # patterns
         return ave_error
-        # return ((farfield_amplitudes - true_amplitudes) ** 2).abs().sum(dim=(1, 2)).mean()
-        # return torch.mean(torch.sum(torch.abs(farfield_amplitudes - true_amplitudes) ** 2), dim=(1,2))
-
-    # def _get_obj_patches(self, obj_array, patch_indices):
-    #     """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
-    #     if self.obj_type == "potential":
-    #         obj_array = arr.exp(1.0j * obj_array)
-    #     obj_flat = obj_array.reshape(obj_array.shape[0], -1)
-    #     # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
-    #     # Output shape: (num_slicpaes, batch_size, roi_shape[0], roi_shape[1])
-    #     patches = obj_flat[:, patch_indices]
-    #     return patches
 
     def overlap_projection(self, obj_patches, input_probe):
         """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
@@ -1842,6 +1790,13 @@ class PtychographyBase(AutoSerialize):
         eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
         overlap_fft = torch.fft.fft2(overlap_array)
         return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
+
+    def estimate_intensities(self, overlap_array: "torch.Tensor") -> "torch.Tensor":
+        """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
+        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        # incoherent sum of all probe components
+        overlap_fft = torch.fft.fft2(overlap_array)
+        return torch.sum(torch.abs(overlap_fft) ** 2, dim=0)
 
     def _propagate_array(
         self, array: "torch.Tensor", propagator_array: "torch.Tensor"

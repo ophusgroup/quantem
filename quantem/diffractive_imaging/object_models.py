@@ -149,11 +149,11 @@ class ObjectConstraints(ObjectBase):
                 amp = torch.clamp(torch.abs(obj), 0.0, 1.0)
             else:
                 amp = 1.0
-            phase = obj.angle()
+            phase = obj.angle() - obj.angle().mean()
             if mask is not None and self.constraints["apply_fov_mask"]:
-                obj2 = amp * mask * torch.exp(1.0j * phase * mask)  # .type(obj_dtype_torch)
+                obj2 = amp * mask * torch.exp(1.0j * phase * mask)
             else:
-                obj2 = amp * torch.exp(1.0j * phase)  # .type(obj_dtype_torch)
+                obj2 = amp * torch.exp(1.0j * phase)
         else:  # is potential, apply positivity
             obj2 = torch.clamp(obj, min=0.0)
             if self.constraints["fix_potential_baseline"]:
