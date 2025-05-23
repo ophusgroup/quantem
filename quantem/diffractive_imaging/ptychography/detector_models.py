@@ -2,10 +2,10 @@ from typing import Self, Tuple
 
 import torch
 
-from quantem.core.datastructures import Dataset3d
+from quantem.core.datastructures import Dataset2d, Dataset3d
 from quantem.core.io.serialize import AutoSerialize
 
-# region --- data loaders ---
+# region --- Data Loaders ---
 
 
 class SimpleBatcher:
@@ -23,9 +23,9 @@ class SimpleBatcher:
             yield self.indices[i : i + self.batch_size]
 
 
-# endregion --- data loaders ---
+# endregion --- Data Loaders ---
 
-# region --- PixelatedDetector ---
+# region --- Pixelated Detector ---
 
 
 class PixelatedDetectorModel(AutoSerialize):
@@ -43,12 +43,13 @@ class PixelatedDetectorModel(AutoSerialize):
     ):
         if _token is not self._token:
             raise RuntimeError(
-                "Use PixelatedDetector.from_array() to instantiate this class."
+                "Use PixelatedDetectorModel.from_dataset3d() to instantiate this class."
             )
 
         self.intensity_data = intensity_data
-        self.roi_shape = self.intensity_data.shape[-2:]
         self.data_loader = data_loader
+        self.reciprocal_sampling = reciprocal_sampling
+        self.roi_shape = roi_shape
         self.sampling = tuple(
             1 / s / n for s, n in zip(reciprocal_sampling, self.roi_shape)
         )
@@ -74,9 +75,83 @@ class PixelatedDetectorModel(AutoSerialize):
             cls._token,
         )
 
-    def forward(self, batch_idx: torch.Tensor):
+    def forward(self, diffraction_intensity: torch.Tensor):
         """ """
-        return self.intensity_data[batch_idx]
+        return diffraction_intensity
 
 
-# endregion --- PixelatedDetector ---
+# endregion --- Pixelated Detector ---
+
+# region ---Segmented Detector ---
+
+
+class SegmentedDetectorModel(PixelatedDetectorModel):
+    """ """
+
+    _token = object()
+
+    def __init__(
+        self,
+        intensity_data: torch.Tensor,
+        detector_masks: torch.Tensor,
+        data_loader: SimpleBatcher,
+        reciprocal_sampling: Tuple[int, int],
+        roi_shape: Tuple[int, int],
+        num_segments: int,
+        _token: object | None = None,
+    ):
+        if _token is not self._token:
+            raise RuntimeError(
+                "Use SegmentedDetectorModel.from_dataset3d() to instantiate this class."
+            )
+
+        self.intensity_data = intensity_data
+        self.detector_masks = detector_masks
+        self.num_segments = num_segments
+        self.data_loader = data_loader
+        self.reciprocal_sampling = reciprocal_sampling
+        self.roi_shape = roi_shape
+        self.sampling = tuple(
+            1 / s / n for s, n in zip(reciprocal_sampling, self.roi_shape)
+        )
+
+    @classmethod
+    def from_dataset2d(
+        cls,
+        intensity_data: Dataset2d,
+        detector_masks: Dataset3d,
+    ) -> Self:
+        """ """
+
+        reciprocal_sampling = detector_masks.sampling[-2:]
+        roi_shape = detector_masks.shape[-2:]
+        data_loader = SimpleBatcher(
+            torch.arange(intensity_data.shape[0]).to(torch.long)
+        )
+
+        num_segments = detector_masks.shape[0]
+        if num_segments != intensity_data.shape[-1]:
+            raise ValueError()
+
+        return cls(
+            intensity_data.array,
+            detector_masks.array,
+            data_loader,
+            reciprocal_sampling,
+            roi_shape,
+            num_segments,
+            cls._token,
+        )
+
+    def forward(self, diffraction_intensity: torch.Tensor):
+        """ """
+        masked_intensity = []
+        for mask in self.detector_masks:
+            masked_intensity.append(
+                torch.sum(diffraction_intensity * mask, dim=(-2, -1))
+            )
+
+        return torch.stack(masked_intensity, dim=-1)
+
+
+# endregion --- Segmented Detector ---

@@ -105,6 +105,7 @@ class PtychographicReconstruction:
         )
         fourier_exit_waves = torch.fft.fft2(exit_waves, norm="ortho")
         simulated_intensities = torch.square(torch.abs(fourier_exit_waves)).sum(1)
+        simulated_intensities = self.detector.forward(simulated_intensities)
         return (
             probes,
             obj_patches,
@@ -125,7 +126,7 @@ class PtychographicReconstruction:
         """ """
 
         with torch.set_grad_enabled(self.use_autograd):
-            measured_intensities = self.detector.forward(batch_idx)
+            measured_intensities = self.detector.intensity_data[batch_idx]
             loss = (
                 torch.mean(
                     torch.sum(
@@ -151,6 +152,7 @@ class PtychographicReconstruction:
                     - amplitude_modification[:, None] * fourier_exit_waves,
                     norm="ortho",
                 )
+
                 # gradient = torch.fft.ifft2(
                 #     fourier_exit_waves
                 #     - torch.sqrt(measured_intensities + 1e-8)
