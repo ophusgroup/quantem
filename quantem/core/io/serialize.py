@@ -1,4 +1,3 @@
-import base64
 import gzip
 import os
 import shutil
@@ -177,12 +176,6 @@ class AutoSerialize:
             if attr_name == "_class_def" or attr_name in skip_names:
                 continue
             val = raw
-            if isinstance(val, str):
-                try:
-                    dec = gzip.decompress(base64.b16decode(val))
-                    val = dill.loads(dec)
-                except Exception:
-                    pass
             setattr(obj, attr_name, val)
 
         # 2) array datasets
