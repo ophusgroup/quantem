@@ -99,6 +99,21 @@ class PtychographyML(PtychographyBase):
     def optimizers(self) -> dict[str, torch.optim.Adam | torch.optim.AdamW]:
         return self._optimizers
 
+    def set_optimizers(self):
+        for key, _ in self._optimizer_params.items():
+            if key == "object":
+                self._add_optimizer(key, self.obj_model.params)
+            elif key == "probe":
+                self._add_optimizer(key, self.probe_model.params)
+            elif key == "descan":
+                self._add_optimizer(key, self._descan_shifts)
+            elif key == "scan_positions":
+                raise NotImplementedError()
+            else:
+                raise ValueError(
+                    f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
+                )
+
     def remove_optimizer(self, key: str) -> None:
         self._optimizers.pop(key, None)
         self._optimizer_params.pop(key, None)
@@ -147,6 +162,7 @@ class PtychographyML(PtychographyBase):
             ...
         }
         """
+        self._schedulers = {}
         for k, v in d.items():
             if not any(v):
                 continue

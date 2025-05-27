@@ -230,15 +230,16 @@ class PtychographyVisualizations(PtychographyBase):
                         )
                     )
                     probe_inds = np.where(probe_recon_types == pmode)[0]
-                    lines.extend(
-                        nx.semilogy(
-                            epochs[probe_inds],
-                            self.epoch_lrs["probe"][probe_inds],
-                            c=colors[i],
-                            label=pmode + " LR",
-                            linestyle="--",
+                    if "probe" in self.epoch_lrs.keys():
+                        lines.extend(
+                            nx.semilogy(
+                                epochs[probe_inds],
+                                self.epoch_lrs["probe"][probe_inds],
+                                c=colors[i],
+                                label=pmode + " LR",
+                                linestyle="--",
+                            )
                         )
-                    )
                 nx.set_ylabel("LR", c=colors[0])
                 nx.spines["right"].set_color(colors[0])
                 nx.tick_params(axis="y", which="both", colors=colors[0])

@@ -34,8 +34,11 @@ def fourier_shift(
     phase = fourier_translation_operator(positions, array.shape, match_dim)
     fourier_array = arr.fft2(array)
     shifted_fourier_array = fourier_array * phase
-
-    return arr.ifft2(shifted_fourier_array)
+    shifted_array = arr.ifft2(shifted_fourier_array)
+    if arr.is_complex(array):
+        return shifted_array
+    else:
+        return shifted_array.real
 
 
 @overload
@@ -49,7 +52,7 @@ def fourier_translation_operator(
 def fourier_translation_operator(
     positions: ArrayLike,
     shape: tuple,
-    match_dim: bool = False,  # TODO make this the default
+    match_dim: bool = True,  # TODO make this the default
 ) -> ArrayLike:
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
     nr, nc = shape[-2:]

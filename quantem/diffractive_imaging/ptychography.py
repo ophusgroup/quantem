@@ -6,6 +6,7 @@ from tqdm import trange
 from quantem.core import config
 from quantem.core.datastructures import Dataset4dstem
 from quantem.core.utils.utils import generate_batches
+from quantem.diffractive_imaging.ptycho_utils import fourier_translation_operator
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_gd import PtychographyGD
 from quantem.diffractive_imaging.ptychography_ml import PtychographyML
@@ -174,36 +175,25 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
         if reset:
             self.reset_recon()
         self.constraints = constraints
+        self._move_recon_arrays_to_device()
 
-        new_optimizers = reset
         new_scheduler = reset
         if optimizer_params is not None:
             self.optimizer_params = optimizer_params
-            new_optimizers = True
+            self.set_optimizers()
             new_scheduler = True
+
         if scheduler_params is not None:
             self.scheduler_params = scheduler_params
             new_scheduler = True
 
-        self._move_recon_arrays_to_device()
-
-        if new_optimizers:
-            # TODO make a method to set all the optimizers in the dict
-            self._add_optimizer(key="object", params=self.obj_model.params)
-            if "probe" in self.optimizer_params.keys():
-                self._add_optimizer(key="probe", params=self.probe_model.params)
-                self.constraints["probe"]["fix_probe"] = False
-            else:
-                self.constraints["probe"]["fix_probe"] = True
-            if "descan" in self.optimizer_params.keys():
-                # should just use raw amplitudes, and the com_shifts should be learned and
-                # used to shift the predicted amplitudes to the correct position
-                raise NotImplementedError
-
         if new_scheduler:
-            # TODO clean this up
-            self._schedulers = {}
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
+
+        if "descan" in self.optimizer_params.keys():
+            target_amplitudes = self._corner_amplitudes
+        else:
+            target_amplitudes = self._shifted_amplitudes
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
         # TODO add pbar with loss printout
@@ -220,15 +210,23 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
                     self._positions_px_fractional[batch_indices]
                 )
                 obj_patches = self.obj_model.forward(self._patch_indices[batch_indices])
-                propagated_probes, overlap = self.forward_operator(
+                _propagated_probes, overlap = self.forward_operator(
                     obj_patches,
                     shifted_probes,
                 )
 
+                if "descan" in self.optimizer_params.keys():
+                    shifts = fourier_translation_operator(
+                        self._descan_shifts[batch_indices], tuple(self.roi_shape), True
+                    )
+                    overlap *= shifts[None]
+
                 loss += (
                     self.error_estimate(
                         overlap,
-                        self._shifted_amplitudes[batch_indices],
+                        target_amplitudes[batch_indices],
+                        # self._corner_amplitudes[batch_indices],
+                        # self._shifted_amplitudes[batch_indices],
                     )
                     / self._mean_diffraction_intensity
                 )
@@ -258,6 +256,9 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
             self._epoch_recon_types.append(f"{self.obj_model.name}-{self.probe_model.name}")
             if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self.obj, self.probe)
+
+        # TODO -- method for update_shifted_amplitudes, shift them based on com_shifts
+        # if learn_descan
 
         return self
 

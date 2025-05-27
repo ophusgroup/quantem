@@ -74,6 +74,7 @@ class PtychographyBase(AutoSerialize):
         "probe": {
             "fix_probe": False,
             "fix_probe_com": False,
+            "descan_fit": "none",  # "plane" | "constant" | "parabola"
         },
     }
 
@@ -155,7 +156,9 @@ class PtychographyBase(AutoSerialize):
         vacuum_probe_intensity: np.ndarray | None = None,
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         obj_padding_px: tuple[int, int] = (0, 0),
-        com_fit_function: Literal["none", "plane", "parabola", "bezier_two", "constant"] = "plane",
+        com_fit_function: Literal[
+            "none", "plane", "parabola", "bezier_two", "constant"
+        ] = "constant",
         num_probes: int = 1,
         num_slices: int = 1,
         slice_thicknesses: float | Sequence | None = None,
@@ -778,6 +781,9 @@ class PtychographyBase(AutoSerialize):
 
         self.shifted_amplitudes = shifted_amplitudes
         self.corner_amplitudes = corner_amplitudes
+        descan_shifts = np.stack((self._com_fitted[0].flatten(), self._com_fitted[1].flatten()))
+        descan_shifts -= self.roi_shape[:, None] / 2
+        self.descan_shifts = -1 * descan_shifts.T
 
         self._mean_diffraction_intensity = mean_intensity
         self._pattern_crop_mask = pattern_crop_mask
@@ -992,6 +998,20 @@ class PtychographyBase(AutoSerialize):
             shape=(np.prod(self.gpts), *self.roi_shape),
         )
         self._corner_amplitudes = self._to_torch(arr)
+
+    @property
+    def descan_shifts(self) -> np.ndarray:
+        return self._to_numpy(self._descan_shifts)
+
+    @descan_shifts.setter
+    def descan_shifts(self, arr: "np.ndarray | torch.Tensor") -> None:
+        arr = validate_array(
+            arr,
+            name="descan_shifts",
+            dtype=config.get("dtype_real"),
+            shape=(np.prod(self.gpts), 2),
+        )
+        self._descan_shifts = self._to_torch(arr)
 
     ## TODO -- make an "intensities" property that is the raw intensities as torch tensor
 
@@ -1743,20 +1763,10 @@ class PtychographyBase(AutoSerialize):
 
     # region --- ptychography foRcard model ---
 
-    def forward_operator(self, obj_patches, shifted_input_probes, descan_shifts=None):
+    def forward_operator(self, obj_patches, shifted_input_probes):
         propagated_probes, overlap = self.overlap_projection(obj_patches, shifted_input_probes)
         ## prop_probes shape: (nslices, nprobes, batch_size, roi_shape[0], roi_shape[1])
         ## overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
-        if descan_shifts is not None:
-            # TODO move applying plane wave descan shift here
-            ### applying plane wave shift here to overlap, reduce need for extra FFT
-            #     shifts = fourier_translation_operator(
-            #         descan_shifts, self.roi_shape, device=self.device
-            #     )
-            #     shifts = shifts[:, None]
-            #     overlap *= shifts
-            raise NotImplementedError("move descan shift stuff to here")
-
         return propagated_probes, overlap
 
     def error_estimate(

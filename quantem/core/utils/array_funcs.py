@@ -312,7 +312,7 @@ def as_type(a: ArrayLike, dtype: "type|str|torch.dtype") -> ArrayLike:
             return a.type(dt)
     if config.get("has_cupy"):
         if isinstance(a, cp.ndarray):
-            if isinstance(dtype, (type, str)):
+            if isinstance(dtype, (type, str, np.dtype)):
                 dt = np.dtype(dtype)
             elif isinstance(dtype, torch.dtype):
                 dt = torch_to_numpy_dtype_dict[dtype]
@@ -320,12 +320,12 @@ def as_type(a: ArrayLike, dtype: "type|str|torch.dtype") -> ArrayLike:
                 raise TypeError(f"Unsupported dtype for cupy: {dtype}")
             return a.astype(dt)  # type:ignore ## cupy is fricken annoying sometimes
     if isinstance(a, np.ndarray):
-        if isinstance(dtype, (type, str)):
+        if isinstance(dtype, (type, str, np.dtype)):
             dt = np.dtype(dtype)
         elif isinstance(dtype, torch.dtype):
             dt = torch_to_numpy_dtype_dict[dtype]
         else:
-            raise TypeError(f"Unsupported dtype for numpy: {dtype}")
+            raise TypeError(f"Unsupported dtype for numpy: {type(dtype)} {dtype}")
         return a.astype(dt)
     else:
         raise ValueError(f"Unsupported array type: {type(a)}")
@@ -471,3 +471,18 @@ def round(a: ArrayLike, decimals: int = 0) -> ArrayLike:
             return cp.round(a, decimals=decimals)
     if isinstance(a, np.ndarray):
         return np.round(a, decimals=decimals)
+
+
+@overload
+def is_complex(a: np.ndarray) -> bool: ...
+@overload
+def is_complex(a: "torch.Tensor") -> bool: ...
+def is_complex(a: ArrayLike) -> bool:
+    """
+    Return True if the array has a complex dtype, else False.
+    """
+    validate_arraylike(a)
+    if config.get("has_torch"):
+        if isinstance(a, torch.Tensor):
+            return a.is_complex()
+    return np.iscomplexobj(a)
