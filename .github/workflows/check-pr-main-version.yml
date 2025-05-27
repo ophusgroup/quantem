@@ -1,0 +1,125 @@
+name: Check PR version
+permissions:
+  contents: write
+  pull-requests: write
+
+on:
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  validate-version:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PR branch (head)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.head_ref }}
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install the project
+        run: uv sync --all-extras --dev
+
+      - name: Get PR branch version
+        id: pr_version
+        run: |
+          PR_VERSION=$(uv version --short)
+          echo "pr_version=$PR_VERSION" >> $GITHUB_OUTPUT
+
+      - name: Fetch main and get version
+        id: main_version
+        run: |
+
+          # Fetch main without changing the working directory
+          git fetch origin main
+
+          # Get version from main branch pyproject.toml
+          git checkout origin/main -- pyproject.toml
+          MAIN_VERSION=$(uv version --short)
+          echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
+
+          # Restore any stashed changes (if any)
+          git restore pyproject.toml
+
+      - name: Compare versions
+        id: version_comparison
+        env:
+          PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
+          MAIN_VERSION: ${{ steps.main_version.outputs.main_version }}
+        run: |
+          VERSION_COMPARISON=$(uv run python scripts/compare-python-versions.py "$MAIN_VERSION" "$PR_VERSION")
+          echo "version_comparison=$VERSION_COMPARISON" >> $GITHUB_OUTPUT
+
+      - name: Release new branch
+        id: release_branch
+        env:
+          RESULT: ${{ steps.version_comparison.outputs.version_comparison }}
+          PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.QUANTEM_BOT_PAT }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+
+          set -e # Exit on errors
+
+          git config user.name "quantem-bot"
+          git config user.email "quantembot@gmail.com"
+
+          # Exit early if this PR is from a release/* branch to avoid loops
+          if [[ "$HEAD_BRANCH" == release/* ]]; then
+            echo "PR already comes from a release branch — skipping."
+            exit 0
+          fi
+
+          git checkout $HEAD_SHA
+
+          if [[ "$RESULT" -eq 1 ]]; then
+            # Check if release branch already exists
+            if git ls-remote --exit-code --heads origin "release/$PR_VERSION" > /dev/null; then
+              echo "Release branch release/$PR_VERSION already exists — skipping creation."
+            else
+              echo "New version is greater — creating release branch"
+              git checkout -b release/$PR_VERSION
+              git push origin release/$PR_VERSION
+            fi
+
+          elif [[ "$RESULT" -eq 0 ]]; then
+            echo "Version matches — bumping version and creating new release branch"
+
+            uv version --bump patch
+            uv sync
+            NEXT_VERSION=$(uv version --short)
+
+            if [[ "$NEXT_VERSION" == "$PR_VERSION" ]]; then
+              echo "Version bump had no effect — maybe it was already bumped?"
+              exit 0
+            fi
+
+            echo "Bumped version to $NEXT_VERSION"
+            git commit -am "Bump version to $NEXT_VERSION"
+
+            git checkout -b release/$NEXT_VERSION
+            git push origin release/$NEXT_VERSION
+
+            PR_BODY=$(printf "This PR was automatically created because the submitted version \`%s\` matched the current release on \`main\`.\n\nIt bumps the patch version to \`%s\` and starts a new release process." "$PR_VERSION" "$NEXT_VERSION")
+            gh pr create \
+              --repo "$REPO" \
+              --head "release/$NEXT_VERSION" \
+              --base "main" \
+              --title "Bump version to $NEXT_VERSION" \
+              --body "$PR_BODY"
+
+            CLOSE_COMMENT=$(printf "❌ **This pull request has been automatically closed** because the submitted version \`%s\` matches the current version on \`main\`.\n\n🔄 A patch bump has been created and submitted as a new pull request:\n\n➡️ [\`release/%s\`](https://github.com/%s/pulls?q=is%%3Apr+head%%3Arelease%%2F%s)\n\nPlease review and merge as appropriate." "$PR_VERSION" "$NEXT_VERSION" "$REPO" "$NEXT_VERSION")
+            gh pr close "$PR_NUMBER" --comment "$CLOSE_COMMENT"
+
+          elif [[ "$RESULT" -eq -1 ]]; then
+            echo "Error: New version is less than main — rejecting."
+            exit 1
+          fi

@@ -21,7 +21,7 @@ exclude = ["*.ipynb"]
 
 [project]
 name = "quantem"
-version = "0.1.0"
+version = "0.1.4"
 description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
@@ -39,12 +39,12 @@ dependencies = [
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
   "pytest>=8.3.5",
-  "attrs>=25.3.0",
 ]
 
 [dependency-groups]
 dev = [
     "jupyterlab>=4.4.0",
+    "packaging>=24.2",
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
 ]
