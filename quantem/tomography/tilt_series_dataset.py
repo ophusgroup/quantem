@@ -12,7 +12,7 @@ class TiltSeries(Dataset3d):
 
     def __init__(
         self,
-        array: NDArray | Any,
+        array: NDArray | Any, # Assumes a input tilt series [phis, x, y]
         name: str,
         origin: NDArray | tuple | list | float | int,
         sampling: NDArray | tuple | list | float | int,
@@ -50,7 +50,9 @@ class TiltSeries(Dataset3d):
             validated_tilt_angles = ensure_valid_array(tilt_angles, ndim=1)
         else:
             validated_tilt_angles = None
-            
+        
+        array = np.transpose(array, axes = (2, 0, 1))
+
         return cls(
             array=array,
             tilt_angles=validated_tilt_angles if validated_tilt_angles is not None else ["duck" for _ in range(array.shape[0])],

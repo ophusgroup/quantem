@@ -12,8 +12,11 @@ from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.utils.compound_validators import validate_list_of_dataset2d
 from quantem.core.visualization.visualization import show_2d
+from quantem.imaging.drift import cross_correlation_shift
 
 from quantem.tomography.tilt_series_dataset import TiltSeries
+
+from tqdm.auto import tqdm
 
 class TomographyBase(AutoSerialize):
     
@@ -213,6 +216,37 @@ class TomographyBase(AutoSerialize):
     5. Drift Correction
     """
     
+    def cross_corr_alignment(
+        self,
+        upsample_factor: int = 1,
+        overwrite: bool = False,
+    ):
+        
+        aligned_tilt_series = np.zeros_like(self.tilt_series.array)
+        aligned_tilt_series[:, 0, :] = self.tilt_series.array[:, 0, :]
+        shifts = []
+        num_imgs = self.tilt_series.array.shape[1]
+        
+        pbar = tqdm(range(num_imgs - 1), desc = "Cross-correlation alignment")
+        
+        for i in pbar:
+            
+            shift, aligned_img = cross_correlation_shift(
+                self.tilt_series.array[:, i, :],
+                self.tilt_series.array[:, i + 1, :],
+                upsample_factor=upsample_factor,
+                return_shifted_image=True,
+            )
+            
+            aligned_tilt_series[:, i + 1, :] = aligned_img
+            shifts.append(shift)
+        
+        if overwrite:
+            # TODO: Check this overwrite idea, maybe also need to save the relative shifts?
+            self.tilt_series.array = aligned_tilt_series
+            
+        return np.array(aligned_tilt_series), np.array(shifts)
+    
     # --- Postprocessing ---
     
     """
@@ -303,6 +337,56 @@ class TomographyBase(AutoSerialize):
             cmap = cmap,
             title = "Y-Z Projection"
         )
+        
+    def plot_slice(
+        self,
+        cmap = 'turbo',
+        slice_index: int = 0,
+        vmin: float = 0,
+    ):
+        fig, ax = plt.subplots(figsize = (15, 8), ncols = 3)
+        
+        # show_2d(
+        #     self.recon_volume.array[slice_index, :, :],
+        #     figax = (fig, ax[0]),
+        #     cmap = cmap,
+        #     title = f"Z-X Slice {slice_index}",
+        #     norm = norm,
+        #     cbar = True,
+        # )
+        # show_2d(
+        #     self.recon_volume.array[:, slice_index, :],
+        #     figax = (fig, ax[1]),
+        #     cmap = cmap,
+        #     title = f"Y-X Sliec {slice_index}",
+        #     norm = norm,
+        # )
+        # show_2d(
+        #     self.recon_volume.array[:, :, slice_index],
+        #     figax = (fig, ax[2]),
+        #     cmap = cmap,
+        #     title = f"Y-Z Slice {slice_index}",
+        #     norm = norm,            
+        # )
+        
+        ax[0].matshow(
+            self.recon_volume.array[slice_index, :, :],
+            cmap = cmap,
+            vmin = vmin,
+        )
+        
+        ax[1].matshow(
+            self.recon_volume.array[:, slice_index, :],
+            cmap = cmap,
+            vmin = vmin,
+        )
+        
+        ax[2].matshow(
+            self.recon_volume.array[:, :, slice_index],
+            cmap = cmap,
+            vmin = vmin,
+        )
+        
         
     def plot_loss(
         self,

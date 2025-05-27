@@ -47,7 +47,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         enforce_positivity: bool = True,
         smoothing_sigma: float = None,
         reset: bool = True,
-        mode: str = "batch"
+        mode: str = "batch",
+        shrinkage: float = None,
     ):
         
         num_slices, num_angles, num_rows = self.tilt_series.array.shape
@@ -110,6 +111,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                         gaussian_kernel = kernel_1d,
                         inline_alignment = True,
                         enforce_positivity = enforce_positivity,
+                        shrinkage = shrinkage,
                     )
                 else:
                     stack_recon, loss = self._sirt_run_epoch(
@@ -121,6 +123,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                         gaussian_kernel = kernel_1d,
                         inline_alignment = False,
                         enforce_positivity = enforce_positivity,
+                        shrinkage = shrinkage,
                     )
                 
                 

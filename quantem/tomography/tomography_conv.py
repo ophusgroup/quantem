@@ -40,9 +40,11 @@ class TomographyConv(TomographyBase):
         gaussian_kernel: torch.Tensor = None,
         inline_alignment = True,
         enforce_positivity = True,
+        shrinkage: float = None,
     ):
         
         loss = 0
+
         
         if inline_alignment:
             for ind in range(len(self.tilt_series.tilt_angles)):
@@ -81,6 +83,12 @@ class TomographyConv(TomographyBase):
             stack_recon = gaussian_filter_2d_stack(
                 stack_recon,
                 gaussian_kernel,
+            )
+            
+        if shrinkage is not None:
+            stack_recon = torch.max(
+                stack_recon - shrinkage,
+                torch.zeros_like(stack_recon),
             )
         
         return stack_recon, loss

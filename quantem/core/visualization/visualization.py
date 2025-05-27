@@ -81,7 +81,7 @@ def _show_2d(
 
     norm_config = _resolve_normalization(norm)
     scalebar_config = _resolve_scalebar(scalebar)
-
+    
     norm_obj = CustomNormalization(
         interval_type=norm_config.interval_type,
         stretch_type=norm_config.stretch_type,
