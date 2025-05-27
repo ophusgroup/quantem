@@ -1,6 +1,5 @@
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, Self, Sequence
-from warnings import warn
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -9,7 +8,7 @@ from mpl_toolkits.axes_grid1 import ImageGrid
 
 import quantem.core.utils.array_funcs as arr
 from quantem.core import config
-from quantem.core.datastructures import Dataset, Dataset4dstem
+from quantem.core.datastructures import Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import (
     electron_wavelength_angstrom,
@@ -18,7 +17,6 @@ from quantem.core.utils.utils import (
     tqdmnd,
 )
 from quantem.core.utils.validators import (
-    validate_arr_gt,
     validate_array,
     validate_gt,
     validate_int,
@@ -151,17 +149,10 @@ class PtychographyBase(AutoSerialize):
         self,
         obj_model: ObjectModelType | type | None = None,
         probe_model: ProbeModelType | type | None = None,
-        probe_params: dict = {},
-        initial_probe: np.ndarray | None = None,
-        vacuum_probe_intensity: np.ndarray | None = None,
-        obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         obj_padding_px: tuple[int, int] = (0, 0),
         com_fit_function: Literal[
             "none", "plane", "parabola", "bezier_two", "constant"
         ] = "constant",
-        num_probes: int = 1,
-        num_slices: int = 1,
-        slice_thicknesses: float | Sequence | None = None,
         force_com_rotation: float | None = None,
         force_com_transpose: bool | None = None,
         padded_diffraction_intensities_shape: tuple[int, int] | None = None,
@@ -188,10 +179,10 @@ class PtychographyBase(AutoSerialize):
                 in_place=True,
             )
 
-            if vacuum_probe_intensity is not None:
-                vppad = Dataset.from_array(np.fft.fftshift(vacuum_probe_intensity))
-                vppad.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
-                vacuum_probe_intensity = np.fft.fftshift(vppad.array)
+            # if vacuum_probe_intensity is not None:
+            #     vppad = Dataset.from_array(np.fft.fftshift(vacuum_probe_intensity))
+            #     vppad.pad(output_shape=padded_diffraction_intensities_shape, in_place=True)
+            #     vacuum_probe_intensity = np.fft.fftshift(vppad.array)
         else:
             self._padded_diffraction_shape = self.roi_shape
 
@@ -211,13 +202,14 @@ class PtychographyBase(AutoSerialize):
         # corner-center amplitudes
         self._normalize_diffraction_intensities()
 
-        self.set_probe_model(
-            probe_model, num_probes, probe_params, vacuum_probe_intensity, initial_probe
-        )
+        self.set_probe_model(probe_model)
+        # self.set_probe_model(
+        #     probe_model, num_probes, probe_params, vacuum_probe_intensity, initial_probe
+        # )
 
         self.obj_padding_px = obj_padding_px
-        self.set_obj_model(obj_model, num_slices, obj_type)
-        self.slice_thicknesses = slice_thicknesses
+        self.set_obj_model(obj_model)
+        # self.set_obj_model(obj_model, num_slices, slice_thicknesses, obj_type)
         self._calculate_scan_positions_in_pixels(obj_padding_px=self.obj_padding_px)
         self._set_patch_indices()
         self._compute_propagator_arrays()
@@ -735,7 +727,7 @@ class PtychographyBase(AutoSerialize):
 
         mean_intensity = 0
         shifted_amplitudes = np.zeros(diff_intensities.shape, dtype=config.get("dtype_real"))
-        corner_amplitudes = np.zeros(diff_intensities.shape, dtype=config.get("dtype_real"))
+        amplitudes = np.zeros(diff_intensities.shape, dtype=config.get("dtype_real"))
         for Rr, Rc in tqdmnd(
             range(diff_intensities.shape[0]),
             range(diff_intensities.shape[1]),
@@ -751,7 +743,8 @@ class PtychographyBase(AutoSerialize):
             mean_intensity += np.sum(intensity)
             ### shifting amplitude rather than intensity to minimize ringing artifacts
             amplitude = np.sqrt(intensity)
-            corner_amplitudes[Rr, Rc] = np.fft.fftshift(amplitude)
+            # amplitudes[Rr, Rc] = np.fft.fftshift(amplitude)
+            amplitudes[Rr, Rc] = amplitude
 
             shift_amplitude = get_shifted_array(
                 amplitude,
@@ -760,30 +753,32 @@ class PtychographyBase(AutoSerialize):
                 bilinear=bilinear,
             )
             shift_amplitude = np.maximum(shift_amplitude, 0)
+
+            shift_amplitude = np.fft.fftshift(shift_amplitude)
+
             shifted_amplitudes[Rr, Rc] = shift_amplitude
 
         if positions_mask is not None:
-            corner_amplitudes = corner_amplitudes[positions_mask]
+            amplitudes = amplitudes[positions_mask]
             shifted_amplitudes = shifted_amplitudes[positions_mask]
         else:
-            corner_amplitudes = corner_amplitudes.reshape((-1, *self.roi_shape))
+            amplitudes = amplitudes.reshape((-1, *self.roi_shape))
             shifted_amplitudes = shifted_amplitudes.reshape((-1, *self.roi_shape))
 
         if crop_patterns:
-            corner_amplitudes = corner_amplitudes[:, pattern_crop_mask].reshape(
-                (-1, *pattern_crop_mask_shape)
-            )
+            amplitudes = amplitudes[:, pattern_crop_mask].reshape((-1, *pattern_crop_mask_shape))
             shifted_amplitudes = shifted_amplitudes[:, pattern_crop_mask].reshape(
                 (-1, *pattern_crop_mask_shape)
             )
 
-        mean_intensity /= corner_amplitudes.shape[0]
+        mean_intensity /= amplitudes.shape[0]
 
         self.shifted_amplitudes = shifted_amplitudes
-        self.corner_amplitudes = corner_amplitudes
+        self.amplitudes = amplitudes
         descan_shifts = np.stack((self._com_fitted[0].flatten(), self._com_fitted[1].flatten()))
         descan_shifts -= self.roi_shape[:, None] / 2
         self.descan_shifts = -1 * descan_shifts.T
+        self._initial_descan_shifts = self._descan_shifts.clone()
 
         self._mean_diffraction_intensity = mean_intensity
         self._pattern_crop_mask = pattern_crop_mask
@@ -982,22 +977,22 @@ class PtychographyBase(AutoSerialize):
         self._shifted_amplitudes = self._to_torch(arr)
 
     @property
-    def corner_amplitudes(self) -> np.ndarray:
+    def amplitudes(self) -> np.ndarray:
         """
         gives the amplitudes that have had descan corrected and which are corner centered
         shaped as (rr*ry, qx, qy)
         """
-        return self._to_numpy(self._corner_amplitudes)
+        return self._to_numpy(self._amplitudes)
 
-    @corner_amplitudes.setter
-    def corner_amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
+    @amplitudes.setter
+    def amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
         arr = validate_array(
             arr,
-            name="corner_amplitudes",
+            name="amplitudes",
             dtype=config.get("dtype_real"),
             shape=(np.prod(self.gpts), *self.roi_shape),
         )
-        self._corner_amplitudes = self._to_torch(arr)
+        self._amplitudes = self._to_torch(arr)
 
     @property
     def descan_shifts(self) -> np.ndarray:
@@ -1063,34 +1058,12 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def slice_thicknesses(self) -> np.ndarray:
-        return self._to_numpy(self._slice_thicknesses)
+        return self._to_numpy(self._obj_model.slice_thicknesses)
+        # return self._to_numpy(self._slice_thicknesses)
 
     @slice_thicknesses.setter
     def slice_thicknesses(self, val: float | Sequence | None) -> None:
-        if val is None:
-            if self.num_slices > 1:
-                raise ValueError(
-                    f"num slices = {self.num_slices}, so slice_thicknesses cannot be None"
-                )
-            else:
-                self._slice_thicknesses = np.array([-1])
-        elif isinstance(val, (float, int)):
-            val = validate_gt(float(val), 0, "slice_thicknesses")
-            self._slice_thicknesses = val * np.ones(self.num_slices - 1)
-        else:
-            if self.num_slices == 1:
-                warn("Single slice reconstruction so not setting slice_thicknesses")
-            arr = validate_array(
-                val,
-                name="slice_thicknesses",
-                dtype=config.get("dtype_real"),
-                ndim=1,
-                shape=(self.num_slices - 1,),
-            )
-            arr = validate_arr_gt(arr, 0, "slice_thicknesses")
-            arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
-            self._slice_thicknesses = self._to_torch(arr)
-
+        self._obj_model.slice_thicknesses = val
         if hasattr(self, "_propagators"):  # propagators already set, update with new slices
             self._compute_propagator_arrays()
 
@@ -1267,9 +1240,11 @@ class PtychographyBase(AutoSerialize):
     def set_obj_model(
         self,
         model: ObjectModelType | type | None,
-        num_slices: int,
-        obj_type: Literal["complex", "pure_phase", "potential"],
+        num_slices: int | None = None,
+        slice_thicknesses: float | Sequence | None = None,
+        obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
     ):
+        # TODO test with calling before preprocess, pass in "pixelized" or similar
         # TODO -- here can transfer obj from existing to new model if applicable?
         if model is None:
             if hasattr(self, "_obj_model"):
@@ -1282,10 +1257,21 @@ class PtychographyBase(AutoSerialize):
                 raise TypeError(
                     f"obj_model must be a subclass of ObjectModelType, got {type(model)}"
                 )
-        elif not isinstance(model, ObjectModelType):
-            raise TypeError(f"obj_model must be a subclass of ObjectModelType, got {type(model)}")
+            print("initializing new model obj")
+            num_slices = self.num_slices if num_slices is None else int(num_slices)
+            self._obj_model = model(
+                num_slices=num_slices,
+                slice_thicknesses=slice_thicknesses,
+                device=self.device,
+                obj_type=obj_type,
+            )
+        elif isinstance(model, ObjectModelType):
+            self._obj_model = model
+        else:
+            raise TypeError(f"obj_modelect must be a ObjectModelType, got {type(model)}")
 
         # setting object shape manually here as haven't yet set slices
+        # TODO change
         cshape = self._obj_shape_crop_2d
         rotshape = np.floor(
             [
@@ -1297,18 +1283,9 @@ class PtychographyBase(AutoSerialize):
         ).astype("int")
         rotshape += rotshape % 2
         rotshape += 2 * self.obj_padding_px
-        obj_shape_full = (num_slices, *rotshape)
-
-        if isinstance(model, type):
-            self._obj_model = model(
-                shape=obj_shape_full,
-                device=self.device,
-                obj_type=obj_type,
-            )
-        elif isinstance(model, ObjectModelType):  # FIXME
-            self._obj_model = model
-        else:
-            raise TypeError(f"obj_modelect must be a ObjectModelType, got {type(model)}")
+        obj_shape_full = (self.num_slices, int(rotshape[0]), int(rotshape[1]))
+        self._obj_model.shape = obj_shape_full
+        self._obj_model.reset()
 
     @property
     def probe_model(self) -> ProbeModelType:
@@ -1335,19 +1312,23 @@ class PtychographyBase(AutoSerialize):
                 )
 
             self._probe_model = probe_model(
-                shape=(num_probes, *self.roi_shape),
+                num_probes=num_probes,
                 probe_params=probe_params,
                 vacuum_probe_intensity=vacuum_probe_intensity,
-                reciprocal_sampling=self.reciprocal_sampling,
-                mean_diffraction_intensity=self._mean_diffraction_intensity,
-                initial_probe=initial_probe,
-                dtype=self._dtype_complex,
+                initial_probe_array=initial_probe,
                 device=self.device,
                 rng=self.rng,
             )
         elif isinstance(probe_model, ProbeModelType):
             # add protections for changing num_probes and such
             self._probe_model = probe_model
+        else:
+            raise TypeError(f"probe_model must be a ProbeModelType, got {type(probe_model)}")
+
+        self._probe_model.set_initial_probe(
+            self.roi_shape, self.reciprocal_sampling, self._mean_diffraction_intensity
+        )
+        self._probe_model.to_device(self.device)
 
     @property
     def constraints(self) -> dict[str, Any]:
@@ -1687,6 +1668,7 @@ class PtychographyBase(AutoSerialize):
     def reset_recon(self) -> None:
         self.obj_model.reset()
         self.probe_model.reset()
+        self.descan_shifts = self._initial_descan_shifts.clone()
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
@@ -1755,6 +1737,7 @@ class PtychographyBase(AutoSerialize):
         self.probe_model.to_device(self.device)
         self._patch_indices = self._to_torch(self._patch_indices)
         self._shifted_amplitudes = self._to_torch(self._shifted_amplitudes)
+        self._amplitudes = self._to_torch(self._amplitudes)
         self.positions_px = self._to_torch(self._positions_px)
         self._obj_fov_mask = self._to_torch(self._obj_fov_mask)
         self._propagators = self._to_torch(self._propagators)
@@ -1799,7 +1782,10 @@ class PtychographyBase(AutoSerialize):
         # incoherent sum of all probe components
         eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
         overlap_fft = torch.fft.fft2(overlap_array)
-        return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
+        # return torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
+        return torch.fft.fftshift(
+            torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0)), dim=(-2, -1)
+        )
 
     def estimate_intensities(self, overlap_array: "torch.Tensor") -> "torch.Tensor":
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""

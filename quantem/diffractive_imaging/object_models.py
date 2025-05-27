@@ -1,10 +1,17 @@
 from abc import abstractmethod
-from typing import Any, Literal
+from typing import Any, Literal, Sequence
+from warnings import warn
 
 import torch
 
 from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.utils.validators import (
+    validate_arr_gt,
+    validate_array,
+    validate_gt,
+    validate_np_len,
+)
 
 
 class ObjectBase(AutoSerialize):
@@ -14,12 +21,15 @@ class ObjectBase(AutoSerialize):
 
     def __init__(
         self,
-        shape: tuple,
-        device: str,
-        obj_type: Literal["complex", "pure_phase", "potential"],
+        num_slices: int = 1,
+        slice_thicknesses: float | Sequence | None = None,
+        device: str = "cpu",
+        obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         *args,
     ):
-        self._shape = shape
+        self._shape = (-1, -1, -1)
+        self.num_slices = num_slices
+        self.slice_thicknesses = slice_thicknesses
         self._device = device
         self._obj_type = obj_type
         self._constraints = {}
@@ -27,6 +37,16 @@ class ObjectBase(AutoSerialize):
     @property
     def shape(self) -> tuple:
         return self._shape
+
+    @shape.setter
+    def shape(self, s: tuple) -> None:
+        """set in Ptychography as the shape is determined by com_rotation, sampling, etc."""
+        s = tuple(s)
+        if len(s) != 3:
+            raise ValueError(
+                f"Shape must be a tuple of length 3 (depth, row, col), got {len(s)}: {s}"
+            )
+        self._shape = s
 
     @property
     def dtype(self) -> "torch.dtype":
@@ -66,6 +86,43 @@ class ObjectBase(AutoSerialize):
     def num_slices(self) -> int:
         return self.shape[0]
 
+    @num_slices.setter
+    def num_slices(self, n: int) -> None:
+        validate_gt(n, 0, "num_slices")
+        self._shape = (n, *self._shape[1:])
+
+    @property
+    def slice_thicknesses(self) -> torch.Tensor:
+        return self._slice_thicknesses
+
+    @slice_thicknesses.setter
+    def slice_thicknesses(self, val: float | Sequence | None) -> None:
+        if val is None:
+            if self.num_slices > 1:
+                raise ValueError(
+                    f"num slices = {self.num_slices}, so slice_thicknesses cannot be None"
+                )
+            else:
+                self._slice_thicknesses = torch.tensor([-1])
+        elif isinstance(val, (float, int)):
+            val = validate_gt(float(val), 0, "slice_thicknesses")
+            self._slice_thicknesses = val * torch.ones(self.num_slices - 1)
+        else:
+            if self.num_slices == 1:
+                warn("Single slice reconstruction so not setting slice_thicknesses")
+            arr = validate_array(
+                val,
+                name="slice_thicknesses",
+                dtype=config.get("dtype_real"),
+                ndim=1,
+                shape=(self.num_slices - 1,),
+            )
+            arr = validate_arr_gt(arr, 0, "slice_thicknesses")
+            arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
+            self._slice_thicknesses = torch.tensor(
+                arr, dtype=config.get("dtype_real"), device=self.device
+            )
+
     @property
     def obj(self):
         """get the full object"""
@@ -76,11 +133,6 @@ class ObjectBase(AutoSerialize):
         """optimization parameters"""
         raise NotImplementedError()
 
-    @property
-    def model_input(self):
-        """get the model input"""
-        raise NotImplementedError()
-
     @abstractmethod
     def forward(self, patch_indices: torch.Tensor):
         """Get patch indices of the object"""
@@ -88,13 +140,7 @@ class ObjectBase(AutoSerialize):
 
     @abstractmethod
     def reset(self):
-        """
-        Reset the object model to its initial or pre-trained state
-        """
-        raise NotImplementedError()
-
-    def reinitialize(self, shape: tuple, *args):
-        # TBD -- allow preprocess to be run again to change num_slices or similar
+        """Reset the object model to its initial or pre-trained state"""
         raise NotImplementedError()
 
     @abstractmethod
@@ -115,9 +161,6 @@ class ObjectConstraints(ObjectBase):
         "identical_slices": False,
         "apply_fov_mask": False,
     }
-    # Defaults are kept in PtychographyConstraints for now, not sure where they'll end up
-    # eventually, as it contains hard + soft constraints, but if adding new constraints here
-    # also need to be added along with default values there
 
     @property
     def constraints(self) -> dict[str, Any]:
@@ -164,8 +207,7 @@ class ObjectConstraints(ObjectBase):
 
         if self.num_slices > 1:
             if self.constraints["identical_slices"]:
-                obj_mean = torch.mean(obj2, dim=0, keepdim=True)
-                obj2[:] = obj_mean  # type:ignore # TODO fix this, see if breaks graph to just do in place
+                obj2[:] = torch.mean(obj2, dim=0, keepdim=True)
 
         return obj2
 
@@ -177,13 +219,18 @@ class ObjectPixelized(ObjectConstraints, ObjectBase):
 
     def __init__(
         self,
-        shape: tuple,
-        device: str,
-        obj_type: Literal["complex", "pure_phase", "potential"],
+        num_slices: int = 1,
+        slice_thicknesses: float | Sequence | None = None,
+        device: str = "cpu",
+        obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
     ):
-        super().__init__(shape, device, obj_type)
+        super().__init__(
+            num_slices=num_slices,
+            slice_thicknesses=slice_thicknesses,
+            device=device,
+            obj_type=obj_type,
+        )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
-        self._obj = torch.ones(shape, dtype=self.dtype, device=device)
 
     @property
     def obj(self):
@@ -207,7 +254,7 @@ class ObjectPixelized(ObjectConstraints, ObjectBase):
         """
         Reset the object model to its initial or pre-trained state
         """
-        self._obj = torch.ones(self._obj.shape, dtype=self.dtype, device=self.device)
+        self._obj = torch.ones(self.shape, dtype=self.dtype, device=self.device)
 
     def _get_obj_patches(self, obj_array, patch_indices):
         """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""

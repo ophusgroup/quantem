@@ -438,9 +438,7 @@ def validate_np_len(value: np.ndarray | float | int, length: int, name: str = ""
     return value
 
 
-def validate_arr_gt(
-    value: "np.ndarray | cp.ndarray", cutoff: float | int, name: str
-) -> "np.ndarray | cp.ndarray":
+def validate_arr_gt(value: "np.ndarray", cutoff: float | int, name: str) -> "np.ndarray":
     if np.any(value <= cutoff):
         raise ValueError(f"All elements of {name} must be greater than {cutoff}")
     return value

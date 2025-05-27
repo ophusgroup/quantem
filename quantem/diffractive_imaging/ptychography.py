@@ -75,7 +75,7 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
     # region --- methods ---
 
     def get_tv_loss(
-        self, arrayay: torch.Tensor, weights: None | tuple[float, float] = None
+        self, array: torch.Tensor, weights: None | tuple[float, float] = None
     ) -> torch.Tensor:
         """
         weight is tuple (weight_z, weight_yx) or float -> (weight, weight)
@@ -99,14 +99,14 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
                 raise ValueError(f"weights must be a tuple of length 2, got {weights}")
             w = weights
 
-        if arrayay.is_complex():
-            ph = arrayay.angle()
+        if array.is_complex():
+            ph = array.angle()
             loss += self._calc_tv_loss(ph, w)
-            amp = arrayay.abs()
+            amp = array.abs()
             if torch.max(amp) - torch.min(amp) > 1e-3:  # is complex and not pure_phase
                 loss += self._calc_tv_loss(amp, w)
         else:
-            loss += self._calc_tv_loss(arrayay, w)
+            loss += self._calc_tv_loss(array, w)
 
         return loss
 
@@ -191,7 +191,7 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
         if "descan" in self.optimizer_params.keys():
-            target_amplitudes = self._corner_amplitudes
+            target_amplitudes = self._amplitudes
         else:
             target_amplitudes = self._shifted_amplitudes
 
@@ -225,8 +225,6 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
                     self.error_estimate(
                         overlap,
                         target_amplitudes[batch_indices],
-                        # self._corner_amplitudes[batch_indices],
-                        # self._shifted_amplitudes[batch_indices],
                     )
                     / self._mean_diffraction_intensity
                 )
@@ -235,6 +233,9 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
                     self.constraints["object"]["tv_weight_z"] > 0
                     or self.constraints["object"]["tv_weight_yx"] > 0
                 ):
+                    # TODO change this to a loss += self.obj_model.soft_constraints()
+                    # likewise for probe (and descan, so make a loss += self.soft_constraints())
+                    # that calls each
                     loss += self.get_tv_loss(self.obj_model.obj) * (end - start)
 
                 # TODO make a backwards method, does either autograd or sets analytic gradients

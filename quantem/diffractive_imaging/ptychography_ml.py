@@ -100,13 +100,14 @@ class PtychographyML(PtychographyBase):
         return self._optimizers
 
     def set_optimizers(self):
+        """Reset all optimizers and set them according to the optimizer_params."""
         for key, _ in self._optimizer_params.items():
             if key == "object":
-                self._add_optimizer(key, self.obj_model.params)
+                self._add_optimizer(key, self.obj_model.params, self._optimizer_params[key])
             elif key == "probe":
-                self._add_optimizer(key, self.probe_model.params)
+                self._add_optimizer(key, self.probe_model.params, self._optimizer_params[key])
             elif key == "descan":
-                self._add_optimizer(key, self._descan_shifts)
+                self._add_optimizer(key, self._descan_shifts, self._optimizer_params[key])
             elif key == "scan_positions":
                 raise NotImplementedError()
             else:
@@ -119,7 +120,10 @@ class PtychographyML(PtychographyBase):
         self._optimizer_params.pop(key, None)
         return
 
-    def _add_optimizer(self, key: str, params: "torch.Tensor|Sequence[torch.Tensor]"):
+    def _add_optimizer(
+        self, key: str, params: "torch.Tensor|Sequence[torch.Tensor]", opt_params: dict
+    ) -> None:
+        """Can be used to add an optimizer without resetting the other optimizers."""
         if key not in self.OPTIMIZABLE_VALS:
             raise ValueError(
                 f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
@@ -127,7 +131,8 @@ class PtychographyML(PtychographyBase):
         if isinstance(params, torch.Tensor):
             params = [params]
         [p.requires_grad_(True) for p in params]
-        opt_params = self.optimizer_params[key]
+        self.optimizer_params[key] = opt_params
+        opt_params = opt_params.copy()
         opt_type = opt_params.pop("type")
         if isinstance(opt_type, type):
             opt = opt_type(params, **opt_params)
@@ -137,7 +142,6 @@ class PtychographyML(PtychographyBase):
             opt = torch.optim.AdamW(params, **opt_params)  # TODO pass all other kwargs
         else:
             raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
-        opt_params["type"] = opt_type  # replacing opt type
         # if key in self.optimizers.keys():
         #     self.vprint(f"Key {key} is already in optimizers, overwriting.")
         self._optimizers[key] = opt

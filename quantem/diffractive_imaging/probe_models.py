@@ -6,10 +6,11 @@ import numpy as np
 import scipy.ndimage as ndi
 
 from quantem.core import config
-from quantem.core.datastructures import Dataset, Dataset4dstem
+from quantem.core.datastructures import Dataset2d, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import to_numpy
 from quantem.core.utils.validators import (
+    validate_arr_gt,
     validate_array,
     validate_dict_keys,
     validate_gt,
@@ -43,35 +44,41 @@ class ProbeBase(AutoSerialize):
 
     def __init__(
         self,
-        shape: tuple,  # (num_probes, roi_shape[0], roi_shape[1])
+        num_probes: int = 1,
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-        reciprocal_sampling: np.ndarray | None = None,
-        mean_diffraction_intensity: float = -1,
-        dtype: torch.dtype = torch.complex64,
         device: str = "cpu",
         rng: np.random.Generator = np.random.default_rng(),
         *args,
         **kwargs,
     ):
-        self._shape = shape
-        self._dtype = dtype
+        # self._shape = shape
+        self.num_probes = num_probes
         self._device = device
         self._probe_params = self.DEFAULT_PROBE_PARAMS
         self.probe_params = probe_params
         self.vacuum_probe_intensity = vacuum_probe_intensity
-        self._reciprocal_sampling = reciprocal_sampling
-        self.mean_diffraction_intensity = mean_diffraction_intensity
         self._constraints = {}
+        self.rng = rng
 
     @property
     def shape(self) -> np.ndarray:
-        return to_numpy(self._shape)
+        return to_numpy((self.num_probes, *self.roi_shape))
 
     @property
     def roi_shape(self) -> np.ndarray:
         """shape of the probe"""
-        return to_numpy(self._shape[1:])
+        return self._roi_shape
+
+    @roi_shape.setter
+    def roi_shape(self, shape: tuple[int, int] | np.ndarray) -> None:
+        arr = validate_array(
+            shape,
+            name="roi_shape",
+            shape=(2,),
+        )
+        arr = validate_arr_gt(arr, 0, "roi_shape")
+        self._roi_shape = arr
 
     @property
     def probe_params(self) -> dict[str, Any]:
@@ -105,9 +112,7 @@ class ProbeBase(AutoSerialize):
 
         process_polar_params(params)
         params["polar_parameters"] = polar_parameters
-        self._probe_params = (
-            self.DEFAULT_PROBE_PARAMS | self._probe_params | params
-        )  # prioritize new values
+        self._probe_params = self.DEFAULT_PROBE_PARAMS | self._probe_params | params
 
     @property
     def vacuum_probe_intensity(self) -> np.ndarray | None:
@@ -123,7 +128,7 @@ class ProbeBase(AutoSerialize):
             return
         elif isinstance(vp, np.ndarray):
             vp2 = vp.astype(config.get("dtype_real"))
-        elif isinstance(vp, (Dataset4dstem, Dataset)):
+        elif isinstance(vp, (Dataset4dstem, Dataset2d)):
             vp2 = vp.array
         else:
             raise NotImplementedError(f"Unknown vacuum probe type: {type(vp)}")
@@ -178,18 +183,35 @@ class ProbeBase(AutoSerialize):
         self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
 
     @property
-    def reciprocal_sampling(self) -> np.ndarray | None:
+    def reciprocal_sampling(self) -> np.ndarray:
         """reciprocal sampling of the probe"""
         return to_numpy(self._reciprocal_sampling)
+
+    @reciprocal_sampling.setter
+    def reciprocal_sampling(self, sampling: np.ndarray | list | tuple):
+        sampling = validate_array(
+            sampling,
+            name="reciprocal_sampling",
+            dtype=config.get("dtype_real"),
+            shape=(2,),
+            expand_dims=True,
+        )
+        validate_arr_gt(sampling, 0.0, "reciprocal_sampling")
+        self._reciprocal_sampling = sampling
 
     @property
     def num_probes(self) -> int:
         """if num_probes > 1, then it is a mixed-state reconstruction"""
-        return self._shape[0]
+        return self._num_probes
+
+    @num_probes.setter
+    def num_probes(self, n: int):
+        validate_gt(n, 0, "num_probes")
+        self._num_probes = int(n)
 
     @property
     def dtype(self) -> torch.dtype:
-        return self._dtype
+        return config.get("dtype_complex")
 
     @property
     def device(self) -> str:
@@ -208,7 +230,7 @@ class ProbeBase(AutoSerialize):
             if dtype == "same":
                 dt = None
             elif dtype == "probe":
-                dt = self._dtype
+                dt = self.dtype
             else:
                 raise ValueError(
                     f"Unknown string passed {dtype}, dtype should be 'same', 'probe', or torch.dtype"
@@ -237,7 +259,7 @@ class ProbeBase(AutoSerialize):
         raise NotImplementedError()
 
     @property
-    def initial_probe(self) -> np.ndarray:
+    def initial_probe(self) -> torch.Tensor:
         raise NotImplementedError()
 
     @property
@@ -260,7 +282,7 @@ class ProbeBase(AutoSerialize):
         raise NotImplementedError()
 
     @abstractmethod
-    def _set_initial_probe(self, *args, **kwargs):
+    def set_initial_probe(self, *args, **kwargs):
         raise NotImplementedError()
 
     def check_probe_params(self):
@@ -367,29 +389,25 @@ class ProbeConstraints(ProbeBase):
 class ProbePixelized(ProbeConstraints, ProbeBase):
     def __init__(
         self,
-        shape: tuple,  # (num_probes, roi_shape[0], roi_shape[1])
+        num_probes: int = 1,
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
-        reciprocal_sampling: np.ndarray | None = None,
-        mean_diffraction_intensity: float = -1,
-        initial_probe: np.ndarray | None = None,
+        initial_probe_array: np.ndarray | None = None,
         dtype: torch.dtype = torch.complex64,
         device: str = "cpu",
         rng: np.random.Generator = np.random.default_rng(),
         *args,
     ):
         super().__init__(
-            shape=shape,
+            num_probes=num_probes,
             probe_params=probe_params,
             vacuum_probe_intensity=vacuum_probe_intensity,
-            reciprocal_sampling=reciprocal_sampling,
-            mean_diffraction_intensity=mean_diffraction_intensity,
             dtype=dtype,
             device=device,
             rng=rng,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
-        self._set_initial_probe(initial_probe, self.probe_params, self.vacuum_probe_intensity)
+        self.initial_probe_array = initial_probe_array
 
     @property
     def probe(self) -> torch.Tensor:
@@ -415,32 +433,57 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
         return self._probe
 
     @property
-    def model_input(self):
-        return None
+    def initial_probe(self) -> torch.Tensor:
+        return self._initial_probe
+
+    @property
+    def initial_probe_array(self) -> np.ndarray | None:
+        return self._initial_probe_array
+
+    @initial_probe_array.setter
+    def initial_probe_array(self, initial_probe: np.ndarray | ComplexProbe | None):
+        if isinstance(initial_probe, ComplexProbe):
+            raise NotImplementedError
+        if initial_probe is None:
+            self._initial_probe_array = None
+        else:
+            probe = validate_array(
+                initial_probe,
+                name="initial_probe",
+                dtype=config.get("dtype_complex"),
+                ndim=3,
+                shape=(self.num_probes, *self.roi_shape),
+                expand_dims=True,
+            )
+            self._initial_probe_array = probe
 
     def forward(self, fract_positions: torch.Tensor) -> torch.Tensor:
         shifted_probes = fourier_shift(self.probe, fract_positions).swapaxes(0, 1)
         ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         return shifted_probes
 
-    def _set_initial_probe(
+    def set_initial_probe(
         self,
-        initial_probe: np.ndarray | None,
-        probe_params: dict,
-        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None,
+        roi_shape: np.ndarray | tuple,
+        reciprocal_sampling: np.ndarray,
+        mean_diffraction_intensity: float,
+        device: str | None = None,
         *args,
     ):
-        if initial_probe is not None:
-            if isinstance(initial_probe, ComplexProbe):
-                probes = initial_probe.build()._array
-            else:
-                probes = to_numpy(initial_probe)
-        if probe_params is not None:
-            self.probe_params = probe_params
+        if device is not None:
+            self._device = device
+        self.roi_shape = np.array(roi_shape)
+        self.reciprocal_sampling = reciprocal_sampling
+        self.mean_diffraction_intensity = mean_diffraction_intensity
+
+        if self.initial_probe_array is not None:
+            probes = self.initial_probe_array
+        if self.probe_params is not None:
             self.check_probe_params()
             prb = ComplexProbe(
-                gpts=tuple(self.shape[1:]),
-                sampling=tuple(1 / (self.shape[1:] * self.reciprocal_sampling)),
+                gpts=tuple(self.roi_shape),
+                sampling=tuple(1 / (self.roi_shape * self.reciprocal_sampling)),
+                # sampling=tuple(1 / (self.roi_shape * self.reciprocal_sampling)),
                 energy=self.probe_params["energy"],
                 semiangle_cutoff=self.probe_params["semiangle_cutoff"],
                 defocus=self.probe_params["defocus"],
@@ -471,7 +514,7 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
         probe_intensity = np.sum(np.abs(np.fft.fft2(probes)) ** 2)
-        intensity_norm = np.sqrt(self._mean_diffraction_intensity / probe_intensity)
+        intensity_norm = np.sqrt(mean_diffraction_intensity / probe_intensity)
         probes *= intensity_norm
 
         self._initial_probe = self._to_torch(probes)
