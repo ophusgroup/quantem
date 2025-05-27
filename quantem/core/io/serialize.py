@@ -12,8 +12,6 @@ import numpy as np
 import zarr
 from zarr.storage import LocalStore
 
-MAX_ATTR_SIZE = 1_000_000  # 1 MB threshold for storing in attrs
-
 
 # Base class for automatic serialization of classes
 class AutoSerialize:
@@ -129,14 +127,13 @@ class AutoSerialize:
                 continue
 
             if isinstance(attr_value, np.ndarray):
-                if attr_name not in group:
-                    arr = group.create_array(
-                        name=attr_name,
-                        shape=attr_value.shape,
-                        dtype=attr_value.dtype,
-                        compressors=compressors,
-                    )
-                    arr[:] = attr_value
+                arr = group.create_array(
+                    name=attr_name,
+                    shape=attr_value.shape,
+                    dtype=attr_value.dtype,
+                    compressors=compressors,
+                )
+                arr[:] = attr_value
             elif isinstance(attr_value, (int, float, str, bool, type(None))):
                 group.attrs[attr_name] = attr_value
             elif isinstance(attr_value, AutoSerialize):
@@ -144,21 +141,21 @@ class AutoSerialize:
                 self._recursive_save(
                     attr_value, subgroup, skip_names, skip_types, compressors
                 )
+            elif hasattr(attr_value, "state_dict"):
+                subgroup = group.require_group(attr_name)
+                state = attr_value.state_dict()
+                subgroup.attrs["_state_dict_keys"] = list(state.keys())
+                for k, v in state.items():
+                    subgroup.create_dataset(name=k, data=v, compressors=compressors)
+            elif isinstance(attr_value, dict):
+                subgroup = group.require_group(attr_name)
+                subgroup.attrs["_is_dict"] = True
+                subgroup.attrs.update(attr_value)
             else:
-                serialized = dill.dumps(attr_value)
-                compressed = gzip.compress(serialized)
-                if len(compressed) < MAX_ATTR_SIZE:
-                    group.attrs[attr_name] = base64.b16encode(compressed).decode(
-                        "ascii"
-                    )
-                else:
-                    ds = group.create_dataset(
-                        name=attr_name,
-                        shape=(len(compressed),),
-                        dtype="uint8",
-                        compressors=compressors,
-                    )
-                    ds[:] = np.frombuffer(compressed, dtype="uint8")
+                subgroup = group.require_group(attr_name)
+                subgroup.attrs["_class"] = attr_value.__class__.__name__
+                subgroup.attrs["_module"] = attr_value.__class__.__module__
+                subgroup.attrs.update(attr_value.__dict__)
 
     @classmethod
     def _recursive_load(
@@ -196,28 +193,44 @@ class AutoSerialize:
         for ds_name in group.array_keys():
             if ds_name in skip_names:
                 continue
-            arr = group[ds_name][:]
-            try:
-                val = dill.loads(gzip.decompress(arr.tobytes()))
-            except Exception:
-                val = arr
+            val = group[ds_name][:]
             setattr(obj, ds_name, val)
 
         # 3) sub-groups
         for subgroup_name, subgroup in group.groups():
-            # skip by name
             if subgroup_name in skip_names:
                 continue
-            # peek at its class, skip by type
-            sub_cls = dill.loads(bytes.fromhex(subgroup.attrs["_class_def"]))
-            if issubclass(sub_cls, skip_types):
-                continue
-            # otherwise recurse
-            setattr(
-                obj,
-                subgroup_name,
-                cls._recursive_load(subgroup, skip_names, skip_types),
-            )
+            if "_state_dict_keys" in subgroup.attrs:
+                cls_name = subgroup.attrs.get("_class", "dict")
+                mod_name = subgroup.attrs.get("_module", "__main__")
+                state_keys = subgroup.attrs["_state_dict_keys"]
+                state = {k: subgroup[k][:] for k in state_keys}
+                mod = __import__(mod_name, fromlist=[cls_name])
+                sub_cls = getattr(mod, cls_name)
+                instance = sub_cls.__new__(sub_cls)
+                instance.load_state_dict(state)
+                setattr(obj, subgroup_name, instance)
+            elif subgroup.attrs.get("_is_dict", False):
+                dict_content = {
+                    k: v for k, v in subgroup.attrs.items() if k != "_is_dict"
+                }
+                setattr(obj, subgroup_name, dict_content)
+            elif "_class" in subgroup.attrs:
+                cls_name = subgroup.attrs["_class"]
+                mod_name = subgroup.attrs["_module"]
+                mod = __import__(mod_name, fromlist=[cls_name])
+                sub_cls = getattr(mod, cls_name)
+                instance = sub_cls.__new__(sub_cls)
+                for attr, val in subgroup.attrs.items():
+                    if attr not in {"_class", "_module"}:
+                        setattr(instance, attr, val)
+                setattr(obj, subgroup_name, instance)
+            else:
+                setattr(
+                    obj,
+                    subgroup_name,
+                    cls._recursive_load(subgroup, skip_names, skip_types),
+                )
 
         # post-init hook
         if hasattr(obj, "__attrs_post_init__"):
