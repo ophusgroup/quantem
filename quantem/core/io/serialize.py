@@ -4,13 +4,25 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
-from typing import Any, Literal, Sequence, Union
+from typing import TYPE_CHECKING, Any, Literal, Sequence, Union
 from zipfile import ZipFile
 
 import dill
 import numpy as np
 import zarr
 from zarr.storage import LocalStore
+
+from quantem.core import config
+
+if TYPE_CHECKING:
+    import cupy as cp
+    import torch
+else:
+    if config.get("has_cupy"):
+        import cupy as cp
+    if config.get("has_torch"):
+        import torch
+
 
 MAX_ATTR_SIZE = 1_000_000  # 1 MB threshold for storing in attrs
 
@@ -75,9 +87,7 @@ class AutoSerialize:
                 else:
                     os.remove(path)
             else:
-                raise FileExistsError(
-                    f"File '{path}' already exists. Use mode='o' to overwrite."
-                )
+                raise FileExistsError(f"File '{path}' already exists. Use mode='o' to overwrite.")
 
         if isinstance(skip, (str, type)):
             skip = [skip]
@@ -107,6 +117,20 @@ class AutoSerialize:
         else:
             raise ValueError(f"Unknown store type: {store}")
 
+    def _should_skip(self, value, skip_names, skip_types):
+        """Recursively check if value or any nested value should be skipped."""
+        if isinstance(value, skip_types):
+            return True
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k in skip_names or self._should_skip(v, skip_names, skip_types):
+                    return True
+        elif isinstance(value, (list, tuple, set)):
+            for v in value:
+                if self._should_skip(v, skip_names, skip_types):
+                    return True
+        return False
+
     def _recursive_save(
         self,
         obj,
@@ -124,9 +148,42 @@ class AutoSerialize:
         else:
             items = obj.__dict__.items()
 
+        torch_tensor_attrs = []
+        torch_scalar_attrs = []
+
         for attr_name, attr_value in items:
             if attr_name in skip_names or isinstance(attr_value, skip_types):
                 continue
+
+            if isinstance(attr_value, dict):
+                filtered_value = {
+                    k: v
+                    for k, v in attr_value.items()
+                    if k not in skip_names and not self._should_skip(v, skip_names, skip_types)
+                }
+                attr_value = filtered_value
+
+            elif isinstance(attr_value, (list, tuple, set)):
+                filtered_value = type(attr_value)(
+                    v for v in attr_value if not self._should_skip(v, skip_names, skip_types)
+                )
+                attr_value = filtered_value
+
+            # Handle torch scalar (0-dim tensor)
+            if config.get("has_torch"):
+                if isinstance(attr_value, torch.Tensor) and attr_value.ndim == 0:
+                    attr_value = attr_value.item()
+                    torch_scalar_attrs.append(attr_name)
+
+            # converting cupy and torch tensors to numpy arrays for faster saving
+            if config.get("has_cupy"):
+                if isinstance(attr_value, cp.ndarray):
+                    attr_value = cp.asnumpy(attr_value)
+            if config.get("has_torch"):
+                if isinstance(attr_value, torch.Tensor):
+                    attr_value = attr_value.detach().cpu().numpy()
+                    torch_tensor_attrs.append(attr_name)
+                    # torch tensors are loaded back to torch on cpu
 
             if isinstance(attr_value, np.ndarray):
                 if attr_name not in group:
@@ -141,16 +198,12 @@ class AutoSerialize:
                 group.attrs[attr_name] = attr_value
             elif isinstance(attr_value, AutoSerialize):
                 subgroup = group.require_group(attr_name)
-                self._recursive_save(
-                    attr_value, subgroup, skip_names, skip_types, compressors
-                )
+                self._recursive_save(attr_value, subgroup, skip_names, skip_types, compressors)
             else:
                 serialized = dill.dumps(attr_value)
                 compressed = gzip.compress(serialized)
                 if len(compressed) < MAX_ATTR_SIZE:
-                    group.attrs[attr_name] = base64.b16encode(compressed).decode(
-                        "ascii"
-                    )
+                    group.attrs[attr_name] = base64.b16encode(compressed).decode("ascii")
                 else:
                     ds = group.create_dataset(
                         name=attr_name,
@@ -159,6 +212,12 @@ class AutoSerialize:
                         compressors=compressors,
                     )
                     ds[:] = np.frombuffer(compressed, dtype="uint8")
+
+        # Save torch tensor attribute names as metadata
+        if torch_tensor_attrs:
+            group.attrs["_torch_tensor_attrs"] = torch_tensor_attrs
+        if torch_scalar_attrs:
+            group.attrs["_torch_scalar_attrs"] = torch_scalar_attrs
 
     @classmethod
     def _recursive_load(
@@ -180,6 +239,8 @@ class AutoSerialize:
                 setattr(obj, f.name, None)
 
         # 1) scalar attrs
+        torch_tensor_attrs = set(group.attrs.get("_torch_tensor_attrs", []))
+        torch_scalar_attrs = set(group.attrs.get("_torch_scalar_attrs", []))
         for attr_name, raw in group.attrs.items():
             if attr_name == "_class_def" or attr_name in skip_names:
                 continue
@@ -190,6 +251,10 @@ class AutoSerialize:
                     val = dill.loads(dec)
                 except Exception:
                     pass
+            # Convert back to torch scalar if needed
+            if attr_name in torch_scalar_attrs:
+                if config.get("has_torch"):
+                    val = torch.tensor(val)
             setattr(obj, attr_name, val)
 
         # 2) array datasets
@@ -201,6 +266,10 @@ class AutoSerialize:
                 val = dill.loads(gzip.decompress(arr.tobytes()))
             except Exception:
                 val = arr
+            # Convert back to torch tensor if needed/possible
+            if ds_name in torch_tensor_attrs:
+                if config.get("has_torch"):
+                    val = torch.from_numpy(val)
             setattr(obj, ds_name, val)
 
         # 3) sub-groups
@@ -266,9 +335,7 @@ def load(
         if "_class_def" not in root.attrs:
             raise KeyError("Missing '_class_def' in Zarr root attrs.")
         class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-        return class_def._recursive_load(
-            root, skip_names=skip_names, skip_types=skip_types
-        )
+        return class_def._recursive_load(root, skip_names=skip_names, skip_types=skip_types)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, "r") as zf:
@@ -276,9 +343,7 @@ def load(
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
             class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-            return class_def._recursive_load(
-                root, skip_names=skip_names, skip_types=skip_types
-            )
+            return class_def._recursive_load(root, skip_names=skip_names, skip_types=skip_types)
 
 
 def print_file(path: str | Path) -> None:
@@ -295,9 +360,7 @@ def print_file(path: str | Path) -> None:
     root = zarr.group(store=store)
 
     def _recurse(group: zarr.Group, prefix: str = "") -> None:
-        keys = sorted(
-            set(group.attrs.keys()) | set(group.array_keys()) | set(group.group_keys())
-        )
+        keys = sorted(set(group.attrs.keys()) | set(group.array_keys()) | set(group.group_keys()))
         for idx, key in enumerate(keys):
             last = idx == len(keys) - 1
             branch = "└── " if last else "├── "
