@@ -38,10 +38,12 @@ dependencies = [
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
-  "pytest>=8.3.5",
 ]
 
 [dependency-groups]
+test = [
+    "pytest>=8.3.5",
+]
 dev = [
     "jupyterlab>=4.4.0",
     "packaging>=24.2",
