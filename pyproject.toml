@@ -50,5 +50,6 @@ dev = [
     "packaging>=24.2",
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
+    "tomli>=2.2.1",
 ]
 
