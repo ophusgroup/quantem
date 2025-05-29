@@ -11,6 +11,9 @@ on:
 jobs:
   validate-version:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ${{ github.workspace }}
 
     steps:
       - name: Checkout PR branch (head)
@@ -23,7 +26,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
 
       - name: Install the project
-        run: uv sync --all-extras --dev
+        run: uv sync --all-extras --dev --no-editable
 
       - name: Get PR branch version
         id: pr_version
