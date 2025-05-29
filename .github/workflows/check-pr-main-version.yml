@@ -34,28 +34,13 @@ jobs:
           PR_VERSION=$(uv version --short)
           echo "pr_version=$PR_VERSION" >> $GITHUB_OUTPUT
 
-      - name: Fetch main and get version
-        id: main_version
-        run: |
-
-          # Fetch main without changing the working directory
-          git fetch origin main
-
-          # Get version from main branch pyproject.toml
-          git checkout origin/main -- pyproject.toml
-          MAIN_VERSION=$(uv version --short)
-          echo "main_version=$MAIN_VERSION" >> $GITHUB_OUTPUT
-
-          # Restore any stashed changes (if any)
-          git restore pyproject.toml
-
       - name: Compare versions
         id: version_comparison
-        env:
-          PR_VERSION: ${{ steps.pr_version.outputs.pr_version }}
-          MAIN_VERSION: ${{ steps.main_version.outputs.main_version }}
         run: |
-          VERSION_COMPARISON=$(uv run python scripts/compare-python-versions.py "$MAIN_VERSION" "$PR_VERSION")
+
+          # fetch pyproject.toml from main
+          git show origin/main:pyproject.toml > pyproject-main.toml
+          VERSION_COMPARISON=$(uv run python scripts/compare-python-versions.py pyproject-main.toml pyproject.toml)
           echo "version_comparison=$VERSION_COMPARISON" >> $GITHUB_OUTPUT
 
       - name: Release new branch
