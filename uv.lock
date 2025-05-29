@@ -1818,7 +1818,6 @@ dependencies = [
     { name = "h5py" },
     { name = "matplotlib" },
     { name = "numpy" },
-    { name = "pytest" },
     { name = "rosettasciio" },
     { name = "scipy" },
     { name = "tqdm" },
@@ -1832,6 +1831,9 @@ dev = [
     { name = "pre-commit" },
     { name = "ruff" },
 ]
+test = [
+    { name = "pytest" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -1841,7 +1843,6 @@ requires-dist = [
     { name = "h5py", specifier = ">=3.13.0" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">2" },
-    { name = "pytest", specifier = ">=8.3.5" },
     { name = "rosettasciio", specifier = ">=0.8.0" },
     { name = "scipy" },
     { name = "tqdm" },
@@ -1855,6 +1856,7 @@ dev = [
     { name = "pre-commit", specifier = ">=4.2.0" },
     { name = "ruff", specifier = ">=0.11.5" },
 ]
+test = [{ name = "pytest", specifier = ">=8.3.5" }]
 
 [[package]]
 name = "referencing"
