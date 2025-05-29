@@ -6,9 +6,7 @@ from tqdm import trange
 from quantem.core import config
 from quantem.core.datastructures import Dataset4dstem
 from quantem.core.utils.utils import generate_batches
-from quantem.diffractive_imaging.ptycho_utils import fourier_translation_operator
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-from quantem.diffractive_imaging.ptychography_gd import PtychographyGD
 from quantem.diffractive_imaging.ptychography_ml import PtychographyML
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
@@ -19,7 +17,7 @@ else:
         import torch
 
 
-class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, PtychographyBase):
+class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
     """
@@ -157,6 +155,7 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
         store_iterations: bool | None = None,
         store_iterations_every: int | None = None,
         device: Literal["cpu", "gpu"] | None = None,
+        autograd: bool = True,
     ) -> Self:
         """
         reason for having a single reconstruct() is so that updating things like constraints
@@ -196,6 +195,7 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
             target_amplitudes = self._shifted_amplitudes
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
+
         # TODO add pbar with loss printout
         for a0 in trange(num_iter, disable=not self.verbose):
             self.rng.shuffle(shuffled_indices)
@@ -206,26 +206,21 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
             ):
                 loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
                 batch_indices = shuffled_indices[start:end]
+                descan_shifts = (
+                    self._descan_shifts[batch_indices]
+                    if "descan" in self.optimizer_params.keys()
+                    else None
+                )
                 shifted_probes = self.probe_model.forward(
                     self._positions_px_fractional[batch_indices]
                 )
                 obj_patches = self.obj_model.forward(self._patch_indices[batch_indices])
-                _propagated_probes, overlap = self.forward_operator(
-                    obj_patches,
-                    shifted_probes,
+                propagated_probes, overlap = self.forward_operator(
+                    obj_patches, shifted_probes, descan_shifts
                 )
 
-                if "descan" in self.optimizer_params.keys():
-                    shifts = fourier_translation_operator(
-                        self._descan_shifts[batch_indices], tuple(self.roi_shape), True
-                    )
-                    overlap *= shifts[None]
-
                 loss += (
-                    self.error_estimate(
-                        overlap,
-                        target_amplitudes[batch_indices],
-                    )
+                    self.error_estimate(overlap, target_amplitudes[batch_indices])
                     / self._mean_diffraction_intensity
                 )
 
@@ -238,11 +233,24 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
                     # that calls each
                     loss += self.get_tv_loss(self.obj_model.obj) * (end - start)
 
-                # TODO make a backwards method, does either autograd or sets analytic gradients
-                loss.backward()
+                self.backward(
+                    loss,
+                    autograd,
+                    obj_patches,
+                    propagated_probes,
+                    overlap,
+                    self._patch_indices[batch_indices],  # replace with just passing indices
+                    target_amplitudes[batch_indices],
+                )
                 for opt in self.optimizers.values():
                     opt.step()
                     opt.zero_grad()
+
+                # additional constraints
+                # data constraints
+                # detector constraints
+                # with torch.no_grad():
+                #     self._descan_shifts = torch.ones_like(self._descan_shifts) * self._descan_shifts.mean(dim=0, keepdim=True)
 
                 epoch_loss += loss.item()
 
@@ -258,24 +266,57 @@ class Ptychography(PtychographyML, PtychographyGD, PtychographyVisualizations, P
             if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self.obj, self.probe)
 
-        # TODO -- method for update_shifted_amplitudes, shift them based on com_shifts
-        # if learn_descan
-
         return self
 
+    def backward(
+        self,
+        loss: torch.Tensor,
+        autograd: bool,
+        obj_patches: torch.Tensor,
+        propagated_probes: torch.Tensor,
+        overlap: torch.Tensor,
+        patch_indices: torch.Tensor,
+        amplitudes: torch.Tensor,
+    ):
+        """ """
+        if autograd:
+            loss.backward()
+        else:
+            gradient = self.gradient_step(amplitudes, overlap)
+            prop_gradient = self.obj_model.backward(
+                gradient,
+                obj_patches,
+                propagated_probes,
+                self._propagators,
+                patch_indices,
+            )
+            self.probe_model.backward(prop_gradient, obj_patches)
+            # TODO -- connect other optimizable values to this, e.g. descan
+
+    def gradient_step(self, amplitudes, overlap):
+        """Computes analytical gradient using the Fourier projection modified overlap"""
+        modified_overlap = self.fourier_projection(amplitudes, overlap)
+        ## mod_overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+        ## grad shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
+        return modified_overlap - overlap
+
+    def fourier_projection(self, measured_amplitudes, overlap_array):
+        """Replaces the Fourier amplitude of overlap with the measured data."""
+        # corner centering measured amplitudes
+        measured_amplitudes = torch.fft.fftshift(measured_amplitudes, dim=(-2, -1))
+        fourier_overlap = torch.fft.fft2(overlap_array)
+        # from quantem.core.visualization.visualization import show_2d
+        # show_2d([fourier_overlap[0,0], torch.abs(fourier_overlap[0,0])])
+        if self.num_probes == 1:  # faster
+            fourier_modified_overlap = measured_amplitudes * torch.exp(
+                1.0j * torch.angle(fourier_overlap)
+            )
+        else:  # necessary for mixed state
+            farfield_amplitudes = self.estimate_amplitudes(overlap_array, corner_centered=True)
+            farfield_amplitudes[farfield_amplitudes == 0] = torch.inf
+            amplitude_modification = measured_amplitudes / farfield_amplitudes
+            fourier_modified_overlap = amplitude_modification * fourier_overlap
+
+        return torch.fft.ifft2(fourier_modified_overlap)
+
     # endregion --- reconstruction ---
-
-
-# def sudocode():
-
-#     for epoch in epochs:
-#         indices = ptycho.get_patches(positions_px)
-#         for batch in batches:
-#             batch_inds = indices[batch]
-#             shifted_probes = probe.forward(frac_positions[batch_inds])
-#             obj_patches = object.forward(indices[batch_inds])
-#             exit_waves = ptycho.forward(shifted_probes, obj_patches)
-#             loss = ptycho.loss(exit_waves, shifted_probes)
-#             loss.backward()
-#             optimizer.step()
-#             optimizer.zero_grad()

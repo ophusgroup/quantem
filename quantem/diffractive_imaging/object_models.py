@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Any, Literal, Sequence
+from typing import Any, Literal, Self, Sequence
 from warnings import warn
 
 import torch
@@ -12,6 +12,7 @@ from quantem.core.utils.validators import (
     validate_gt,
     validate_np_len,
 )
+from quantem.diffractive_imaging.ptycho_utils import sum_patches
 
 
 class ObjectBase(AutoSerialize):
@@ -154,6 +155,32 @@ class ObjectBase(AutoSerialize):
         """Get the name of the object model."""
         raise NotImplementedError()
 
+    def _propagate_array(
+        self, array: "torch.Tensor", propagator_array: "torch.Tensor"
+    ) -> "torch.Tensor":
+        """
+        Propagates array by Fourier convolving array with propagator_array.
+
+        Parameters
+        ----------
+        array: np.ndarray
+            Wavefunction array to be convolved
+        propagator_array: np.ndarray
+            Propagator array to convolve array with
+
+        Returns
+        -------
+        propagated_array: np.ndarray
+            Fourier-convolved array
+        """
+        propagated = torch.fft.ifft2(torch.fft.fft2(array) * propagator_array)
+        return propagated
+
+    def backward(self, *args, **kwargs):
+        raise NotImplementedError(
+            f"Analytical gradients are not implemented for {Self}, use autograd=True"
+        )
+
 
 class ObjectConstraints(ObjectBase):
     DEFAULT_CONSTRAINTS = {
@@ -272,6 +299,47 @@ class ObjectPixelized(ObjectConstraints, ObjectBase):
     @property
     def name(self) -> str:
         return "ObjPixelized"
+
+    def backward(
+        self,
+        gradient: torch.Tensor,
+        obj_patches: torch.Tensor,
+        shifted_probes: torch.Tensor,
+        propagators: torch.Tensor,
+        patch_indices: torch.Tensor,
+    ):
+        obj_shape = self._obj.shape[-2:]
+        obj_gradient = torch.zeros_like(self._obj)
+        for s in reversed(range(self.num_slices)):
+            probe_slice = shifted_probes[s]
+            obj_slice = obj_patches[s]
+            probe_normalization = torch.zeros_like(self._obj[s])
+            obj_update = torch.zeros_like(self._obj[s])
+            for a0 in range(shifted_probes.shape[1]):
+                probe = probe_slice[a0]
+                grad = gradient[a0]
+                probe_normalization += sum_patches(
+                    torch.abs(probe) ** 2, patch_indices, obj_shape
+                ).max()
+
+                if self.obj_type == "potential":
+                    obj_update += sum_patches(
+                        torch.real(-1j * torch.conj(obj_slice) * torch.conj(probe) * grad),
+                        patch_indices,
+                        obj_shape,
+                    )
+                else:
+                    obj_update += sum_patches(torch.conj(probe) * grad, patch_indices, obj_shape)
+
+            obj_gradient[s] = obj_update / probe_normalization
+
+            # back-transmit and back-propagate
+            gradient *= torch.conj(obj_slice)
+            if s > 0:
+                gradient = self._propagate_array(gradient, torch.conj(propagators[s - 1]))
+
+        self._obj.grad = -1 * obj_gradient.clone().detach()
+        return gradient
 
 
 # class ObjectDIP(ObjectBase):

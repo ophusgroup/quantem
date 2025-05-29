@@ -22,16 +22,18 @@ else:
 
 
 @overload
-def fourier_shift(array: np.ndarray, positions: np.ndarray) -> np.ndarray: ...
+def fourier_shift_expand(
+    array: np.ndarray, positions: np.ndarray, expand_dim: bool = True
+) -> np.ndarray: ...
 @overload
-def fourier_shift(array: "torch.Tensor", positions: "torch.Tensor") -> "torch.Tensor": ...
-def fourier_shift(
-    array: ArrayLike,
-    positions: ArrayLike,
-    match_dim: bool = False,  # TODO make this the default
+def fourier_shift_expand(
+    array: "torch.Tensor", positions: "torch.Tensor", expand_dim: bool = True
+) -> "torch.Tensor": ...
+def fourier_shift_expand(
+    array: ArrayLike, positions: ArrayLike, expand_dim: bool = True
 ) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
-    phase = fourier_translation_operator(positions, array.shape, match_dim)
+    phase = fourier_translation_operator(positions, array.shape, expand_dim)
     fourier_array = arr.fft2(array)
     shifted_fourier_array = fourier_array * phase
     shifted_array = arr.ifft2(shifted_fourier_array)
@@ -43,16 +45,14 @@ def fourier_shift(
 
 @overload
 def fourier_translation_operator(
-    positions: np.ndarray, shape: tuple, match_dim: bool
+    positions: np.ndarray, shape: tuple, expand_dim: bool = True
 ) -> np.ndarray: ...
 @overload
 def fourier_translation_operator(
-    positions: "torch.Tensor", shape: tuple, match_dim: bool
+    positions: "torch.Tensor", shape: tuple, expand_dim: bool = True
 ) -> "torch.Tensor": ...
 def fourier_translation_operator(
-    positions: ArrayLike,
-    shape: tuple,
-    match_dim: bool = True,  # TODO make this the default
+    positions: ArrayLike, shape: tuple, expand_dim: bool = True
 ) -> ArrayLike:
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
     nr, nc = shape[-2:]
@@ -63,16 +63,10 @@ def fourier_translation_operator(
     ramp_r = arr.exp(-2.0j * np.pi * kr[None, :, None] * r)
     ramp_c = arr.exp(-2.0j * np.pi * kc[None, None, :] * c)
     ramp = ramp_r * ramp_c
-
-    if match_dim:
-        return ramp
-    else:
-        if len(shape) == 2:
-            return ramp
-        elif len(shape) == 3:
-            return ramp[:, None]
-        else:
-            raise NotImplementedError
+    if expand_dim:
+        for _ in range(len(shape) - 2):
+            ramp = ramp[:, None, ...]
+    return ramp
 
 
 @overload
@@ -135,7 +129,7 @@ def sum_patches(patches: torch.Tensor, indices: torch.Tensor, obj_shape: tuple) 
         return sum_patches_base(patches, indices, obj_shape)
 
 
-def get_shifted_array(
+def shift_array(
     ar: np.ndarray,
     rshift: np.ndarray,
     cshift: np.ndarray,

@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Self
 from warnings import warn
 
 import numpy as np
@@ -21,9 +21,9 @@ from quantem.diffractive_imaging.complexprobe import (
     ComplexProbe,
 )
 from quantem.diffractive_imaging.ptycho_utils import (
-    fourier_shift,
+    fourier_shift_expand,
     get_com_2d,
-    get_shifted_array,
+    shift_array,
 )
 
 if TYPE_CHECKING:
@@ -147,7 +147,7 @@ class ProbeBase(AutoSerialize):
 
         # fix centering
         com: list | tuple = ndi.center_of_mass(vp2)
-        vp2 = get_shifted_array(
+        vp2 = shift_array(
             vp2,
             -com[0],
             -com[1],
@@ -301,11 +301,16 @@ class ProbeBase(AutoSerialize):
         """Get the name of the object model."""
         raise NotImplementedError()
 
+    def backward(self, *args, **kwargs):
+        raise NotImplementedError(
+            f"Analytical gradients are not implemented for {Self}, use autograd=True"
+        )
+
 
 class ProbeConstraints(ProbeBase):
     DEFAULT_CONSTRAINTS = {
         "fix_probe": False,
-        "fix_probe_com": True,
+        "fix_probe_com": False,
     }
     # Defaults are kept in PtychographyConstraints for now, not sure where they'll end up
     # eventually, as it contains hard + soft constraints, but if adding new constraints here
@@ -349,7 +354,9 @@ class ProbeConstraints(ProbeBase):
         """
         probe_intensity = torch.abs(start_probe) ** 2
         com = get_com_2d(probe_intensity, corner_centered=True)
-        shifted_probe = fourier_shift(start_probe, -1 * com, match_dim=True)  # type:ignore # set match_dim=True to default
+        print("com shape: ", com.shape)
+        shifted_probe = fourier_shift_expand(start_probe, -1 * com, expand_dim=False)
+        print("shifted probe shape: ", shifted_probe.shape)
         return shifted_probe
 
     def _probe_orthogonalization_constraint(self, start_probe: torch.Tensor) -> torch.Tensor:
@@ -458,7 +465,10 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
             self._initial_probe_array = probe
 
     def forward(self, fract_positions: torch.Tensor) -> torch.Tensor:
-        shifted_probes = fourier_shift(self.probe, fract_positions).swapaxes(0, 1)
+        shifted_probes = fourier_shift_expand(self.probe, fract_positions).swapaxes(0, 1)
+        # TODO remove this
+        # print("skiping fract shift probes")
+        # shifted_probes = self.probe.expand(1, fract_positions.shape[0], *self.roi_shape)
         ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         return shifted_probes
 
@@ -516,7 +526,6 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
         probe_intensity = np.sum(np.abs(np.fft.fft2(probes)) ** 2)
         intensity_norm = np.sqrt(mean_diffraction_intensity / probe_intensity)
         probes *= intensity_norm
-
         self._initial_probe = self._to_torch(probes)
         self._probe = self._initial_probe.clone()
         return
@@ -530,3 +539,8 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
     @property
     def name(self) -> str:
         return "ProbePixelized"
+
+    def backward(self, propagated_gradient, obj_patches):
+        obj_normalization = torch.sum(torch.abs(obj_patches[0]) ** 2, dim=0).max()
+        probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization
+        self._probe.grad = -1 * probe_grad.clone().detach()

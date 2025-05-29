@@ -262,6 +262,11 @@ class PtychographyVisualizations(PtychographyBase):
         gs_bot = gridspec.GridSpecFromSubplotSpec(1, n_bot, subplot_spec=gs[1])
         axs_bot = np.array([fig.add_subplot(gs_bot[0, i]) for i in range(n_bot)])
         self.show_obj_and_probe(figax=(fig, axs_bot), cbar=cbar)
+        plt.suptitle(
+            f"Final loss: {self.epoch_losses[-1]:.3e} | Epochs: {len(self.epoch_losses)}",
+            fontsize=14,
+            y=0.94,
+        )
         plt.show()
 
     def show_object_epochs(self):
