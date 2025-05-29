@@ -1,6 +1,6 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.setuptools]
 packages = ["quantem"]
@@ -45,6 +45,7 @@ test = [
     "pytest>=8.3.5",
 ]
 dev = [
+    { include-group = "test" },
     "jupyterlab>=4.4.0",
     "packaging>=24.2",
     "pre-commit>=4.2.0",

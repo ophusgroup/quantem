@@ -1829,6 +1829,7 @@ dev = [
     { name = "jupyterlab" },
     { name = "packaging" },
     { name = "pre-commit" },
+    { name = "pytest" },
     { name = "ruff" },
 ]
 test = [
@@ -1854,6 +1855,7 @@ dev = [
     { name = "jupyterlab", specifier = ">=4.4.0" },
     { name = "packaging", specifier = ">=24.2" },
     { name = "pre-commit", specifier = ">=4.2.0" },
+    { name = "pytest", specifier = ">=8.3.5" },
     { name = "ruff", specifier = ">=0.11.5" },
 ]
 test = [{ name = "pytest", specifier = ">=8.3.5" }]
