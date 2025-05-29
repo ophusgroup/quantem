@@ -1809,7 +1809,7 @@ wheels = [
 
 [[package]]
 name = "quantem"
-version = "0.1.5"
+version = "0.1.5.post1"
 source = { editable = "." }
 dependencies = [
     { name = "cmasher" },
