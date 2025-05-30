@@ -115,7 +115,8 @@ class AutoSerialize:
         if "_autoserialize" not in group.attrs:
             group.attrs["_autoserialize"] = {
                 "version": 1,
-                "class_def": dill.dumps(obj.__class__).hex(),
+                "class_module": obj.__class__.__module__,
+                "class_name": obj.__class__.__qualname__,
             }
 
         attrs_fields = getattr(obj.__class__, "__attrs_attrs__", None)
@@ -167,15 +168,16 @@ class AutoSerialize:
         """
         # reconstitute the class
         meta = group.attrs["_autoserialize"]
-        class_def = dill.loads(bytes.fromhex(meta["class_def"]))
         version = meta.get("version", 1)
         if version != 1:
             raise ValueError(f"Unsupported AutoSerialize version: {version}")
-        obj = class_def.__new__(class_def)
+        mod = __import__(meta["class_module"], fromlist=[meta["class_name"]])
+        cls = getattr(mod, meta["class_name"])
+        obj = cls.__new__(cls)
 
         # init attrs-classes if needed
-        if hasattr(class_def, "__attrs_post_init__"):
-            for f in class_def.__attrs_attrs__:
+        if hasattr(cls, "__attrs_post_init__"):
+            for f in cls.__attrs_attrs__:
                 setattr(obj, f.name, None)
 
         # 1) scalar attrs
@@ -203,14 +205,17 @@ class AutoSerialize:
                 continue
             # peek at its class, skip by type
             meta = subgroup.attrs["_autoserialize"]
-            sub_cls = dill.loads(bytes.fromhex(meta["class_def"]))
+            sub_cls = getattr(
+                __import__(meta["class_module"], fromlist=[meta["class_name"]]),
+                meta["class_name"],
+            )
             if issubclass(sub_cls, skip_types):
                 continue
-            # otherwise recurse
+            # otherwise recurse with the subclass’s loader
             setattr(
                 obj,
                 subgroup_name,
-                cls._recursive_load(subgroup, skip_names, skip_types),
+                sub_cls._recursive_load(subgroup, skip_names, skip_types),
             )
 
         # post-init hook
@@ -260,13 +265,12 @@ def load(
         if "_autoserialize" not in root.attrs:
             raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
         meta = root.attrs["_autoserialize"]
-        class_def = dill.loads(bytes.fromhex(meta["class_def"]))
         version = meta.get("version", 1)
         if version != 1:
             raise ValueError(f"Unsupported AutoSerialize version: {version}")
-        return class_def._recursive_load(
-            root, skip_names=skip_names, skip_types=skip_types
-        )
+        mod = __import__(meta["class_module"], fromlist=[meta["class_name"]])
+        cls = getattr(mod, meta["class_name"])
+        return cls._recursive_load(root, skip_names=skip_names, skip_types=skip_types)
     else:
         with tempfile.TemporaryDirectory() as tmpdir:
             with ZipFile(path, "r") as zf:
@@ -276,8 +280,12 @@ def load(
             if "_autoserialize" not in root.attrs:
                 raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
             meta = root.attrs["_autoserialize"]
-            class_def = dill.loads(bytes.fromhex(meta["class_def"]))
-            return class_def._recursive_load(
+            version = meta.get("version", 1)
+            if version != 1:
+                raise ValueError(f"Unsupported AutoSerialize version: {version}")
+            mod = __import__(meta["class_module"], fromlist=[meta["class_name"]])
+            cls = getattr(mod, meta["class_name"])
+            return cls._recursive_load(
                 root, skip_names=skip_names, skip_types=skip_types
             )
 
