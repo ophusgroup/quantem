@@ -128,3 +128,19 @@ def generate_batches(
     for size in batch_sizes:
         yield idx, idx + size
         idx += size
+
+
+class SimpleTorchBatcher:
+    def __init__(
+        self, indices: torch.Tensor, batch_size: int | None = None, shuffle: bool = True
+    ):
+        self.indices = indices
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+
+    def __iter__(self):
+        if self.shuffle:
+            self.indices = self.indices[torch.randperm(len(self.indices))]
+
+        for i in range(0, len(self.indices), self.batch_size):
+            yield self.indices[i : i + self.batch_size]

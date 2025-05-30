@@ -2,6 +2,7 @@ from typing import Any, List, Optional, Tuple, Union
 from warnings import warn
 
 import numpy as np
+import torch
 from numpy.typing import DTypeLike, NDArray
 
 from quantem.core import config
@@ -325,3 +326,18 @@ def validate_vector_data(
         validated_data.append(item)
 
     return validated_data
+
+
+# --- Dataset Validation Functions ---
+def ensure_valid_tensor(
+    tensor: torch.Tensor,
+    dtype: torch.dtype | None = None,
+    device: torch.device | None = None,
+) -> torch.Tensor:
+    """ """
+    try:
+        tensor = torch.as_tensor(tensor, dtype=dtype, device=device)
+    except Exception as e:
+        raise TypeError(f"Input could not be converted to a torch tensor: {e}")
+
+    return tensor
