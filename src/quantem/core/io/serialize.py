@@ -112,8 +112,11 @@ class AutoSerialize:
         skip_types: tuple[type, ...] = (),
         compressors=None,
     ) -> None:
-        if "_class_def" not in group.attrs:
-            group.attrs["_class_def"] = dill.dumps(obj.__class__).hex()
+        if "_autoserialize" not in group.attrs:
+            group.attrs["_autoserialize"] = {
+                "version": 1,
+                "class_def": dill.dumps(obj.__class__).hex(),
+            }
 
         attrs_fields = getattr(obj.__class__, "__attrs_attrs__", None)
         if attrs_fields is not None:
@@ -163,7 +166,11 @@ class AutoSerialize:
         Recursively loads an AutoSerialize object and its children.
         """
         # reconstitute the class
-        class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
+        meta = group.attrs["_autoserialize"]
+        class_def = dill.loads(bytes.fromhex(meta["class_def"]))
+        version = meta.get("version", 1)
+        if version != 1:
+            raise ValueError(f"Unsupported AutoSerialize version: {version}")
         obj = class_def.__new__(class_def)
 
         # init attrs-classes if needed
@@ -195,7 +202,8 @@ class AutoSerialize:
             if subgroup_name in skip_names:
                 continue
             # peek at its class, skip by type
-            sub_cls = dill.loads(bytes.fromhex(subgroup.attrs["_class_def"]))
+            meta = subgroup.attrs["_autoserialize"]
+            sub_cls = dill.loads(bytes.fromhex(meta["class_def"]))
             if issubclass(sub_cls, skip_types):
                 continue
             # otherwise recurse
@@ -249,9 +257,13 @@ def load(
     if os.path.isdir(path):
         store = LocalStore(path)
         root = zarr.group(store=store)
-        if "_class_def" not in root.attrs:
-            raise KeyError("Missing '_class_def' in Zarr root attrs.")
-        class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
+        if "_autoserialize" not in root.attrs:
+            raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
+        meta = root.attrs["_autoserialize"]
+        class_def = dill.loads(bytes.fromhex(meta["class_def"]))
+        version = meta.get("version", 1)
+        if version != 1:
+            raise ValueError(f"Unsupported AutoSerialize version: {version}")
         return class_def._recursive_load(
             root, skip_names=skip_names, skip_types=skip_types
         )
@@ -261,7 +273,10 @@ def load(
                 zf.extractall(tmpdir)
             store = LocalStore(tmpdir)
             root = zarr.group(store=store)
-            class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
+            if "_autoserialize" not in root.attrs:
+                raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
+            meta = root.attrs["_autoserialize"]
+            class_def = dill.loads(bytes.fromhex(meta["class_def"]))
             return class_def._recursive_load(
                 root, skip_names=skip_names, skip_types=skip_types
             )
