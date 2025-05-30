@@ -1,4 +1,5 @@
 import gzip
+import io
 import os
 import shutil
 import tempfile
@@ -146,6 +147,21 @@ class AutoSerialize:
                     arr[:] = tensor_np
                     group.attrs[f"{attr_name}.torch_save"] = True
 
+            elif isinstance(attr_value, torch.optim.Optimizer):
+                # Save optimizer state_dict as bytes
+                opt_group = group.require_group(attr_name)
+                opt_group.attrs["_torch_optimizer"] = True
+                opt_group.attrs["class_name"] = attr_value.__class__.__name__
+
+                # Save state_dict as byte array
+                buffer = io.BytesIO()
+                torch.save(attr_value.state_dict(), buffer)
+                buffer.seek(0)
+                byte_arr = np.frombuffer(buffer.read(), dtype="uint8")
+                opt_group.create_dataset(
+                    "state_dict", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
+                )
+
             elif isinstance(attr_value, np.ndarray):
                 if attr_name not in group:
                     arr = group.create_dataset(
@@ -170,6 +186,7 @@ class AutoSerialize:
                 self._serialize_container(attr_value, subgroup, compressors)
 
             else:
+                # Fallback: dill + gzip
                 serialized = dill.dumps(attr_value)
                 compressed = gzip.compress(serialized)
                 ds = group.create_dataset(
@@ -196,25 +213,50 @@ class AutoSerialize:
                         data=v,
                         compressors=compressors,
                     )
+                elif isinstance(v, torch.Tensor):
+                    tensor_np = (
+                        v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
+                    )
+                    group.create_dataset(
+                        name=key,
+                        shape=tensor_np.shape,
+                        dtype=tensor_np.dtype,
+                        data=tensor_np,
+                        compressors=compressors,
+                    )
+                    group.attrs[f"{key}.torch_save"] = True
                 else:
                     group.attrs[key] = v
 
         elif isinstance(value, dict):
             group.attrs["_container_type"] = "dict"
             for k, v in value.items():
+                k = str(k)
                 if isinstance(v, (list, tuple, dict)):
-                    subgroup = group.require_group(str(k))
+                    subgroup = group.require_group(k)
                     self._serialize_container(v, subgroup, compressors)
                 elif isinstance(v, np.ndarray):
                     group.create_dataset(
-                        name=str(k),
+                        name=k,
                         shape=v.shape,
                         dtype=v.dtype,
                         data=v,
                         compressors=compressors,
                     )
+                elif isinstance(v, torch.Tensor):
+                    tensor_np = (
+                        v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
+                    )
+                    group.create_dataset(
+                        name=k,
+                        shape=tensor_np.shape,
+                        dtype=tensor_np.dtype,
+                        data=tensor_np,
+                        compressors=compressors,
+                    )
+                    group.attrs[f"{k}.torch_save"] = True
                 else:
-                    group.attrs[str(k)] = v
+                    group.attrs[k] = v
 
     @classmethod
     def _recursive_load(
@@ -223,9 +265,10 @@ class AutoSerialize:
         skip_names: set[str] = frozenset(),
         skip_types: tuple[type, ...] = (),
     ) -> object:
+        import io
+
         import torch
 
-        # Load class metadata and instantiate object
         meta = group.attrs["_autoserialize"]
         version = meta.get("version", 1)
         if version != 1:
@@ -234,21 +277,20 @@ class AutoSerialize:
         cls = getattr(mod, meta["class_name"])
         obj = cls.__new__(cls)
 
-        # Initialize attrs-based classes if present
         attrs_fields = getattr(cls, "__attrs_attrs__", None)
         if attrs_fields is not None:
             for f in attrs_fields:
                 setattr(obj, f.name, None)
 
-        # Restore scalar attributes
         for attr_name, raw in group.attrs.items():
-            if attr_name == "_class_def" or attr_name in skip_names:
+            if (
+                attr_name == "_class_def"
+                or attr_name.endswith(".torch_save")
+                or attr_name in skip_names
+            ):
                 continue
-            if attr_name.endswith(".torch_save"):
-                continue  # skip tensor metadata flags
             setattr(obj, attr_name, raw)
 
-        # Restore datasets (arrays or dill objects)
         for ds_name in group.array_keys():
             if ds_name in skip_names:
                 continue
@@ -261,12 +303,26 @@ class AutoSerialize:
                     val = torch.from_numpy(val)
             setattr(obj, ds_name, val)
 
-        # Restore subgroups
         for subgroup_name in group.group_keys():
             if subgroup_name in skip_names:
                 continue
             subgroup = group[subgroup_name]
-            if "_autoserialize" in subgroup.attrs:
+
+            if subgroup.attrs.get("_torch_optimizer"):
+                # Restore optimizer from saved state_dict
+                class_name = subgroup.attrs["class_name"]
+                state_bytes = bytes(subgroup["state_dict"][:])
+                buffer = io.BytesIO(state_bytes)
+                state_dict = torch.load(buffer, map_location="cpu")
+
+                # Attempt to recreate optimizer with dummy param
+                opt_class = getattr(torch.optim, class_name)
+                dummy_param = torch.zeros(1, requires_grad=True)
+                opt = opt_class([dummy_param])
+                opt.load_state_dict(state_dict)
+                setattr(obj, subgroup_name, opt)
+
+            elif "_autoserialize" in subgroup.attrs:
                 meta = subgroup.attrs["_autoserialize"]
                 sub_cls = getattr(
                     __import__(meta["class_module"], fromlist=[meta["class_name"]]),
@@ -279,6 +335,7 @@ class AutoSerialize:
                     subgroup_name,
                     sub_cls._recursive_load(subgroup, skip_names, skip_types),
                 )
+
             elif "_container_type" in subgroup.attrs:
                 setattr(obj, subgroup_name, cls._deserialize_container(subgroup))
 
@@ -341,48 +398,151 @@ class AutoSerialize:
         else:
             raise ValueError(f"Unknown container type: {ctype}")
 
-    def print_tree(self, name: str | None = None, depth: int | None = None) -> None:
-        root_label = name or self.__class__.__name__
-        print(root_label)
+    def print_tree(
+        self,
+        name: str | None = None,
+        depth: int | None = None,
+        show_values: bool = True,
+        show_autoserialize_types: bool = False,
+        show_class_origin: bool = False,
+    ) -> None:
+        mod_cls = (
+            f"{self.__class__.__module__}.{self.__class__.__name__}"
+            if show_class_origin
+            else self.__class__.__name__
+        )
+        label = name or self.__class__.__name__
+        print(f"{label}: class {mod_cls}")
 
-        def _recurse(val, prefix: str, current_depth: int):
+        def _recurse(val, prefix: str, current_depth: int, is_last: bool = True):
+            def make_branch(idx, total):
+                last = idx == total - 1
+                return ("└── ", "    ") if last else ("├── ", "│   ")
+
             if isinstance(val, AutoSerialize):
-                keys = sorted(val.__dict__.keys())
+                keys = [
+                    k
+                    for k in sorted(val.__dict__.keys())
+                    if show_autoserialize_types
+                    or k not in {"_container_type", "_autoserialize", "_class_def"}
+                ]
                 for idx, key in enumerate(keys):
                     subval = val.__dict__[key]
-                    last = idx == len(keys) - 1
-                    branch = "└── " if last else "├── "
-                    new_prefix = prefix + ("    " if last else "│   ")
-                    print(
-                        prefix
-                        + branch
-                        + key
-                        + (
-                            ""
-                            if isinstance(subval, AutoSerialize)
-                            else f": {type(subval).__name__}"
+                    branch, new_indent = make_branch(idx, len(keys))
+                    suffix = ""
+                    if show_autoserialize_types and hasattr(subval, "_container_type"):
+                        suffix = f" (_container_type = '{getattr(subval, '_container_type', '')}')"
+                    if isinstance(subval, AutoSerialize):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: class {subval.__class__.__name__}{suffix}"
+                            if show_class_origin
+                            else prefix + branch + f"{key}{suffix}"
                         )
-                    )
+                    elif isinstance(subval, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: torch.Tensor shape={tuple(subval.shape)}"
+                        )
+                    elif isinstance(subval, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: ndarray shape={tuple(subval.shape)}"
+                        )
+                    elif isinstance(subval, (list, tuple)) and show_autoserialize_types:
+                        print(
+                            prefix + branch + f"{key}: {type(subval).__name__}{suffix}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(subval)}"
+                            if show_values
+                            and isinstance(subval, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix + branch + f"{key}: {type(subval).__name__}{val_str}"
+                        )
                     if depth is None or current_depth < depth - 1:
-                        _recurse(subval, new_prefix, current_depth + 1)
+                        _recurse(
+                            subval,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(keys) - 1,
+                        )
+
             elif isinstance(val, (list, tuple)):
                 for idx, item in enumerate(val):
-                    last = idx == len(val) - 1
-                    branch = "└── " if last else "├── "
-                    new_prefix = prefix + ("    " if last else "│   ")
-                    print(prefix + branch + f"[{idx}]: {type(item).__name__}")
+                    branch, new_indent = make_branch(idx, len(val))
+                    if isinstance(item, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"[{idx}]: torch.Tensor shape={tuple(item.shape)}"
+                        )
+                    elif isinstance(item, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"[{idx}]: ndarray shape={tuple(item.shape)}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(item)}"
+                            if show_values
+                            and isinstance(item, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix + branch + f"[{idx}]: {type(item).__name__}{val_str}"
+                        )
                     if depth is None or current_depth < depth - 1:
-                        _recurse(item, new_prefix, current_depth + 1)
+                        _recurse(
+                            item,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(val) - 1,
+                        )
+
             elif isinstance(val, dict):
                 keys = sorted(val.keys())
                 for idx, key in enumerate(keys):
                     item = val[key]
-                    last = idx == len(keys) - 1
-                    branch = "└── " if last else "├── "
-                    new_prefix = prefix + ("    " if last else "│   ")
-                    print(prefix + branch + f"{repr(key)}: {type(item).__name__}")
+                    branch, new_indent = make_branch(idx, len(keys))
+                    if isinstance(item, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: torch.Tensor shape={tuple(item.shape)}"
+                        )
+                    elif isinstance(item, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: ndarray shape={tuple(item.shape)}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(item)}"
+                            if show_values
+                            and isinstance(item, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: {type(item).__name__}{val_str}"
+                        )
                     if depth is None or current_depth < depth - 1:
-                        _recurse(item, new_prefix, current_depth + 1)
+                        _recurse(
+                            item,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(keys) - 1,
+                        )
 
         _recurse(self, prefix="", current_depth=0)
 
@@ -418,7 +578,11 @@ def load(
 
 
 def print_file(
-    path: str | Path, depth: int | None = None, show_values: bool = True
+    path: str | Path,
+    depth: int | None = None,
+    show_values: bool = True,
+    show_autoserialize_types: bool = False,
+    show_class_origin: bool = False,
 ) -> None:
     """Print the saved structure of a serialized object (dir or zip) up to a given depth."""
     if os.path.isdir(path):
@@ -431,23 +595,60 @@ def print_file(
 
     root = zarr.group(store=store)
 
-    def _recurse(obj: Any, prefix: str = "", current_depth: int = 0) -> None:
+    def _recurse(
+        obj: Any, prefix: str = "", current_depth: int = 0, is_last: bool = True
+    ) -> None:
         if isinstance(obj, zarr.Group):
             keys = sorted(
                 set(obj.attrs.keys()) | set(obj.array_keys()) | set(obj.group_keys())
             )
-            for idx, key in enumerate(keys):
-                last = idx == len(keys) - 1
+            if current_depth == 0:
+                class_info = obj.attrs.get("_autoserialize")
+                label = Path(path).name
+                if class_info and "class_name" in class_info:
+                    mod_cls = (
+                        f"{class_info['class_module']}.{class_info['class_name']}"
+                        if show_class_origin
+                        else class_info["class_name"]
+                    )
+                    label += f": class {mod_cls}"
+                print(label)
+
+            printable_keys = []
+            for key in keys:
+                if not show_autoserialize_types and key in {
+                    "_container_type",
+                    "_autoserialize",
+                    "_class_def",
+                }:
+                    continue
+                if not show_autoserialize_types and key.endswith(".torch_save"):
+                    continue
+                printable_keys.append(key)
+
+            for idx, key in enumerate(printable_keys):
+                last = idx == len(printable_keys) - 1
                 branch = "└── " if last else "├── "
                 new_prefix = prefix + ("    " if last else "│   ")
 
                 if key in obj.group_keys():
-                    print(prefix + branch + key)
+                    child_group = obj[key]
+                    group_type = child_group.attrs.get("_container_type")
+                    suffix = (
+                        f" (_container_type = '{group_type}')"
+                        if group_type and show_autoserialize_types
+                        else ""
+                    )
+                    print(prefix + branch + f"{key}{suffix}")
                     if depth is None or current_depth < depth - 1:
-                        _recurse(obj[key], new_prefix, current_depth + 1)
+                        _recurse(child_group, new_prefix, current_depth + 1, last)
+
                 elif key in obj.array_keys():
                     arr = obj[key]
-                    print(prefix + branch + f"{key}: ndarray shape={arr.shape}")
+                    is_torch = obj.attrs.get(f"{key}.torch_save", False)
+                    tensor_type = "torch.Tensor" if is_torch else "ndarray"
+                    print(prefix + branch + f"{key}: {tensor_type} shape={arr.shape}")
+
                 else:
                     val = obj.attrs[key]
                     type_str = type(val).__name__
@@ -459,49 +660,4 @@ def print_file(
                     )
                     print(prefix + branch + f"{key}: {type_str}{display_val}")
 
-                    if isinstance(val, (list, tuple)):
-                        for i, item in enumerate(val):
-                            last_item = i == len(val) - 1
-                            sub_branch = "└── " if last_item else "├── "
-                            sub_prefix = new_prefix + ("    " if last_item else "│   ")
-                            val_str = (
-                                f" = {repr(item)}"
-                                if show_values
-                                and isinstance(
-                                    item, (int, float, str, bool, type(None))
-                                )
-                                else f" shape={item.shape}"
-                                if show_values and isinstance(item, np.ndarray)
-                                else ""
-                            )
-                            print(
-                                new_prefix
-                                + sub_branch
-                                + f"[{i}]: {type(item).__name__}{val_str}"
-                            )
-                            if depth is None or current_depth < depth - 1:
-                                _recurse(item, sub_prefix, current_depth + 2)
-
-                    elif isinstance(val, dict):
-                        for i, (k, v) in enumerate(sorted(val.items())):
-                            last_item = i == len(val) - 1
-                            sub_branch = "└── " if last_item else "├── "
-                            sub_prefix = new_prefix + ("    " if last_item else "│   ")
-                            val_str = (
-                                f" = {repr(v)}"
-                                if show_values
-                                and isinstance(v, (int, float, str, bool, type(None)))
-                                else f" shape={v.shape}"
-                                if show_values and isinstance(v, np.ndarray)
-                                else ""
-                            )
-                            print(
-                                new_prefix
-                                + sub_branch
-                                + f"{repr(k)}: {type(v).__name__}{val_str}"
-                            )
-                            if depth is None or current_depth < depth - 1:
-                                _recurse(v, sub_prefix, current_depth + 2)
-
-    print(Path(path).name)
     _recurse(root)
