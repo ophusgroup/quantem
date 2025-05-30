@@ -37,6 +37,15 @@ dependencies = [
   "h5py>=3.13.0",
 ]
 
+[tool.hatch.build.targets.sdist]
+# hatchling always includes:
+# pyproject.toml, .gitignore, any README, any LICENSE, AUTHORS
+only-include = [
+    "/src",
+    "/tests",
+    "/CITATION.cff"
+]
+
 [dependency-groups]
 test = [
     "pytest>=8.3.5",
