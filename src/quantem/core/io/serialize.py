@@ -1,5 +1,5 @@
-import base64
 import gzip
+import io
 import os
 import shutil
 import tempfile
@@ -9,10 +9,9 @@ from zipfile import ZipFile
 
 import dill
 import numpy as np
+import torch
 import zarr
 from zarr.storage import LocalStore
-
-MAX_ATTR_SIZE = 1_000_000  # 1 MB threshold for storing in attrs
 
 
 # Base class for automatic serialization of classes
@@ -84,11 +83,20 @@ class AutoSerialize:
         skip_names = {s for s in skip if isinstance(s, str)}
         skip_types = tuple(s for s in skip if isinstance(s, type))
 
+        def write_skip_metadata(root):
+            # Save skip info as attrs (convert types to strings for JSON compatibility)
+            root.attrs["_autoserialize_skip_names"] = list(skip_names)
+            # Use fully qualified type names for types, or just names if you prefer
+            root.attrs["_autoserialize_skip_types"] = [
+                f"{t.__module__}.{t.__qualname__}" for t in skip_types
+            ]
+
         if store == "zip":
             with tempfile.TemporaryDirectory() as tmpdir:
                 store_obj = LocalStore(tmpdir)
                 root = zarr.group(store=store_obj, overwrite=True)
                 self._recursive_save(self, root, skip_names, skip_types, compressors)
+                write_skip_metadata(root)
                 with ZipFile(path, mode="w") as zf:
                     for dirpath, _, filenames in os.walk(tmpdir):
                         for filename in filenames:
@@ -104,6 +112,7 @@ class AutoSerialize:
             store_obj = LocalStore(path)
             root = zarr.group(store=store_obj, overwrite=True)
             self._recursive_save(self, root, skip_names, skip_types, compressors)
+            write_skip_metadata(root)
         else:
             raise ValueError(f"Unknown store type: {store}")
 
@@ -115,8 +124,12 @@ class AutoSerialize:
         skip_types: tuple[type, ...] = (),
         compressors=None,
     ) -> None:
-        if "_class_def" not in group.attrs:
-            group.attrs["_class_def"] = dill.dumps(obj.__class__).hex()
+        if "_autoserialize" not in group.attrs:
+            group.attrs["_autoserialize"] = {
+                "version": 1,
+                "class_module": obj.__class__.__module__,
+                "class_name": obj.__class__.__qualname__,
+            }
 
         attrs_fields = getattr(obj.__class__, "__attrs_attrs__", None)
         if attrs_fields is not None:
@@ -128,37 +141,82 @@ class AutoSerialize:
             if attr_name in skip_names or isinstance(attr_value, skip_types):
                 continue
 
-            if isinstance(attr_value, np.ndarray):
+            if isinstance(attr_value, torch.Tensor):
+                tensor_np = (
+                    attr_value.detach().cpu().numpy()
+                    if attr_value.requires_grad
+                    else attr_value.cpu().numpy()
+                )
                 if attr_name not in group:
-                    arr = group.create_array(
+                    arr = group.create_dataset(
+                        name=attr_name,
+                        shape=tensor_np.shape,
+                        dtype=tensor_np.dtype,
+                        compressors=compressors,
+                    )
+                    arr[:] = tensor_np
+                    group.attrs[f"{attr_name}.torch_save"] = True
+
+            elif isinstance(attr_value, torch.optim.Optimizer):
+                # Save optimizer state_dict as bytes
+                opt_group = group.require_group(attr_name)
+                opt_group.attrs["_torch_optimizer"] = True
+                opt_group.attrs["class_name"] = attr_value.__class__.__name__
+
+                # Save state_dict as byte array
+                buffer = io.BytesIO()
+                torch.save(attr_value.state_dict(), buffer)
+                buffer.seek(0)
+                byte_arr = np.frombuffer(buffer.read(), dtype="uint8")
+                opt_group.create_dataset(
+                    "state_dict", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
+                )
+
+            elif isinstance(attr_value, torch.nn.Module):
+                subgroup = group.require_group(attr_name)
+                subgroup.attrs["_torch_whole_module"] = True
+                buffer = io.BytesIO()
+                torch.save(attr_value, buffer)
+                buffer.seek(0)
+                byte_arr = np.frombuffer(buffer.read(), dtype="uint8")
+                subgroup.create_dataset(
+                    "module", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
+                )
+
+            elif isinstance(attr_value, np.ndarray):
+                if attr_name not in group:
+                    arr = group.create_dataset(
                         name=attr_name,
                         shape=attr_value.shape,
                         dtype=attr_value.dtype,
                         compressors=compressors,
                     )
                     arr[:] = attr_value
+
             elif isinstance(attr_value, (int, float, str, bool, type(None))):
                 group.attrs[attr_name] = attr_value
+
             elif isinstance(attr_value, AutoSerialize):
                 subgroup = group.require_group(attr_name)
                 self._recursive_save(
                     attr_value, subgroup, skip_names, skip_types, compressors
                 )
+
+            elif isinstance(attr_value, (list, tuple, dict)):
+                subgroup = group.require_group(attr_name)
+                self._serialize_container(attr_value, subgroup, compressors)
+
             else:
+                # Fallback: dill + gzip
                 serialized = dill.dumps(attr_value)
                 compressed = gzip.compress(serialized)
-                if len(compressed) < MAX_ATTR_SIZE:
-                    group.attrs[attr_name] = base64.b16encode(compressed).decode(
-                        "ascii"
-                    )
-                else:
-                    ds = group.create_dataset(
-                        name=attr_name,
-                        shape=(len(compressed),),
-                        dtype="uint8",
-                        compressors=compressors,
-                    )
-                    ds[:] = np.frombuffer(compressed, dtype="uint8")
+                ds = group.create_dataset(
+                    name=attr_name,
+                    shape=(len(compressed),),
+                    dtype="uint8",
+                    compressors=compressors,
+                )
+                ds[:] = np.frombuffer(compressed, dtype="uint8")
 
     @classmethod
     def _recursive_load(
@@ -167,82 +225,477 @@ class AutoSerialize:
         skip_names: set[str] = frozenset(),
         skip_types: tuple[type, ...] = (),
     ) -> object:
-        """
-        Recursively loads an AutoSerialize object and its children.
-        """
-        # reconstitute the class
-        class_def = dill.loads(bytes.fromhex(group.attrs["_class_def"]))
-        obj = class_def.__new__(class_def)
+        meta = group.attrs["_autoserialize"]
+        version = meta.get("version", 1)
+        if version != 1:
+            raise ValueError(f"Unsupported AutoSerialize version: {version}")
+        module = __import__(meta["class_module"], fromlist=[meta["class_name"]])
+        cls_obj = getattr(module, meta["class_name"])
+        obj = cls_obj.__new__(cls_obj)  # bypass __init__
 
-        # init attrs-classes if needed
-        if hasattr(class_def, "__attrs_post_init__"):
-            for f in class_def.__attrs_attrs__:
-                setattr(obj, f.name, None)
+        # We'll track which attrs are set, and skip those in skip_names/skip_types
+        set_attrs = set()
 
-        # 1) scalar attrs
-        for attr_name, raw in group.attrs.items():
-            if attr_name == "_class_def" or attr_name in skip_names:
+        # Handle attrs_fields if attrs is used
+        attrs_fields = getattr(cls_obj, "__attrs_attrs__", None)
+        if attrs_fields is not None:
+            attrs_item_names = [f.name for f in attrs_fields]
+        else:
+            attrs_item_names = []
+
+        # Restore attributes saved as group.attrs
+        for name, val in group.attrs.items():
+            if name == "_autoserialize" or name.endswith(".torch_save"):
                 continue
-            val = raw
-            if isinstance(val, str):
-                try:
-                    dec = gzip.decompress(base64.b16decode(val))
-                    val = dill.loads(dec)
-                except Exception:
-                    pass
-            setattr(obj, attr_name, val)
-
-        # 2) array datasets
-        for ds_name in group.array_keys():
-            if ds_name in skip_names:
+            if name in skip_names:
                 continue
-            arr = group[ds_name][:]
+            if attrs_item_names and name not in attrs_item_names:
+                continue
+            setattr(obj, name, val)
+            set_attrs.add(name)
+
+        # Restore arrays
+        for ds in group.array_keys():
+            if ds in skip_names:
+                continue
+            arr = group[ds][:]
             try:
-                val = dill.loads(gzip.decompress(arr.tobytes()))
+                payload = gzip.decompress(arr.tobytes())
+                v = dill.loads(payload)
             except Exception:
-                val = arr
-            setattr(obj, ds_name, val)
-
-        # 3) sub-groups
-        for subgroup_name, subgroup in group.groups():
-            # skip by name
-            if subgroup_name in skip_names:
+                v = arr
+                if group.attrs.get(f"{ds}.torch_save", False):
+                    v = torch.from_numpy(v)
+            if type(v) in skip_types:
                 continue
-            # peek at its class, skip by type
-            sub_cls = dill.loads(bytes.fromhex(subgroup.attrs["_class_def"]))
-            if issubclass(sub_cls, skip_types):
-                continue
-            # otherwise recurse
-            setattr(
-                obj,
-                subgroup_name,
-                cls._recursive_load(subgroup, skip_names, skip_types),
-            )
+            setattr(obj, ds, v)
+            set_attrs.add(ds)
 
-        # post-init hook
+        # Restore groups/subgroups
+        for name in group.group_keys():
+            if name in skip_names:
+                continue
+            subgrp = group[name]
+
+            # torch optimizer
+            if subgrp.attrs.get("_torch_optimizer"):
+                clsname = subgrp.attrs["class_name"]
+                data = bytes(subgrp["state_dict"][:])
+                buf = io.BytesIO(data)
+                state = torch.load(buf, map_location="cpu")
+                opt_cls = getattr(torch.optim, clsname)
+                dummy = torch.zeros(1, requires_grad=True)
+                opt = opt_cls([dummy])
+                opt.load_state_dict(state)
+                if type(opt) in skip_types:
+                    continue
+                setattr(obj, name, opt)
+                set_attrs.add(name)
+
+            # torch module
+            elif subgrp.attrs.get("_torch_whole_module"):
+                data = bytes(subgrp["module"][:])
+                buf = io.BytesIO(data)
+                mod = torch.load(buf, map_location="cpu", weights_only=False)
+                if type(mod) in skip_types:
+                    continue
+                setattr(obj, name, mod)
+                set_attrs.add(name)
+
+            # nested AutoSerialize
+            elif "_autoserialize" in subgrp.attrs:
+                m = subgrp.attrs["_autoserialize"]
+                submod = __import__(m["class_module"], fromlist=[m["class_name"]])
+                subcls = getattr(submod, m["class_name"])
+                if subcls in skip_types:
+                    continue
+                val = subcls._recursive_load(subgrp, skip_names, skip_types)
+                if type(val) in skip_types:
+                    continue
+                setattr(obj, name, val)
+                set_attrs.add(name)
+
+            # containers (lists/tuples/dicts)
+            elif subgrp.attrs.get("_container_type", None) is not None:
+                val = cls._deserialize_container(subgrp)
+                if type(val) in skip_types:
+                    continue
+                setattr(obj, name, val)
+                set_attrs.add(name)
+
+            else:
+                print(f"Unhandled group: {name} with attrs: {dict(subgrp.attrs)}")
+                raise ValueError(f"Unknown subgroup structure: {subgrp.path}")
+
+        # Remove any attributes that are in skip_names (that could have been set by __init__)
+        for name in skip_names:
+            if hasattr(obj, name):
+                delattr(obj, name)
+
         if hasattr(obj, "__attrs_post_init__"):
             obj.__attrs_post_init__()
 
         return obj
 
-    def print_tree(self, name: str | None = None) -> None:
-        root_label = name or self.__class__.__name__
-        print(root_label)
+    def _serialize_container(self, value, group: zarr.Group, compressors=None):
+        if isinstance(
+            value, (torch.nn.ModuleList, torch.nn.Sequential, torch.nn.ParameterList)
+        ):
+            group.attrs["_torch_iterable_module_type"] = type(value).__name__
+            value = list(value)
 
-        def _recurse(obj, prefix=""):
-            # sort the keys so they print alphabetically
-            keys = sorted(obj.__dict__.keys())
-            for idx, key in enumerate(keys):
-                val = obj.__dict__[key]
-                last = idx == len(keys) - 1
-                branch = "└── " if last else "├── "
-                if isinstance(val, AutoSerialize):
-                    print(prefix + branch + key)
-                    _recurse(val, prefix + ("    " if last else "│   "))
+        if isinstance(value, (list, tuple)):
+            group.attrs["_container_type"] = type(value).__name__
+            for i, v in enumerate(value):
+                key = str(i)
+                if isinstance(v, (list, tuple, dict)):
+                    subgroup = group.require_group(key)
+                    self._serialize_container(v, subgroup, compressors)
+                elif isinstance(v, torch.nn.Module):
+                    subgroup = group.require_group(key)
+                    subgroup.attrs["_torch_whole_module"] = True
+                    buffer = io.BytesIO()
+                    torch.save(v, buffer)
+                    buffer.seek(0)
+                    byte_arr = np.frombuffer(buffer.read(), dtype="uint8")
+                    subgroup.create_dataset(
+                        "module", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
+                    )
+                elif isinstance(v, torch.Tensor):
+                    arr_np = (
+                        v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
+                    )
+                    ds = group.create_dataset(
+                        name=key,
+                        data=arr_np,
+                        shape=arr_np.shape,
+                        dtype=arr_np.dtype,
+                        compressors=compressors,
+                    )
+                    group.attrs[f"{key}.torch_save"] = True
+                elif isinstance(v, np.ndarray):
+                    group.create_dataset(
+                        name=key,
+                        data=v,
+                        shape=v.shape,
+                        dtype=v.dtype,
+                        compressors=compressors,
+                    )
+                elif isinstance(v, (int, float, str, bool, type(None))):
+                    group.attrs[key] = v
                 else:
-                    print(prefix + branch + f"{key}: {type(val).__name__}")
+                    payload = dill.dumps(v)
+                    comp = gzip.compress(payload)
+                    ds = group.create_dataset(
+                        name=key,
+                        shape=(len(comp),),
+                        dtype="uint8",
+                        compressors=compressors,
+                    )
+                    ds[:] = np.frombuffer(comp, dtype="uint8")
 
-        _recurse(self)
+        elif isinstance(value, dict):
+            group.attrs["_container_type"] = "dict"
+            for k, v in value.items():
+                key = str(k)
+                if isinstance(v, (list, tuple, dict)):
+                    subgroup = group.require_group(key)
+                    self._serialize_container(v, subgroup, compressors)
+                elif isinstance(v, torch.nn.Module):
+                    subgroup = group.require_group(key)
+                    subgroup.attrs["_torch_whole_module"] = True
+                    buffer = io.BytesIO()
+                    torch.save(v, buffer)
+                    buffer.seek(0)
+                    byte_arr = np.frombuffer(buffer.read(), dtype="uint8")
+                    subgroup.create_dataset(
+                        "module", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
+                    )
+                elif isinstance(v, torch.Tensor):
+                    arr_np = (
+                        v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
+                    )
+                    ds = group.create_dataset(
+                        name=key,
+                        data=arr_np,
+                        shape=arr_np.shape,
+                        dtype=arr_np.dtype,
+                        compressors=compressors,
+                    )
+                    group.attrs[f"{key}.torch_save"] = True
+                elif isinstance(v, np.ndarray):
+                    group.create_dataset(
+                        name=key,
+                        data=v,
+                        shape=v.shape,
+                        dtype=v.dtype,
+                        compressors=compressors,
+                    )
+                elif isinstance(v, (int, float, str, bool, type(None))):
+                    group.attrs[key] = v
+                else:
+                    payload = dill.dumps(v)
+                    comp = gzip.compress(payload)
+                    ds = group.create_dataset(
+                        name=key,
+                        shape=(len(comp),),
+                        dtype="uint8",
+                        compressors=compressors,
+                    )
+                    ds[:] = np.frombuffer(comp, dtype="uint8")
+
+    @classmethod
+    def _deserialize_container(cls, group: zarr.Group):
+        import io
+
+        import torch
+
+        ctype = group.attrs.get("_container_type")
+        if ctype is None:
+            raise ValueError(f"Missing _container_type in group: {group.path}")
+
+        torch_iterable_type = group.attrs.get("_torch_iterable_module_type")
+
+        def maybe_tensor(group, key):
+            arr = group[key][:]
+            return (
+                torch.from_numpy(arr) if group.attrs.get(f"{key}.torch_save") else arr
+            )
+
+        if ctype in ("list", "tuple"):
+            length = (
+                max(
+                    (
+                        int(k)
+                        for k in list(group.attrs)
+                        + list(group.array_keys())
+                        + list(group.group_keys())
+                        if k.isdigit()
+                    ),
+                    default=-1,
+                )
+                + 1
+            )
+            items = []
+            for i in range(length):
+                key = str(i)
+                if key in group.attrs:
+                    items.append(group.attrs[key])
+                elif key in group.array_keys():
+                    items.append(maybe_tensor(group, key))
+                elif key in group.group_keys():
+                    subgroup = group[key]
+                    if "_container_type" in subgroup.attrs:
+                        items.append(cls._deserialize_container(subgroup))
+                    elif "_autoserialize" in subgroup.attrs:
+                        meta = subgroup.attrs["_autoserialize"]
+                        submod = __import__(
+                            meta["class_module"], fromlist=[meta["class_name"]]
+                        )
+                        subcls = getattr(submod, meta["class_name"])
+                        items.append(subcls._recursive_load(subgroup))
+                    elif subgroup.attrs.get("_torch_whole_module"):
+                        data = bytes(subgroup["module"][:])
+                        buf = io.BytesIO(data)
+                        mod = torch.load(buf, map_location="cpu", weights_only=False)
+                        items.append(mod)  # For lists/tuples
+                    else:
+                        raise ValueError(
+                            f"Unknown group structure at key '{key}' in {group.path}"
+                        )
+                else:
+                    raise KeyError(f"Missing expected key '{key}' in container")
+            result = items if ctype == "list" else tuple(items)
+
+            if torch_iterable_type == "Sequential":
+                return torch.nn.Sequential(*result)
+            elif torch_iterable_type == "ModuleList":
+                return torch.nn.ModuleList(result)
+            elif torch_iterable_type == "ParameterList":
+                return torch.nn.ParameterList(result)
+            else:
+                return result
+
+        elif ctype == "dict":
+            result = {}
+            for key in group.attrs:
+                if key == "_container_type" or key.endswith(".torch_save"):
+                    continue
+                result[key] = group.attrs[key]
+            for key in group.array_keys():
+                result[key] = maybe_tensor(group, key)
+            for key in group.group_keys():
+                subgroup = group[key]
+                if "_container_type" in subgroup.attrs:
+                    result[key] = cls._deserialize_container(subgroup)
+                elif "_autoserialize" in subgroup.attrs:
+                    meta = subgroup.attrs["_autoserialize"]
+                    submod = __import__(
+                        meta["class_module"], fromlist=[meta["class_name"]]
+                    )
+                    subcls = getattr(submod, meta["class_name"])
+                    result[key] = subcls._recursive_load(subgroup)
+                elif subgroup.attrs.get("_torch_whole_module"):
+                    data = bytes(subgroup["module"][:])
+                    buf = io.BytesIO(data)
+                    mod = torch.load(buf, map_location="cpu", weights_only=False)
+                    result[key] = mod  # For dicts
+                else:
+                    raise ValueError(
+                        f"Unknown group structure at key '{key}' in {group.path}"
+                    )
+            return result
+
+        else:
+            raise ValueError(f"Unknown container type: {ctype}")
+
+    def print_tree(
+        self,
+        name: str | None = None,
+        depth: int | None = None,
+        show_values: bool = True,
+        show_autoserialize_types: bool = False,
+        show_class_origin: bool = False,
+    ) -> None:
+        mod_cls = (
+            f"{self.__class__.__module__}.{self.__class__.__name__}"
+            if show_class_origin
+            else self.__class__.__name__
+        )
+        label = name or self.__class__.__name__
+        print(f"{label}: class {mod_cls}")
+
+        def _recurse(val, prefix: str, current_depth: int, is_last: bool = True):
+            def make_branch(idx, total):
+                last = idx == total - 1
+                return ("└── ", "    ") if last else ("├── ", "│   ")
+
+            if isinstance(val, AutoSerialize):
+                keys = [
+                    k
+                    for k in sorted(val.__dict__.keys())
+                    if show_autoserialize_types
+                    or k not in {"_container_type", "_autoserialize", "_class_def"}
+                ]
+                for idx, key in enumerate(keys):
+                    subval = val.__dict__[key]
+                    branch, new_indent = make_branch(idx, len(keys))
+                    suffix = ""
+                    if show_autoserialize_types and hasattr(subval, "_container_type"):
+                        suffix = f" (_container_type = '{getattr(subval, '_container_type', '')}')"
+                    if isinstance(subval, AutoSerialize):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: class {subval.__class__.__name__}{suffix}"
+                            if show_class_origin
+                            else prefix + branch + f"{key}{suffix}"
+                        )
+                    elif isinstance(subval, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: torch.Tensor shape={tuple(subval.shape)}"
+                        )
+                    elif isinstance(subval, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"{key}: ndarray shape={tuple(subval.shape)}"
+                        )
+                    elif isinstance(subval, (list, tuple)) and show_autoserialize_types:
+                        print(
+                            prefix + branch + f"{key}: {type(subval).__name__}{suffix}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(subval)}"
+                            if show_values
+                            and isinstance(subval, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix + branch + f"{key}: {type(subval).__name__}{val_str}"
+                        )
+                    if depth is None or current_depth < depth - 1:
+                        _recurse(
+                            subval,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(keys) - 1,
+                        )
+
+            elif isinstance(val, (list, tuple)):
+                for idx, item in enumerate(val):
+                    branch, new_indent = make_branch(idx, len(val))
+                    if isinstance(item, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"[{idx}]: torch.Tensor shape={tuple(item.shape)}"
+                        )
+                    elif isinstance(item, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"[{idx}]: ndarray shape={tuple(item.shape)}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(item)}"
+                            if show_values
+                            and isinstance(item, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix + branch + f"[{idx}]: {type(item).__name__}{val_str}"
+                        )
+                    if depth is None or current_depth < depth - 1:
+                        _recurse(
+                            item,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(val) - 1,
+                        )
+
+            elif isinstance(val, dict):
+                keys = sorted(val.keys())
+                for idx, key in enumerate(keys):
+                    item = val[key]
+                    branch, new_indent = make_branch(idx, len(keys))
+                    if isinstance(item, torch.Tensor):
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: torch.Tensor shape={tuple(item.shape)}"
+                        )
+                    elif isinstance(item, np.ndarray):
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: ndarray shape={tuple(item.shape)}"
+                        )
+                    else:
+                        val_str = (
+                            f" = {repr(item)}"
+                            if show_values
+                            and isinstance(item, (int, float, str, bool, type(None)))
+                            else ""
+                        )
+                        print(
+                            prefix
+                            + branch
+                            + f"{repr(key)}: {type(item).__name__}{val_str}"
+                        )
+                    if depth is None or current_depth < depth - 1:
+                        _recurse(
+                            item,
+                            prefix + new_indent,
+                            current_depth + 1,
+                            idx == len(keys) - 1,
+                        )
+
+        _recurse(self, prefix="", current_depth=0)
 
 
 # Load an autoserialized class
@@ -250,43 +703,64 @@ def load(
     path: str | Path,
     skip: Union[str, type, Sequence[Union[str, type]]] = (),
 ) -> Any:
-    """
-    Load an AutoSerialize object from disk, optionally skipping attributes
-    by name or by type.
-    """
-    # normalize skip into names vs types
     if isinstance(skip, (str, type)):
         skip = [skip]
-    skip_names = {s for s in skip if isinstance(s, str)}
-    skip_types = tuple(s for s in skip if isinstance(s, type))
+    user_skip_names = {s for s in skip if isinstance(s, str)}
+    user_skip_types = tuple(s for s in skip if isinstance(s, type))
 
     if os.path.isdir(path):
         store = LocalStore(path)
-        root = zarr.group(store=store)
-        if "_class_def" not in root.attrs:
-            raise KeyError("Missing '_class_def' in Zarr root attrs.")
-        class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-        return class_def._recursive_load(
-            root, skip_names=skip_names, skip_types=skip_types
+    else:
+        tempdir = tempfile.TemporaryDirectory()
+        with ZipFile(path, "r") as zf:
+            zf.extractall(tempdir.name)
+        store = LocalStore(tempdir.name)
+
+    root = zarr.group(store=store)
+    if "_autoserialize" not in root.attrs:
+        raise KeyError("Missing '_autoserialize' metadata in Zarr root attrs.")
+    meta = root.attrs["_autoserialize"]
+    version = meta.get("version", 1)
+    if version != 1:
+        raise ValueError(f"Unsupported AutoSerialize version: {version}")
+
+    # --- Read skip metadata from file (if present) ---
+    file_skip_names = set(root.attrs.get("_autoserialize_skip_names", []))
+    file_skip_types_raw = root.attrs.get("_autoserialize_skip_types", [])
+    file_skip_types = (
+        tuple(
+            # Dynamically import each type from its qualified string
+            __import__(t.rpartition(".")[0], fromlist=[t.rpartition(".")[2]]).__dict__[
+                t.rpartition(".")[2]
+            ]
+            for t in file_skip_types_raw
         )
-    else:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            with ZipFile(path, "r") as zf:
-                zf.extractall(tmpdir)
-            store = LocalStore(tmpdir)
-            root = zarr.group(store=store)
-            class_def = dill.loads(bytes.fromhex(str(root.attrs["_class_def"])))
-            return class_def._recursive_load(
-                root, skip_names=skip_names, skip_types=skip_types
-            )
+        if file_skip_types_raw
+        else tuple()
+    )
+
+    # --- Merge user and file skip values ---
+    skip_names = user_skip_names | file_skip_names
+    skip_types = user_skip_types + tuple(
+        t for t in file_skip_types if t not in user_skip_types
+    )
+
+    mod = __import__(meta["class_module"], fromlist=[meta["class_name"]])
+    cls = getattr(mod, meta["class_name"])
+    return cls._recursive_load(root, skip_names=skip_names, skip_types=skip_types)
 
 
-def print_file(path: str | Path) -> None:
-    """Print the saved structure of a serialized object (dir or zip) without loading."""
+def print_file(
+    path: str | Path,
+    depth: int | None = None,
+    show_values: bool = True,
+    show_autoserialize_types: bool = False,
+    show_class_origin: bool = False,
+) -> None:
+    """Print the saved structure of a serialized object (dir or zip) up to a given depth."""
     if os.path.isdir(path):
         store = LocalStore(path)
     else:
-        # Extract zip to temp dir
         tempdir = tempfile.TemporaryDirectory()
         with ZipFile(path, "r") as zf:
             zf.extractall(tempdir.name)
@@ -294,30 +768,69 @@ def print_file(path: str | Path) -> None:
 
     root = zarr.group(store=store)
 
-    def _recurse(group: zarr.Group, prefix: str = "") -> None:
-        keys = sorted(
-            set(group.attrs.keys()) | set(group.array_keys()) | set(group.group_keys())
-        )
-        for idx, key in enumerate(keys):
-            last = idx == len(keys) - 1
-            branch = "└── " if last else "├── "
-            new_prefix = prefix + ("    " if last else "│   ")
+    def _recurse(
+        obj: Any, prefix: str = "", current_depth: int = 0, is_last: bool = True
+    ) -> None:
+        if isinstance(obj, zarr.Group):
+            keys = sorted(
+                set(obj.attrs.keys()) | set(obj.array_keys()) | set(obj.group_keys())
+            )
+            if current_depth == 0:
+                class_info = obj.attrs.get("_autoserialize")
+                label = Path(path).name
+                if class_info and "class_name" in class_info:
+                    mod_cls = (
+                        f"{class_info['class_module']}.{class_info['class_name']}"
+                        if show_class_origin
+                        else class_info["class_name"]
+                    )
+                    label += f": class {mod_cls}"
+                print(label)
 
-            if key in group.group_keys():
-                print(prefix + branch + key)
-                _recurse(group[key], new_prefix)
-            elif key in group.array_keys():
-                arr = group[key]
-                print(prefix + branch + f"{key}: ndarray{arr.shape}")
-            else:
-                val = group.attrs[key]
-                if key == "_class_def":
-                    print(prefix + branch + f"{key}: class def")
+            printable_keys = []
+            for key in keys:
+                if not show_autoserialize_types and key in {
+                    "_container_type",
+                    "_autoserialize",
+                    "_class_def",
+                }:
+                    continue
+                if not show_autoserialize_types and key.endswith(".torch_save"):
+                    continue
+                printable_keys.append(key)
+
+            for idx, key in enumerate(printable_keys):
+                last = idx == len(printable_keys) - 1
+                branch = "└── " if last else "├── "
+                new_prefix = prefix + ("    " if last else "│   ")
+
+                if key in obj.group_keys():
+                    child_group = obj[key]
+                    group_type = child_group.attrs.get("_container_type")
+                    suffix = (
+                        f" (_container_type = '{group_type}')"
+                        if group_type and show_autoserialize_types
+                        else ""
+                    )
+                    print(prefix + branch + f"{key}{suffix}")
+                    if depth is None or current_depth < depth - 1:
+                        _recurse(child_group, new_prefix, current_depth + 1, last)
+
+                elif key in obj.array_keys():
+                    arr = obj[key]
+                    is_torch = obj.attrs.get(f"{key}.torch_save", False)
+                    tensor_type = "torch.Tensor" if is_torch else "ndarray"
+                    print(prefix + branch + f"{key}: {tensor_type} shape={arr.shape}")
+
                 else:
-                    try:
-                        print(prefix + branch + f"{key}: {type(val).__name__}")
-                    except Exception:
-                        print(prefix + branch + f"{key}: <unreadable>")
+                    val = obj.attrs[key]
+                    type_str = type(val).__name__
+                    display_val = (
+                        f" = {repr(val)}"
+                        if show_values
+                        and isinstance(val, (int, float, str, bool, type(None)))
+                        else ""
+                    )
+                    print(prefix + branch + f"{key}: {type_str}{display_val}")
 
-    print(Path(path).name)
     _recurse(root)
