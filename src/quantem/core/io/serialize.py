@@ -446,10 +446,6 @@ class AutoSerialize:
 
     @classmethod
     def _deserialize_container(cls, group: zarr.Group):
-        import io
-
-        import torch
-
         ctype = group.attrs.get("_container_type")
         if ctype is None:
             raise ValueError(f"Missing _container_type in group: {group.path}")
