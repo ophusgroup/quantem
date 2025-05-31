@@ -83,11 +83,20 @@ class AutoSerialize:
         skip_names = {s for s in skip if isinstance(s, str)}
         skip_types = tuple(s for s in skip if isinstance(s, type))
 
+        def write_skip_metadata(root):
+            # Save skip info as attrs (convert types to strings for JSON compatibility)
+            root.attrs["_autoserialize_skip_names"] = list(skip_names)
+            # Use fully qualified type names for types, or just names if you prefer
+            root.attrs["_autoserialize_skip_types"] = [
+                f"{t.__module__}.{t.__qualname__}" for t in skip_types
+            ]
+
         if store == "zip":
             with tempfile.TemporaryDirectory() as tmpdir:
                 store_obj = LocalStore(tmpdir)
                 root = zarr.group(store=store_obj, overwrite=True)
                 self._recursive_save(self, root, skip_names, skip_types, compressors)
+                write_skip_metadata(root)
                 with ZipFile(path, mode="w") as zf:
                     for dirpath, _, filenames in os.walk(tmpdir):
                         for filename in filenames:
@@ -103,6 +112,7 @@ class AutoSerialize:
             store_obj = LocalStore(path)
             root = zarr.group(store=store_obj, overwrite=True)
             self._recursive_save(self, root, skip_names, skip_types, compressors)
+            write_skip_metadata(root)
         else:
             raise ValueError(f"Unknown store type: {store}")
 
@@ -215,30 +225,36 @@ class AutoSerialize:
         skip_names: set[str] = frozenset(),
         skip_types: tuple[type, ...] = (),
     ) -> object:
-        import gzip
-        import io
-
-        import dill
-        import torch
-
         meta = group.attrs["_autoserialize"]
         version = meta.get("version", 1)
         if version != 1:
             raise ValueError(f"Unsupported AutoSerialize version: {version}")
         module = __import__(meta["class_module"], fromlist=[meta["class_name"]])
         cls_obj = getattr(module, meta["class_name"])
-        obj = cls_obj()
+        obj = cls_obj.__new__(cls_obj)  # bypass __init__
 
+        # We'll track which attrs are set, and skip those in skip_names/skip_types
+        set_attrs = set()
+
+        # Handle attrs_fields if attrs is used
         attrs_fields = getattr(cls_obj, "__attrs_attrs__", None)
         if attrs_fields is not None:
-            for f in attrs_fields:
-                setattr(obj, f.name, None)
+            attrs_item_names = [f.name for f in attrs_fields]
+        else:
+            attrs_item_names = []
 
+        # Restore attributes saved as group.attrs
         for name, val in group.attrs.items():
-            if name in skip_names or name.endswith(".torch_save"):
+            if name == "_autoserialize" or name.endswith(".torch_save"):
+                continue
+            if name in skip_names:
+                continue
+            if attrs_item_names and name not in attrs_item_names:
                 continue
             setattr(obj, name, val)
+            set_attrs.add(name)
 
+        # Restore arrays
         for ds in group.array_keys():
             if ds in skip_names:
                 continue
@@ -250,13 +266,18 @@ class AutoSerialize:
                 v = arr
                 if group.attrs.get(f"{ds}.torch_save", False):
                     v = torch.from_numpy(v)
+            if type(v) in skip_types:
+                continue
             setattr(obj, ds, v)
+            set_attrs.add(ds)
 
+        # Restore groups/subgroups
         for name in group.group_keys():
             if name in skip_names:
                 continue
             subgrp = group[name]
 
+            # torch optimizer
             if subgrp.attrs.get("_torch_optimizer"):
                 clsname = subgrp.attrs["class_name"]
                 data = bytes(subgrp["state_dict"][:])
@@ -266,31 +287,50 @@ class AutoSerialize:
                 dummy = torch.zeros(1, requires_grad=True)
                 opt = opt_cls([dummy])
                 opt.load_state_dict(state)
+                if type(opt) in skip_types:
+                    continue
                 setattr(obj, name, opt)
+                set_attrs.add(name)
 
+            # torch module
             elif subgrp.attrs.get("_torch_whole_module"):
                 data = bytes(subgrp["module"][:])
                 buf = io.BytesIO(data)
                 mod = torch.load(buf, map_location="cpu", weights_only=False)
+                if type(mod) in skip_types:
+                    continue
                 setattr(obj, name, mod)
+                set_attrs.add(name)
 
+            # nested AutoSerialize
             elif "_autoserialize" in subgrp.attrs:
                 m = subgrp.attrs["_autoserialize"]
                 submod = __import__(m["class_module"], fromlist=[m["class_name"]])
                 subcls = getattr(submod, m["class_name"])
-                if not issubclass(subcls, skip_types):
-                    setattr(
-                        obj,
-                        name,
-                        subcls._recursive_load(subgrp, skip_names, skip_types),
-                    )
+                if subcls in skip_types:
+                    continue
+                val = subcls._recursive_load(subgrp, skip_names, skip_types)
+                if type(val) in skip_types:
+                    continue
+                setattr(obj, name, val)
+                set_attrs.add(name)
 
+            # containers (lists/tuples/dicts)
             elif subgrp.attrs.get("_container_type", None) is not None:
-                setattr(obj, name, cls._deserialize_container(subgrp))
+                val = cls._deserialize_container(subgrp)
+                if type(val) in skip_types:
+                    continue
+                setattr(obj, name, val)
+                set_attrs.add(name)
 
             else:
                 print(f"Unhandled group: {name} with attrs: {dict(subgrp.attrs)}")
                 raise ValueError(f"Unknown subgroup structure: {subgrp.path}")
+
+        # Remove any attributes that are in skip_names (that could have been set by __init__)
+        for name in skip_names:
+            if hasattr(obj, name):
+                delattr(obj, name)
 
         if hasattr(obj, "__attrs_post_init__"):
             obj.__attrs_post_init__()
@@ -665,8 +705,8 @@ def load(
 ) -> Any:
     if isinstance(skip, (str, type)):
         skip = [skip]
-    skip_names = {s for s in skip if isinstance(s, str)}
-    skip_types = tuple(s for s in skip if isinstance(s, type))
+    user_skip_names = {s for s in skip if isinstance(s, str)}
+    user_skip_types = tuple(s for s in skip if isinstance(s, type))
 
     if os.path.isdir(path):
         store = LocalStore(path)
@@ -683,6 +723,28 @@ def load(
     version = meta.get("version", 1)
     if version != 1:
         raise ValueError(f"Unsupported AutoSerialize version: {version}")
+
+    # --- Read skip metadata from file (if present) ---
+    file_skip_names = set(root.attrs.get("_autoserialize_skip_names", []))
+    file_skip_types_raw = root.attrs.get("_autoserialize_skip_types", [])
+    file_skip_types = (
+        tuple(
+            # Dynamically import each type from its qualified string
+            __import__(t.rpartition(".")[0], fromlist=[t.rpartition(".")[2]]).__dict__[
+                t.rpartition(".")[2]
+            ]
+            for t in file_skip_types_raw
+        )
+        if file_skip_types_raw
+        else tuple()
+    )
+
+    # --- Merge user and file skip values ---
+    skip_names = user_skip_names | file_skip_names
+    skip_types = user_skip_types + tuple(
+        t for t in file_skip_types if t not in user_skip_types
+    )
+
     mod = __import__(meta["class_module"], fromlist=[meta["class_name"]])
     cls = getattr(mod, meta["class_name"])
     return cls._recursive_load(root, skip_names=skip_names, skip_types=skip_types)
