@@ -224,9 +224,11 @@ class AutoSerialize:
                 )
 
             elif isinstance(attr_value, (list, tuple, dict)):
-                # Save containers recursively
+                # Save containers recursively (with nested AutoSerialize support)
                 subgroup = group.require_group(attr_name)
-                self._serialize_container(attr_value, subgroup, compressors)
+                self._serialize_container(
+                    attr_value, subgroup, skip_names, skip_types, compressors
+                )
 
             else:
                 # Fallback: dill-serialize + gzip-compress
@@ -364,29 +366,49 @@ class AutoSerialize:
 
         return obj
 
-    def _serialize_container(self, value, group: zarr.Group, compressors=None):
+    def _serialize_container(
+        self,
+        value,
+        group: zarr.Group,
+        skip_names: set[str],
+        skip_types: tuple[type, ...],
+        compressors=None,
+    ):
         """
         Serialize a container (list, tuple, or dict) into a Zarr group.
 
-        Handles nested containers and specialized PyTorch objects, with appropriate
-        markers for later reconstruction. Uses recursive calls for nesting.
+        Handles nested containers, AutoSerialize instances, PyTorch objects, and primitives,
+        with recursive support for arbitrary depth and skipping.
         """
-        # Special handling for common torch module containers
+
+        # Special handling for torch.nn containers: flatten to list and record type
         if isinstance(
             value, (torch.nn.ModuleList, torch.nn.Sequential, torch.nn.ParameterList)
         ):
             group.attrs["_torch_iterable_module_type"] = type(value).__name__
-            value = list(value)  # Treat as a list for serialization
+            value = list(value)
 
+        # Handle list/tuple containers
         if isinstance(value, (list, tuple)):
             group.attrs["_container_type"] = type(value).__name__
             for i, v in enumerate(value):
                 key = str(i)
-                # Recursively handle nesting
-                if isinstance(v, (list, tuple, dict)):
+
+                # --- If entry is an AutoSerialize object, use full recursive_save (preserves type!) ---
+                if isinstance(v, AutoSerialize):
                     subgroup = group.require_group(key)
-                    self._serialize_container(v, subgroup, compressors)
-                # Torch modules get special treatment as byte blobs
+                    self._recursive_save(
+                        v, subgroup, skip_names, skip_types, compressors
+                    )
+
+                # --- Recursively handle nested containers ---
+                elif isinstance(v, (list, tuple, dict)):
+                    subgroup = group.require_group(key)
+                    self._serialize_container(
+                        v, subgroup, skip_names, skip_types, compressors
+                    )
+
+                # --- Torch nn.Module: save as a whole-module byte array with a marker ---
                 elif isinstance(v, torch.nn.Module):
                     subgroup = group.require_group(key)
                     subgroup.attrs["_torch_whole_module"] = True
@@ -397,7 +419,8 @@ class AutoSerialize:
                     subgroup.create_dataset(
                         "module", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
                     )
-                # Torch tensors stored as arrays, flagged for loading
+
+                # --- Torch tensor: save as ndarray, with .torch_save flag ---
                 elif isinstance(v, torch.Tensor):
                     arr_np = (
                         v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
@@ -410,7 +433,8 @@ class AutoSerialize:
                         compressors=compressors,
                     )
                     group.attrs[f"{key}.torch_save"] = True
-                # Standard numpy arrays
+
+                # --- Standard numpy arrays: save directly as dataset ---
                 elif isinstance(v, np.ndarray):
                     group.create_dataset(
                         name=key,
@@ -419,10 +443,12 @@ class AutoSerialize:
                         dtype=v.dtype,
                         compressors=compressors,
                     )
-                # Plain scalars and strings stored as group attrs
+
+                # --- Primitive types: store as attribute ---
                 elif isinstance(v, (int, float, str, bool, type(None))):
                     group.attrs[key] = v
-                # Fallback: dill/gzip serialization for anything else
+
+                # --- Fallback: dill/gzip serialize and store as byte array ---
                 else:
                     payload = dill.dumps(v)
                     comp = gzip.compress(payload)
@@ -434,15 +460,27 @@ class AutoSerialize:
                     )
                     ds[:] = np.frombuffer(comp, dtype="uint8")
 
+        # Handle dict containers (very similar logic, using keys)
         elif isinstance(value, dict):
             group.attrs["_container_type"] = "dict"
             for k, v in value.items():
                 key = str(k)
-                # Recursively handle nesting
-                if isinstance(v, (list, tuple, dict)):
+
+                # --- AutoSerialize instance as value ---
+                if isinstance(v, AutoSerialize):
                     subgroup = group.require_group(key)
-                    self._serialize_container(v, subgroup, compressors)
-                # Torch modules get special treatment as byte blobs
+                    self._recursive_save(
+                        v, subgroup, skip_names, skip_types, compressors
+                    )
+
+                # --- Nested container (list/tuple/dict) as value ---
+                elif isinstance(v, (list, tuple, dict)):
+                    subgroup = group.require_group(key)
+                    self._serialize_container(
+                        v, subgroup, skip_names, skip_types, compressors
+                    )
+
+                # --- Torch nn.Module as value ---
                 elif isinstance(v, torch.nn.Module):
                     subgroup = group.require_group(key)
                     subgroup.attrs["_torch_whole_module"] = True
@@ -453,7 +491,8 @@ class AutoSerialize:
                     subgroup.create_dataset(
                         "module", data=byte_arr, shape=byte_arr.shape, dtype="uint8"
                     )
-                # Torch tensors stored as arrays, flagged for loading
+
+                # --- Torch tensor as value ---
                 elif isinstance(v, torch.Tensor):
                     arr_np = (
                         v.detach().cpu().numpy() if v.requires_grad else v.cpu().numpy()
@@ -466,7 +505,8 @@ class AutoSerialize:
                         compressors=compressors,
                     )
                     group.attrs[f"{key}.torch_save"] = True
-                # Standard numpy arrays
+
+                # --- Standard numpy array as value ---
                 elif isinstance(v, np.ndarray):
                     group.create_dataset(
                         name=key,
@@ -475,10 +515,12 @@ class AutoSerialize:
                         dtype=v.dtype,
                         compressors=compressors,
                     )
-                # Plain scalars and strings stored as group attrs
+
+                # --- Primitive type as value ---
                 elif isinstance(v, (int, float, str, bool, type(None))):
                     group.attrs[key] = v
-                # Fallback: dill/gzip serialization for anything else
+
+                # --- Fallback: dill/gzip ---
                 else:
                     payload = dill.dumps(v)
                     comp = gzip.compress(payload)
