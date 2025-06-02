@@ -51,6 +51,7 @@
         "meshgrid",
         "metadatabundle",
         "minmax",
+        "moveaxis",
         "ncols",
         "ndarray",
         "ndimage",

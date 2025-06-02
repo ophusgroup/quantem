@@ -1,6 +1,8 @@
 import math
+from typing import Tuple
 
 import torch
+from numpy.typing import NDArray
 
 from quantem.core.datastructures import Dataset2d, Dataset3d
 from quantem.core.io.serialize import AutoSerialize
@@ -8,6 +10,7 @@ from quantem.core.utils.scattering_utils import electron_wavelength_angstrom
 from quantem.core.utils.utils import SimpleTorchBatcher
 from quantem.core.utils.validators import ensure_valid_tensor
 from quantem.diffractive_imaging.aberration_surfaces import chi_taylor_expansion
+from quantem.diffractive_imaging.origin_models import CenterOfMassOriginModel
 
 
 class WPOAPtychography(AutoSerialize):
@@ -71,6 +74,78 @@ class WPOAPtychography(AutoSerialize):
             _token=cls._token,
         )
 
+    @classmethod
+    def from_dataset4dstem(
+        cls,
+        dataset,
+        energy: float,
+        rotation_angle: float,
+        aberration_coefs: dict,
+        semiangle_cutoff: float,
+        max_batch_size: int | None = None,
+        fit_method: str = "plane",
+        mode: str = "bicubic",
+        force_measured_origin: Tuple[float, float]
+        | torch.Tensor
+        | NDArray
+        | None = None,
+        force_fitted_origin: Tuple[float, float] | torch.Tensor | NDArray | None = None,
+        intensity_threshold: float = 0.5,
+    ):
+        """ """
+
+        origin = CenterOfMassOriginModel.from_dataset(dataset)
+
+        # measure and fit origin
+        if force_fitted_origin is None:
+            if force_measured_origin is None:
+                origin.calculate_origin(max_batch_size)
+            else:
+                origin.origin_measured = force_measured_origin
+            origin.fit_origin_background(fit_method=fit_method)
+        else:
+            origin.origin_fitted = force_fitted_origin
+
+        # shift to origin
+        origin.shift_origin_to(
+            max_batch_size=max_batch_size,
+            mode=mode,
+        )
+        shifted_tensor = origin.shifted_tensor
+
+        # bf_mask
+        mean_dp = shifted_tensor.mean(dim=(0, 1))
+        bf_mask = mean_dp > mean_dp.max() * intensity_threshold
+
+        bf_mask_dataset = Dataset2d.from_array(
+            bf_mask.to(torch.int),
+            name="BF mask",
+            units=("A^-1", "A^-1"),
+            sampling=dataset.sampling[-2:],
+        )
+
+        # vbf_stack
+        vbf_stack = shifted_tensor[..., bf_mask]
+        vbf_stack = vbf_stack / vbf_stack.mean((0, 1)) - 1
+        vbf_stack = torch.moveaxis(vbf_stack, (0, 1, 2), (1, 2, 0))
+
+        vbf_dataset = Dataset3d.from_array(
+            vbf_stack,
+            name="vBF stack",
+            units=("index", "A", "A"),
+            sampling=(1,) + tuple(dataset.sampling[:2]),
+        )
+
+        return cls(
+            vbf_dataset=vbf_dataset,
+            bf_mask_dataset=bf_mask_dataset,
+            energy=energy,
+            rotation_angle=rotation_angle,
+            aberration_coefs=aberration_coefs,
+            semiangle_cutoff=semiangle_cutoff,
+            _token=cls._token,
+        )
+
     @property
     def vbf_stack(self) -> torch.Tensor:
         return self._vbf_stack
@@ -105,12 +180,8 @@ class WPOAPtychography(AutoSerialize):
 
     def preprocess(
         self,
-        normalize_vbf=False,
     ):
         """ """
-        if normalize_vbf:
-            vbf_stack = self.vbf_stack / self.vbf_stack.mean((0, 1)) - 1
-            self.vbf_stack = vbf_stack
 
         self._bf_inds_i, self._bf_inds_j = torch.where(self.bf_mask)
         self._vbf_fourier = torch.fft.fft2(self.vbf_stack, norm="ortho")

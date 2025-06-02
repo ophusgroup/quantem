@@ -116,7 +116,7 @@ class CenterOfMassOriginModel(AutoSerialize):
     def fit_origin_background(
         self,
         probe_positions: torch.Tensor | NDArray | None = None,
-        fit_method: str | None = "plane",
+        fit_method: str = "plane",
     ):
         """ """
 
@@ -198,7 +198,6 @@ class CenterOfMassOriginModel(AutoSerialize):
         origin_coordinate: Tuple[int | float, int | float] = (0, 0),
         max_batch_size: int | None = None,
         mode: str = "bicubic",
-        padding_mode: str = "reflection",
     ):
         """ """
 
@@ -215,10 +214,10 @@ class CenterOfMassOriginModel(AutoSerialize):
         coordinate = torch.as_tensor(origin_coordinate)
 
         # Create normalized meshgrid
-        qxa, qya = torch.meshgrid(
-            torch.linspace(-1, 1, nqx), torch.linspace(-1, 1, nqy), indexing="ij"
-        )
-        base_grid = torch.stack((qxa, qya), dim=-1).unsqueeze(0)  # (1, nqx, nqy, 2)
+        qya, qxa = torch.meshgrid(torch.arange(nqy), torch.arange(nqx), indexing="ij")
+        base_grid = (
+            torch.stack((qxa, qya), dim=-1).unsqueeze(0).to(torch.float)
+        )  # (1, nqx, nqy, 2)
 
         if max_batch_size is None:
             max_batch_size = self.num_dps
@@ -229,19 +228,15 @@ class CenterOfMassOriginModel(AutoSerialize):
 
         for batch_idx in batcher:
             intensities = tensor_3d[batch_idx]
-            shifts = coordinate - origin_fitted[batch_idx]
+            shifts = coordinate - origin_fitted[batch_idx].flip([-1]).view(-1, 1, 1, 2)
 
             # Convert shifts from pixel units to normalized units
-            shifts_norm = shifts.clone().view(-1, 1, 1, 2)
-            shifts_norm[..., 0] *= 2 / nqx
-            shifts_norm[..., 1] *= 2 / nqy
-
-            grid = base_grid + shifts_norm
+            wrapped_grid = (base_grid + shifts) % torch.tensor([nqx, nqy])
+            grid = 2 * wrapped_grid / torch.tensor([nqx - 1, nqy - 1]) - 1
 
             shifted_tensor_3d[batch_idx] = F.grid_sample(
                 intensities,
                 grid,
-                padding_mode=padding_mode,
                 mode=mode,
                 align_corners=True,
             )
@@ -264,11 +259,10 @@ class CenterOfMassOriginModel(AutoSerialize):
         max_batch_size: int | None = None,
         fit_origin_bkg: bool = True,
         probe_positions: torch.Tensor | NDArray | None = None,
-        fit_method: str | None = "plane",
+        fit_method: str = "plane",
         shift_to_origin: bool = True,
         origin_coordinate: Tuple[int | float, int | float] = (0, 0),
         mode: str = "bicubic",
-        padding_mode: str = "reflection",
     ):
         """
         Runs the full Center-of-Mass origin alignment workflow.
@@ -292,9 +286,7 @@ class CenterOfMassOriginModel(AutoSerialize):
             self.fit_origin_background(probe_positions, fit_method)
 
             if shift_to_origin:
-                self.shift_origin_to(
-                    origin_coordinate, max_batch_size, mode, padding_mode
-                )
+                self.shift_origin_to(origin_coordinate, max_batch_size, mode)
 
         return self
 
