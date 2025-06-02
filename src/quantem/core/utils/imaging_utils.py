@@ -3,6 +3,8 @@
 from typing import Optional, Tuple
 
 import numpy as np
+import torch
+import torch.nn.functional as F
 from numpy.typing import NDArray
 from scipy.ndimage import gaussian_filter
 
@@ -37,16 +39,10 @@ def dft_upsample(
     c_shift = shift[1] - N // 2
 
     kern_row = np.exp(
-        -2j
-        * np.pi
-        / (M * up)
-        * np.outer(row, xp.fft.ifftshift(xp.arange(M)) - M // 2 + r_shift)
+        -2j * np.pi / (M * up) * np.outer(row, xp.fft.ifftshift(xp.arange(M)) - M // 2 + r_shift)
     )
     kern_col = np.exp(
-        -2j
-        * np.pi
-        / (N * up)
-        * np.outer(xp.fft.ifftshift(xp.arange(N)) - N // 2 + c_shift, col)
+        -2j * np.pi / (N * up) * np.outer(xp.fft.ifftshift(xp.arange(N)) - N // 2 + c_shift, col)
     )
     return xp.real(kern_row @ F @ kern_col)
 
@@ -146,9 +142,7 @@ def cross_correlation_shift(
         except (IndexError, ValueError):
             dxf = dyf = 0.0
 
-        shifts = (
-            np.array([x0, y0]) + (np.array(peak) - upsample_factor) / upsample_factor
-        )
+        shifts = np.array([x0, y0]) + (np.array(peak) - upsample_factor) / upsample_factor
         shifts += np.array([dxf, dyf]) / upsample_factor
 
     shifts = (shifts + 0.5 * np.array(cc.shape)) % cc.shape - 0.5 * np.array(cc.shape)
@@ -167,6 +161,138 @@ def cross_correlation_shift(
         image_shifted = xp.real(xp.fft.ifft2(F_im_shifted))
 
     return shifts, image_shifted
+
+
+def gaussian_kernel_torch(sigma: float, radius: int | None = None):
+    """ """
+    if radius is None:
+        radius = int(3 * sigma + 0.5)
+
+    x = torch.arange(-radius, radius + 1, dtype=torch.float32)
+    kernel = torch.exp(-0.5 * torch.square(x / sigma))
+    kernel /= kernel.sum()
+    return kernel
+
+
+def gaussian_filter_torch(
+    image: torch.Tensor,
+    sigma: float | Tuple[float, float],
+) -> torch.Tensor:
+    """ """
+    if image.dim() == 2:
+        image = image[None, None, ...]
+    elif image.dim() == 3:
+        image = image[:, None, ...]
+    else:
+        raise ValueError()
+
+    try:
+        sigma_y: float = sigma[0]  # type: ignore
+        sigma_x: float = sigma[1]  # type: ignore
+    except (TypeError, IndexError):
+        sigma_y: float = sigma  # type: ignore
+        sigma_x: float = sigma  # type: ignore
+    ky = gaussian_kernel_torch(sigma_y).view(1, 1, -1, 1)
+    kx = gaussian_kernel_torch(sigma_x).view(1, 1, 1, -1)
+
+    # Separable convolution: first Y, then X
+    filtered = F.conv2d(image, ky, padding=(ky.shape[2] // 2, 0), groups=image.shape[1])
+    filtered = F.conv2d(filtered, kx, padding=(0, kx.shape[3] // 2), groups=image.shape[1])
+
+    return filtered.squeeze()
+
+
+def bilinear_kde_torch(
+    xa: torch.Tensor,
+    ya: torch.Tensor,
+    values: torch.Tensor,
+    output_shape: Tuple[int, int],
+    kde_sigma: float,
+    pad_value: float = 0.0,
+    threshold: float = 1e-3,
+    lowpass_filter: bool = False,
+    max_batch_size: Optional[int] = None,
+) -> torch.Tensor:
+    """
+    Compute a bilinear kernel density estimate (KDE) with smooth threshold masking.
+
+    Parameters
+    ----------
+    xa : NDArray
+        Vertical (row) coordinates of input points.
+    ya : NDArray
+        Horizontal (col) coordinates of input points.
+    values : NDArray
+        Weights for each (xa, ya) point.
+    output_shape : tuple of int
+        Output image shape (rows, cols).
+    kde_sigma : float
+        Standard deviation of Gaussian KDE smoothing.
+    pad_value : float, default = 1.0
+        Value to return when KDE support is too low.
+    threshold : float, default = 1e-3
+        Minimum counts_KDE value for trusting the output signal.
+    lowpass_filter : bool, optional
+        If True, apply sinc-based inverse filtering to deconvolve the kernel.
+    max_batch_size : int or None, optional
+        Max number of points to process in one batch.
+
+    Returns
+    -------
+    NDArray
+        The estimated KDE image with threshold-masked output.
+    """
+    rows, cols = output_shape
+    mods = torch.tensor(output_shape).to(torch.long).unsqueeze(1)
+    strides = torch.tensor([cols, 1]).unsqueeze(1)
+
+    xF = torch.floor(xa.ravel()).to(torch.long)
+    yF = torch.floor(ya.ravel()).to(torch.long)
+    dx = xa.ravel() - xF
+    dy = ya.ravel() - yF
+    w = values.ravel()
+
+    pix_count = torch.zeros(rows * cols, dtype=torch.float)
+    pix_output = torch.zeros(rows * cols, dtype=torch.float)
+
+    if max_batch_size is None:
+        max_batch_size = xF.shape[0]
+
+    for start, end in generate_batches(xF.shape[0], max_batch=max_batch_size):
+        for dx_off, dy_off, weights in [
+            (0, 0, (1 - dx[start:end]) * (1 - dy[start:end])),
+            (1, 0, dx[start:end] * (1 - dy[start:end])),
+            (0, 1, (1 - dx[start:end]) * dy[start:end]),
+            (1, 1, dx[start:end] * dy[start:end]),
+        ]:
+            inds = torch.tensor((xF[start:end] + dx_off, yF[start:end] + dy_off))
+            wrapped_inds = inds % mods
+            inds_1D = (wrapped_inds * strides).sum(0)
+
+            pix_count.scatter_add_(0, inds_1D, weights)
+
+            pix_output.scatter_add_(0, inds_1D, weights * w[start:end])
+
+    # Reshape to 2D and apply Gaussian KDE
+    pix_count = pix_count.reshape(output_shape)
+    pix_output = pix_output.reshape(output_shape)
+
+    pix_count = gaussian_filter_torch(pix_count, kde_sigma)
+    pix_output = gaussian_filter_torch(pix_output, kde_sigma)
+
+    # Final image
+    weight = np.minimum(pix_count / threshold, 1.0)
+    image = pad_value * (1.0 - weight) + weight * (pix_output / np.maximum(pix_count, 1e-8))
+
+    if lowpass_filter:
+        f_img = torch.fft.fft2(image)
+        fx = torch.fft.fftfreq(rows)
+        fy = torch.fft.fftfreq(cols)
+        f_img /= torch.sinc(fx)[:, None]  # type: ignore
+        f_img /= torch.sinc(fy)[None, :]  # type: ignore
+        image = torch.real(torch.fft.ifft2(f_img))
+
+    return image
 
 
 def bilinear_kde(
@@ -246,9 +372,7 @@ def bilinear_kde(
 
     # Final image
     weight = np.minimum(pix_count / threshold, 1.0)
-    image = pad_value * (1.0 - weight) + weight * (
-        pix_output / np.maximum(pix_count, 1e-8)
-    )
+    image = pad_value * (1.0 - weight) + weight * (pix_output / np.maximum(pix_count, 1e-8))
 
     if lowpass_filter:
         f_img = np.fft.fft2(image)
