@@ -206,10 +206,10 @@ def bilinear_kde_torch(
     xa: torch.Tensor,
     ya: torch.Tensor,
     values: torch.Tensor,
-    output_shape: Tuple[int, int],
+    output_shape: tuple,
     kde_sigma: float,
     pad_value: float = 0.0,
-    threshold: float = 1e-3,
+    threshold: float = 0.0,
     lowpass_filter: bool = False,
     max_batch_size: Optional[int] = None,
 ) -> torch.Tensor:
@@ -228,7 +228,7 @@ def bilinear_kde_torch(
         Output image shape (rows, cols).
     kde_sigma : float
         Standard deviation of Gaussian KDE smoothing.
-    pad_value : float, default = 1.0
+    pad_value : float, default = 0.0
         Value to return when KDE support is too low.
     threshold : float, default = 1e-3
         Minimum counts_KDE value for trusting the output signal.
@@ -242,57 +242,57 @@ def bilinear_kde_torch(
     NDArray
         The estimated KDE image with threshold-masked output.
     """
-    rows, cols = output_shape
-    mods = torch.tensor(output_shape).to(torch.long).unsqueeze(1)
-    strides = torch.tensor([cols, 1]).unsqueeze(1)
+    H, W = output_shape
+    N = xa.shape[0]
 
-    xF = torch.floor(xa.ravel()).to(torch.long)
-    yF = torch.floor(ya.ravel()).to(torch.long)
-    dx = xa.ravel() - xF
-    dy = ya.ravel() - yF
-    w = values.ravel()
+    if values.ndim == 1:
+        values.unsqueeze(1)
+    C = values.shape[1]
 
-    pix_count = torch.zeros(rows * cols, dtype=torch.float)
-    pix_output = torch.zeros(rows * cols, dtype=torch.float)
+    xF = torch.floor(xa).to(torch.long)
+    yF = torch.floor(ya).to(torch.long)
+    dx = xa - xF
+    dy = ya - yF
+
+    pix_count = torch.zeros(1, H, W, dtype=torch.float)
+    pix_output = torch.zeros(C, H, W, dtype=torch.float)
 
     if max_batch_size is None:
-        max_batch_size = xF.shape[0]
+        max_batch_size = N
 
     for start, end in generate_batches(xF.shape[0], max_batch=max_batch_size):
-        for dx_off, dy_off, weights in [
+        for dx_off, dy_off, w in [
             (0, 0, (1 - dx[start:end]) * (1 - dy[start:end])),
             (1, 0, dx[start:end] * (1 - dy[start:end])),
             (0, 1, (1 - dx[start:end]) * dy[start:end]),
             (1, 1, dx[start:end] * dy[start:end]),
         ]:
-            inds = torch.tensor((xF[start:end] + dx_off, yF[start:end] + dy_off))
-            wrapped_inds = inds % mods
-            inds_1D = (wrapped_inds * strides).sum(0)
+            ix = (xF[start:end] + dx_off) % H
+            iy = (yF[start:end] + dy_off) % W
 
-            pix_count.scatter_add_(0, inds_1D, weights)
+            for c in range(C):
+                pix_output[c].index_put_((ix, iy), w * values[start:end, c], accumulate=True)
 
-            pix_output.scatter_add_(0, inds_1D, weights * w[start:end])
+            pix_count[0].index_put_((ix, iy), w, accumulate=True)
 
-    # Reshape to 2D and apply Gaussian KDE
-    pix_count = pix_count.reshape(output_shape)
-    pix_output = pix_output.reshape(output_shape)
-
-    pix_count = gaussian_filter_torch(pix_count, kde_sigma)
-    pix_output = gaussian_filter_torch(pix_output, kde_sigma)
+    if kde_sigma > 0.0:
+        pix_count = gaussian_filter_torch(pix_count, kde_sigma)
+        pix_output = gaussian_filter_torch(pix_output, kde_sigma)
 
     # Final image
-    weight = np.minimum(pix_count / threshold, 1.0)
-    image = pad_value * (1.0 - weight) + weight * (pix_output / np.maximum(pix_count, 1e-8))
+    weight = torch.clamp(pix_count / threshold, max=1.0)
+    norm = torch.clamp(pix_count, min=1e-8)
+    image = pad_value * (1.0 - weight) + weight * (pix_output / norm)
 
     if lowpass_filter:
         f_img = torch.fft.fft2(image)
-        fx = torch.fft.fftfreq(rows)
-        fy = torch.fft.fftfreq(cols)
-        f_img /= torch.sinc(fx)[:, None]  # type: ignore
-        f_img /= torch.sinc(fy)[None, :]  # type: ignore
+        fx = torch.fft.fftfreq(H)
+        fy = torch.fft.fftfreq(W)
+        f_img /= torch.sinc(fx)[:, None]
+        f_img /= torch.sinc(fy)[None, :]
         image = torch.real(torch.fft.ifft2(f_img))
 
-    return image
+    return image.squeeze(0) if C == 1 else image
 
 
 def bilinear_kde(
