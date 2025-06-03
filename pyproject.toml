@@ -35,6 +35,7 @@ dependencies = [
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
+  "torch>=2.7.0",
 ]
 
 [tool.hatch.build.targets.sdist]
