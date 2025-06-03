@@ -1,9 +1,6 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-packages = ["quantem"]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 addopts = [
@@ -21,7 +18,7 @@ exclude = ["*.ipynb"]
 
 [project]
 name = "quantem"
-version = "0.1.4"
+version = "0.1.5.post2"
 description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
@@ -38,14 +35,27 @@ dependencies = [
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
-  "pytest>=8.3.5",
+]
+
+[tool.hatch.build.targets.sdist]
+# hatchling always includes:
+# pyproject.toml, .gitignore, any README, any LICENSE, AUTHORS
+only-include = [
+    "/src",
+    "/tests",
+    "/CITATION.cff"
 ]
 
 [dependency-groups]
+test = [
+    "pytest>=8.3.5",
+]
 dev = [
+    { include-group = "test" },
     "jupyterlab>=4.4.0",
     "packaging>=24.2",
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
+    "tomli>=2.2.1",
 ]
 
