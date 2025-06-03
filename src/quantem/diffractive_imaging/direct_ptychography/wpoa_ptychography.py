@@ -216,7 +216,7 @@ class WPOAPtychography(AutoSerialize):
             kde_sigma,
             max_batch_size=max_batch_size,
         )
-        vbf_stack = vbf_stack / vbf_stack.mean(dim=(0, 1)) - 1
+        vbf_stack = vbf_stack / vbf_stack.mean(dim=(-2, -1), keepdim=True) - 1
 
         vbf_dataset = Dataset3d.from_array(
             vbf_stack,

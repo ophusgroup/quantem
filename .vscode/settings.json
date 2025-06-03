@@ -45,6 +45,7 @@
         "iscomplexobj",
         "isscalar",
         "issubdtype",
+        "keepdim",
         "linalg",
         "lowpass",
         "maxiter",
