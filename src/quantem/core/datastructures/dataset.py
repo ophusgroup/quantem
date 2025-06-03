@@ -12,7 +12,9 @@ from quantem.core.utils.validators import (
 )
 
 
-class Dataset(AutoSerialize):
+class Dataset(
+    AutoSerialize
+):
     """
     A class representing a multi-dimensional dataset with metadata.
     Uses standard properties and validation within __init__ for type safety.
