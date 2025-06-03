@@ -179,5 +179,7 @@ cython_debug/
 # jupyter notebooks
 *.ipynb
 
-# zip files
+# data files
 *.zip
+*.npy
+*.h5

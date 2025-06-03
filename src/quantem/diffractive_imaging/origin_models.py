@@ -90,12 +90,10 @@ class CenterOfMassOriginModel(AutoSerialize):
             intensities = tensor_3d[batch_idx]
             summed_intensities = torch.sum(intensities, dim=(-2, -1))
             com_measured[batch_idx, 0] = (
-                torch.sum(intensities * qxa[None, :, :], dim=(-2, -1))
-                / summed_intensities
+                torch.sum(intensities * qxa[None, :, :], dim=(-2, -1)) / summed_intensities
             )
             com_measured[batch_idx, 1] = (
-                torch.sum(intensities * qya[None, :, :], dim=(-2, -1))
-                / summed_intensities
+                torch.sum(intensities * qya[None, :, :], dim=(-2, -1)) / summed_intensities
             )
 
         self.origin_measured = com_measured
@@ -108,9 +106,7 @@ class CenterOfMassOriginModel(AutoSerialize):
     @origin_measured.setter
     def origin_measured(self, value: torch.Tensor):
         self._origin_measured = (
-            ensure_valid_tensor(value, dtype=torch.float)
-            .view((-1, 2))
-            .expand((self.num_dps, 2))
+            ensure_valid_tensor(value, dtype=torch.float).view((-1, 2)).expand((self.num_dps, 2))
         )
 
     def fit_origin_background(
@@ -121,9 +117,7 @@ class CenterOfMassOriginModel(AutoSerialize):
         """ """
 
         if self._origin_measured is None:
-            raise ValueError(
-                "measured origins not detected. Use self.calculate_origin() first."
-            )
+            raise ValueError("measured origins not detected. Use self.calculate_origin() first.")
 
         if probe_positions is None:
             if self.dataset.ndim != 4:
@@ -140,9 +134,7 @@ class CenterOfMassOriginModel(AutoSerialize):
         else:
             probe_positions = ensure_valid_tensor(probe_positions).view((-1, 2))
             if probe_positions.shape != self.origin_measured.shape:
-                raise ValueError(
-                    "probe positions shape must match the measured origins."
-                )
+                raise ValueError("probe positions shape must match the measured origins.")
 
         if fit_method == "plane":
 
@@ -162,12 +154,8 @@ class CenterOfMassOriginModel(AutoSerialize):
                 d = -torch.dot(normal_vector, centroid)
                 return a, b, c, d
 
-            com_x_pts = torch.concatenate(
-                (probe_positions, self.origin_measured[:, 0, None]), 1
-            )
-            com_y_pts = torch.concatenate(
-                (probe_positions, self.origin_measured[:, 1, None]), 1
-            )
+            com_x_pts = torch.concatenate((probe_positions, self.origin_measured[:, 0, None]), 1)
+            com_y_pts = torch.concatenate((probe_positions, self.origin_measured[:, 1, None]), 1)
 
             ax, bx, cx, dx = fit_linear_plane(com_x_pts)
             ay, by, cy, dy = fit_linear_plane(com_y_pts)
@@ -188,9 +176,7 @@ class CenterOfMassOriginModel(AutoSerialize):
     @origin_fitted.setter
     def origin_fitted(self, value: torch.Tensor):
         self._origin_fitted = (
-            ensure_valid_tensor(value, dtype=torch.float)
-            .view((-1, 2))
-            .expand((self.num_dps, 2))
+            ensure_valid_tensor(value, dtype=torch.float).view((-1, 2)).expand((self.num_dps, 2))
         )
 
     def shift_origin_to(
@@ -199,25 +185,19 @@ class CenterOfMassOriginModel(AutoSerialize):
         max_batch_size: int | None = None,
         mode: str = "bicubic",
     ):
-        """ """
-
         if self._origin_fitted is None:
-            raise ValueError(
-                "fitted origins not detected. Use self.fit_origin_background() first."
-            )
+            raise ValueError("fitted origins not detected. Use self.fit_origin_background() first.")
 
-        origin_fitted = self.origin_fitted
-        nqx, nqy = self.dataset.shape[-2:]
+        origin_fitted = self.origin_fitted  # shape: (B, 2) in (row, col)
+        H, W = self.dataset.shape[-2:]  # rows = H, cols = W
 
-        tensor_3d = self.tensor.view((-1, 1, nqx, nqy))  # note channel dim
+        tensor_3d = self.tensor.view((-1, 1, H, W))  # (B, 1, H, W)
         shifted_tensor_3d = torch.empty_like(tensor_3d)
-        coordinate = torch.as_tensor(origin_coordinate)
+        coordinate = torch.as_tensor(origin_coordinate, dtype=torch.float)  # (row, col)
 
-        # Create normalized meshgrid
-        qya, qxa = torch.meshgrid(torch.arange(nqy), torch.arange(nqx), indexing="ij")
-        base_grid = (
-            torch.stack((qxa, qya), dim=-1).unsqueeze(0).to(torch.float)
-        )  # (1, nqx, nqy, 2)
+        # Construct base pixel grid (Y, X) = (rows, cols)
+        grid_y, grid_x = torch.meshgrid(torch.arange(H), torch.arange(W), indexing="ij")
+        base_grid = torch.stack((grid_y, grid_x), dim=-1).float()  # shape: (H, W, 2), order: (y, x)
 
         if max_batch_size is None:
             max_batch_size = self.num_dps
@@ -226,24 +206,32 @@ class CenterOfMassOriginModel(AutoSerialize):
             torch.arange(self.num_dps), batch_size=max_batch_size, shuffle=False
         )
 
-        for batch_idx in batcher:
-            intensities = tensor_3d[batch_idx]
-            shifts = coordinate - origin_fitted[batch_idx].flip([-1]).view(-1, 1, 1, 2)
+        size_tensor = torch.tensor([H, W], dtype=torch.float)  # for modulo + normalization
 
-            # Convert shifts from pixel units to normalized units
-            wrapped_grid = (base_grid + shifts) % torch.tensor([nqx, nqy])
-            grid = 2 * wrapped_grid / torch.tensor([nqx - 1, nqy - 1]) - 1
+        for batch_idx in batcher:
+            intensities = tensor_3d[batch_idx]  # (B, 1, H, W)
+
+            # Shift required to bring COM to (0,0), in (y, x)
+            shift_yx = origin_fitted[batch_idx] - coordinate  # (B, 2) in (row,col)
+            shift_tensor = shift_yx.view(-1, 1, 1, 2)  # (B, 1, 1, 2)
+
+            # Apply wraparound shift in pixel coordinates
+            shifted_grid = (base_grid[None, ...] + shift_tensor) % size_tensor
+
+            # Normalize to [-1, 1] for grid_sample (x,y) order)
+            grid_x_norm = 2 * shifted_grid[..., 1] / (W - 1) - 1  # normalized x
+            grid_y_norm = 2 * shifted_grid[..., 0] / (H - 1) - 1  # normalized y
+            grid = torch.stack((grid_x_norm, grid_y_norm), dim=-1)  # (B, H, W, 2)
 
             shifted_tensor_3d[batch_idx] = F.grid_sample(
                 intensities,
                 grid,
                 mode=mode,
+                padding_mode="zeros",
                 align_corners=True,
             )
 
-        self._grid = grid
         self.shifted_tensor = shifted_tensor_3d.view(self.tensor.shape)
-
         return self
 
     @property

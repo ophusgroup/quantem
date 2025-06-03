@@ -103,9 +103,7 @@ def validate_ndinfo(
             raise ValueError(f"{name} must contain numeric values")
         return arr
     elif not isinstance(value, (np.ndarray, tuple, list)):
-        raise TypeError(
-            f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}"
-        )
+        raise TypeError(f"{name} must be a numpy array, tuple, list, or scalar, got {type(value)}")
 
     try:
         arr = np.array(value, dtype=dtype).flatten()
@@ -149,9 +147,7 @@ def validate_units(value: Union[List[str], tuple, list, str], ndim: int) -> List
     elif not isinstance(value, (list, tuple)):
         raise TypeError(f"Units must be a list, tuple, or string, got {type(value)}")
     elif len(value) != ndim:
-        raise ValueError(
-            f"Length of units ({len(value)}) must match data ndim ({ndim})"
-        )
+        raise ValueError(f"Length of units ({len(value)}) must match data ndim ({ndim})")
 
     return [str(unit) for unit in value]
 
@@ -238,9 +234,7 @@ def validate_vector_units(units: Optional[List[str]], num_fields: int) -> List[s
     if not isinstance(units, (list, tuple)):
         raise TypeError(f"units must be a list or tuple, got {type(units)}")
     if len(units) != num_fields:
-        raise ValueError(
-            f"Length of units ({len(units)}) must match num_fields ({num_fields})"
-        )
+        raise ValueError(f"Length of units ({len(units)}) must match num_fields ({num_fields})")
     return [str(unit) for unit in units]
 
 
@@ -268,9 +262,7 @@ def validate_vector_data_for_inference(data: List[Any]) -> Tuple[Tuple[int, ...]
     return shape, inferred_num_fields
 
 
-def validate_vector_data(
-    data: List[Any], shape: Tuple[int, ...], num_fields: int
-) -> List[Any]:
+def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: int) -> List[Any]:
     """
     Validate that the data structure matches the expected shape and number of fields.
 
@@ -330,7 +322,7 @@ def validate_vector_data(
 
 # --- Dataset Validation Functions ---
 def ensure_valid_tensor(
-    tensor: torch.Tensor,
+    tensor: torch.Tensor | NDArray,
     dtype: torch.dtype | None = None,
     device: torch.device | None = None,
 ) -> torch.Tensor:
