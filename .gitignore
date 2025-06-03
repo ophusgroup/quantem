@@ -173,7 +173,7 @@ cython_debug/
 # PyPI configuration file
 .pypirc
 
-# DS 
+# DS
 .DS_Store
 
 # jupyter notebooks

@@ -1964,7 +1964,7 @@ wheels = [
 
 [[package]]
 name = "quantem"
-version = "0.1.5.post1"
+version = "0.1.5.post2"
 source = { editable = "." }
 dependencies = [
     { name = "cmasher" },
