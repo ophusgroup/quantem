@@ -3,10 +3,10 @@
 
 # The device can be either 'cpu', "gpu", or "cuda:<x>". "gpu" defaults to "cuda:0"
 device: cpu
-# The float precision to use. Options are 'float32' or 'float64' 
-# ?? will this control both real and complex? 
+# The float precision to use. Options are 'float32' or 'float64'
+# ?? will this control both real and complex?
 precision: float32
-# global verbosity, ?? unecessary 
+# global verbosity, ?? unecessary
 verbose: 1
 cupy:
   # The size of the fft cache in MB used by cupy
@@ -15,7 +15,7 @@ cupy:
 mkl:
   # The number of threads to use for mkl
   threads: 2
-warnings: ### not sure how handling warnings yet 
+warnings: ### not sure how handling warnings yet
   # Show a warning when the grid is overspecified
   suppress-all-: false
 visualize:
@@ -27,5 +27,5 @@ visualize:
   cmap: "viridis"
   # The default colormap to use for plotting the phase
   phase_cmap: "hsluv"
-  
+
   default_colors: ""
