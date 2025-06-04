@@ -318,6 +318,7 @@ class WPOAPtychography(AutoSerialize):
         upsampling_factor=None,
         rotation_angle=None,
         max_batch_size=None,
+        flip_phase=True,
     ):
         """ """
         if coefs is None:
@@ -348,6 +349,19 @@ class WPOAPtychography(AutoSerialize):
             grad_kq = torch.einsum("na,amp->nmp", grad_k, qvec)
             operator = torch.exp(-1j * grad_kq)
 
+            if flip_phase:
+                (chi_q,) = chi_taylor_expansion(
+                    qxa,
+                    qya,
+                    self.wavelength,
+                    0,  # note fixed coordinate system
+                    coefs,
+                    include_gradient=False,
+                    include_hessian=False,
+                )
+                sign_sign_chi_q = torch.sign(torch.sin(chi_q))
+                operator = operator * sign_sign_chi_q
+
             if max_batch_size is None:
                 max_batch_size = self.num_bf
 
@@ -375,6 +389,7 @@ class WPOAPtychography(AutoSerialize):
         upsampling_factor=None,
         rotation_angle=None,
         max_batch_size=None,
+        flip_phase=True,
     ):
         """ """
         if coefs is None:
@@ -423,6 +438,10 @@ class WPOAPtychography(AutoSerialize):
             )
             operator = torch.exp(-1j * (grad_kq + hess_kq - chi_q))
 
+            if flip_phase:
+                sign_sign_chi_q = torch.sign(torch.sin(chi_q))
+                operator = operator * sign_sign_chi_q
+
             if max_batch_size is None:
                 max_batch_size = self.num_bf
 
@@ -451,15 +470,16 @@ class WPOAPtychography(AutoSerialize):
         rotation_angle=None,
         quadratic_approximation=True,
         max_batch_size=None,
+        flip_phase=True,
     ):
         """ """
         if quadratic_approximation:
             self._parallax_correction_quadratic(
-                coefs, upsampling_factor, rotation_angle, max_batch_size
+                coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
             )
         else:
             self._parallax_correction_higher_order(
-                coefs, upsampling_factor, rotation_angle, max_batch_size
+                coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
             )
         return self
 
@@ -597,3 +617,15 @@ class WPOAPtychography(AutoSerialize):
 
         self.corrected_stack = corrected_stack
         return self
+
+    @property
+    def mean_aligned_bf(self):
+        if self.corrected_stack is None:
+            return None
+        return self.corrected_stack.mean(dim=0)
+
+    def variance_loss(self):
+        """ """
+        if self.corrected_stack is None:
+            return None
+        return ((self.corrected_stack - self.mean_aligned_bf) ** 2.0).mean()

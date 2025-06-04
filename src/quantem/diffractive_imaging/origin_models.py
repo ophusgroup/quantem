@@ -27,7 +27,7 @@ class CenterOfMassOriginModel(AutoSerialize):
 
         self.dataset = dataset
         self.num_dps = math.prod(self.dataset.shape[:-2])
-        self._tensor = ensure_valid_tensor(self.dataset.array)
+        self._tensor = ensure_valid_tensor(self.dataset.array, dtype=torch.float)
 
         # defaults
         self._origin_measured = None
@@ -62,7 +62,7 @@ class CenterOfMassOriginModel(AutoSerialize):
 
     @tensor.setter
     def tensor(self, value: torch.Tensor):
-        self._tensor = ensure_valid_tensor(value)
+        self._tensor = ensure_valid_tensor(value, dtype=torch.float)
         self._dataset.array = self._tensor.detach().numpy()
 
     def calculate_origin(
@@ -163,8 +163,12 @@ class CenterOfMassOriginModel(AutoSerialize):
             com_fitted_x = (probe_positions @ torch.tensor([-ax, -bx]) - dx) / cx
             com_fitted_y = (probe_positions @ torch.tensor([-ay, -by]) - dy) / cy
             com_fitted = torch.stack([com_fitted_x, com_fitted_y], -1)
+        elif fit_method == "constant":
+            com_fitted = self.origin_measured.mean(0)
         else:
-            raise NotImplementedError("only fit_method='plane' is implemented for now.")
+            raise NotImplementedError(
+                "only fit_method='plane' and 'constant' are implemented for now."
+            )
 
         self.origin_fitted = com_fitted
         return self
