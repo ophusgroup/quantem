@@ -60,6 +60,7 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
             "_patch_indices", torch.zeros(self.num_gpts, *self.roi_shape, dtype=torch.int64)
         )
         self.register_buffer("_last_patch_positions_px", torch.zeros(self.num_gpts, 2))
+        self._constraints = {}
 
     @classmethod
     def from_file(cls, file_path: str, file_type: str, verbose: int | bool = 1) -> Self:
@@ -460,8 +461,11 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
     # region --- abstract class methods ---
     @abstractmethod
     def forward(
-        self, batch_inds: np.ndarray | torch.Tensor, obj_padding_px: np.ndarray | tuple
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+        batch_indices: np.ndarray | torch.Tensor,
+        obj_padding_px: np.ndarray | tuple,
+        return_descan: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Forward pass to compute the diffraction intensities from the object and scan positions."""
         # return patch_indices, positions_px, positions_px_fractional
         # positions_px and fractional can just return
@@ -522,19 +526,72 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
     # endregion --- class methods ---
 
 
-class PtychographyDatasetRaster(PtychographyDatasetBase):
+class DatasetConstraints(PtychographyDatasetBase):
+    DEFAULT_CONSTRAINTS = {
+        "descan_tv_weight": 0.0,
+        "descan_shifts_constant": False,
+    }
+
+    @property
+    def constraints(self) -> dict[str, Any]:
+        return self._constraints
+
+    @constraints.setter
+    def constraints(self, c: dict[str, Any]):
+        gkeys = self.DEFAULT_CONSTRAINTS.keys()
+        for key, value in c.items():
+            if key not in gkeys:
+                raise KeyError(f"Invalid dataset constraint key '{key}', allowed keys are {gkeys}")
+            self._constraints[key] = value
+
+    def add_constraint(self, key: str, value: Any):
+        """Add a constraint to the object model."""
+        gkeys = self.DEFAULT_CONSTRAINTS.keys()
+        if key not in gkeys:
+            raise KeyError(f"Invalid dataset constraint key '{key}', allowed keys are {gkeys}")
+        self._constraints[key] = value
+
+    def apply_descan_constraints(
+        self,
+        descan: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        Apply constraints to the object model.
+        """
+        if self.constraints["descan_shifts_constant"]:
+            new_descan = torch.ones_like(descan) * descan.mean(dim=0, keepdim=True)
+        else:
+            new_descan = descan
+
+        return new_descan
+
+    def apply_position_constraints(self, positions: torch.Tensor) -> torch.Tensor:
+        """
+        Apply constraints to the scan positions.
+        """
+        # Currently no position constraints
+        return positions
+
+
+class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
     def forward(
-        self, batch_inds: np.ndarray | torch.Tensor, obj_padding_px: np.ndarray | tuple
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        self,
+        batch_indices: np.ndarray | torch.Tensor,
+        obj_padding_px: np.ndarray | tuple,
+        return_descan: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """Forward pass to compute the diffraction intensities from the object and scan positions."""
-        ind1, ind2 = batch_inds
-        positions_px = self.scan_positions_px[ind1:ind2]
+        positions_px = self.apply_position_constraints(self.scan_positions_px)[batch_indices]
         positions_px_fractional = positions_px - torch.round(positions_px)
         with torch.no_grad():
             if self.patch_indices_need_update():
                 self._set_patch_indices(obj_padding_px)
-        patch_indices = self.patch_indices[ind1:ind2]
-        return patch_indices, positions_px, positions_px_fractional
+        patch_indices = self.patch_indices[batch_indices]
+        if return_descan:
+            descan_shifts = self.apply_descan_constraints(self.descan_shifts)[batch_indices]
+        else:
+            descan_shifts = None
+        return patch_indices, positions_px, positions_px_fractional, descan_shifts
 
     def _set_initial_scan_positions_px(
         self,

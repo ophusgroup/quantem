@@ -113,7 +113,7 @@ class PtychographyML(PtychographyBase):
             elif key == "descan":
                 self._add_optimizer(key, self.dset.descan_shifts, self._optimizer_params[key])
             elif key == "scan_positions":
-                raise NotImplementedError()
+                self._add_optimizer(key, self.dset.scan_positions_px, self._optimizer_params[key])
             else:
                 raise ValueError(
                     f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"

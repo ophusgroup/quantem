@@ -76,6 +76,7 @@ class PtychographyBase(AutoSerialize):
         },
         "dataset": {
             "descan_tv_weight": 0.0,
+            "descan_shifts_constant": False,
         },
         "detector": {
             "detector_mask": None,
@@ -564,6 +565,9 @@ class PtychographyBase(AutoSerialize):
         for k, v in self._constraints["probe"].items():
             if k in self.probe_model.DEFAULT_CONSTRAINTS.keys():
                 self.probe_model.add_constraint(k, v)
+        for k, v in self._constraints["dataset"].items():
+            if k in self.dset.DEFAULT_CONSTRAINTS.keys():
+                self.dset.add_constraint(k, v)
 
     # endregion --- explicit class properties ---
 

@@ -194,38 +194,31 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
 
         if "descan" in self.optimizer_params.keys():
             target_amplitudes = self.dset.amplitudes
+            learn_descan = True
         else:
             target_amplitudes = self.dset.centered_amplitudes
+            learn_descan = False
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
 
-        print("a1 probe device: ", self.probe_model.probe.device)
         # TODO add pbar with loss printout
         for a0 in trange(num_iter, disable=not self.verbose):
             self.rng.shuffle(shuffled_indices)
             epoch_loss = 0.0
 
-            for start, end in generate_batches(
-                num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
-            ):
+            for start, end in generate_batches(num_items=self.dset.num_gpts, max_batch=batch_size):
                 batch_indices = shuffled_indices[start:end]
-                descan_shifts = (
-                    self.dset.descan_shifts[batch_indices]
-                    if "descan" in self.optimizer_params.keys()
-                    else None
+                patch_indices, _positions_px, positions_px_fractional, descan_shifts = (
+                    self.dset.forward(batch_indices, self.obj_padding_px, learn_descan)
                 )
-                shifted_probes = self.probe_model.forward(
-                    self.dset.positions_px_fractional[batch_indices]
-                )
-                obj_patches = self.obj_model.forward(self.dset.patch_indices[batch_indices])
+                shifted_probes = self.probe_model.forward(positions_px_fractional)
+                obj_patches = self.obj_model.forward(patch_indices)
                 propagated_probes, overlap = self.forward_operator(
                     obj_patches, shifted_probes, descan_shifts
                 )
 
-                loss = (
-                    self.error_estimate(overlap, target_amplitudes[batch_indices])
-                    / self.dset.mean_diffraction_intensity
-                )
+                loss = self.error_estimate(overlap, target_amplitudes[batch_indices])
+                loss /= self.dset.mean_diffraction_intensity
 
                 if (
                     self.constraints["object"]["tv_weight_z"] > 0
@@ -242,7 +235,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     obj_patches,
                     propagated_probes,
                     overlap,
-                    self.dset.patch_indices[batch_indices],  # replace with just passing indices
+                    patch_indices,  # replace with just passing indices
                     target_amplitudes[batch_indices],
                 )
                 for opt in self.optimizers.values():

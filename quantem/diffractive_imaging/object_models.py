@@ -204,14 +204,14 @@ class ObjectConstraints(ObjectBase):
         gkeys = self.DEFAULT_CONSTRAINTS.keys()
         for key, value in c.items():
             if key not in gkeys:
-                raise KeyError(f"Invalid constraint key '{key}', allowed keys are {gkeys}")
+                raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
             self._constraints[key] = value
 
     def add_constraint(self, key: str, value: Any):
         """Add a constraint to the object model."""
         gkeys = self.DEFAULT_CONSTRAINTS.keys()
         if key not in gkeys:
-            raise KeyError(f"Invalid constraint key '{key}', allowed keys are {gkeys}")
+            raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
         self._constraints[key] = value
 
     def apply_constraints(
