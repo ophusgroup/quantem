@@ -257,7 +257,7 @@ class WPOAPtychography(AutoSerialize):
 
     @rotation_angle.setter
     def rotation_angle(self, value: float):
-        self._rotation_angle = float(value)
+        self._rotation_angle = torch.nn.Parameter(torch.as_tensor(float(value), dtype=torch.float))
 
     @property
     def coefs(self) -> dict:
@@ -265,7 +265,9 @@ class WPOAPtychography(AutoSerialize):
 
     @coefs.setter
     def coefs(self, value: dict):
-        self._coefs = dict(value)
+        self._coefs = torch.nn.ParameterDict(
+            {k: torch.as_tensor(v, dtype=torch.float) for k, v in value.items()}
+        )
 
     def preprocess(
         self,
