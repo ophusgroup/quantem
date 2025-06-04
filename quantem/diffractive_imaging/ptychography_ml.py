@@ -3,8 +3,12 @@ from typing import TYPE_CHECKING, Any, Literal, Sequence
 import numpy as np
 
 from quantem.core import config
-from quantem.core.datastructures import Dataset4dstem
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
+from quantem.diffractive_imaging.ptychography_dataset import (
+    PtychographyDatasetRaster,
+)
+
+DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
 
 if TYPE_CHECKING:
     import torch
@@ -29,24 +33,24 @@ class PtychographyML(PtychographyBase):
     }
     DEFAULT_OPTIMIZER_TYPE = "adam"
 
-    def __init__(
+    def __init__(  # TODO replace this init with no arguments, call inits explicitly in ptycho
         self,
-        dset: Dataset4dstem,
+        dset: DatasetModelType,
         device: Literal["cpu", "gpu"] = "cpu",
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
         _token: None | object = None,
     ):
         # init required as we're setting up new attributes such as _schedulers
-        if _token is not self._token:
-            raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+        # if _token is not self._token:
+        #     raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
 
         super().__init__(
             dset=dset,
             device=device,
             verbose=verbose,
             rng=rng,
-            _token=self._token,
+            # _token=self._token,
         )
 
         self._obj_padding_force_power2_level = 3
@@ -107,7 +111,7 @@ class PtychographyML(PtychographyBase):
             elif key == "probe":
                 self._add_optimizer(key, self.probe_model.params, self._optimizer_params[key])
             elif key == "descan":
-                self._add_optimizer(key, self._descan_shifts, self._optimizer_params[key])
+                self._add_optimizer(key, self.dset.descan_shifts, self._optimizer_params[key])
             elif key == "scan_positions":
                 raise NotImplementedError()
             else:

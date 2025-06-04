@@ -60,6 +60,11 @@ class ObjectBase(AutoSerialize):
     def device(self) -> str:
         return self._device
 
+    @device.setter
+    def device(self, device: str | torch.device):
+        dev, _id = config.validate_device(device)
+        self._device = dev
+
     @property
     def obj_type(self) -> str:
         return self._obj_type
@@ -145,8 +150,9 @@ class ObjectBase(AutoSerialize):
         raise NotImplementedError()
 
     @abstractmethod
-    def to_device(self, device: str | torch.device):
+    def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
+        self.device = device
         raise NotImplementedError()
 
     @property
@@ -293,8 +299,9 @@ class ObjectPixelized(ObjectConstraints, ObjectBase):
         patches = obj_flat[:, patch_indices]
         return patches
 
-    def to_device(self, device: str | torch.device):
-        self._obj = self._obj.to(device)
+    def to(self, device: str | torch.device):
+        self.device = device
+        self._obj = self._obj.to(self.device)
 
     @property
     def name(self) -> str:

@@ -4,12 +4,15 @@ import numpy as np
 from tqdm import trange
 
 from quantem.core import config
-from quantem.core.datastructures import Dataset4dstem
 from quantem.core.utils.utils import generate_batches
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
+from quantem.diffractive_imaging.ptychography_dataset import (
+    PtychographyDatasetRaster,
+)
 from quantem.diffractive_imaging.ptychography_ml import PtychographyML
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
+DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
 if TYPE_CHECKING:
     import torch
 else:
@@ -32,25 +35,25 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
         "tv_weight_yx": 0,
     }
     DEFAULT_OPTIMIZER_TYPE = "adam"
-    _token = object()
+    # _token = object()
 
     def __init__(
         self,
-        dset: Dataset4dstem,
+        dset: DatasetModelType,
         device: Literal["cpu", "gpu"] = "cpu",
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
-        _token: None | object = None,
+        # _token: None | object = None,
     ):
-        if _token is not self._token:
-            raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+        # if _token is not self._token:
+        #     raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
 
         super().__init__(
             dset=dset,
             device=device,
             verbose=verbose,
             rng=rng,
-            _token=self._token,
+            # _token=self._token,
         )
         self._autograd = True
 
@@ -166,15 +169,15 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
         # TODO maybe make an "process args" method that handles things like:
         # mode, store_iterations, device,
         self._check_preprocessed()
-        self.device = device
+        self.set_obj_type(obj_type, force=reset)
+        if device is not None:
+            self.to(device)
         batch_size = self.gpts[0] * self.gpts[1] if batch_size is None else batch_size
         self.store_iterations = store_iterations
         self.store_iterations_every = store_iterations_every
-        self.set_obj_type(obj_type, force=reset)
         if reset:
             self.reset_recon()
         self.constraints = constraints
-        self._move_recon_arrays_to_device()
 
         new_scheduler = reset
         if optimizer_params is not None:
@@ -190,12 +193,13 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
         if "descan" in self.optimizer_params.keys():
-            target_amplitudes = self._amplitudes
+            target_amplitudes = self.dset.amplitudes
         else:
-            target_amplitudes = self._shifted_amplitudes
+            target_amplitudes = self.dset.centered_amplitudes
 
         shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
 
+        print("a1 probe device: ", self.probe_model.probe.device)
         # TODO add pbar with loss printout
         for a0 in trange(num_iter, disable=not self.verbose):
             self.rng.shuffle(shuffled_indices)
@@ -204,24 +208,23 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
             for start, end in generate_batches(
                 num_items=self.gpts[0] * self.gpts[1], max_batch=batch_size
             ):
-                loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
                 batch_indices = shuffled_indices[start:end]
                 descan_shifts = (
-                    self._descan_shifts[batch_indices]
+                    self.dset.descan_shifts[batch_indices]
                     if "descan" in self.optimizer_params.keys()
                     else None
                 )
                 shifted_probes = self.probe_model.forward(
-                    self._positions_px_fractional[batch_indices]
+                    self.dset.positions_px_fractional[batch_indices]
                 )
-                obj_patches = self.obj_model.forward(self._patch_indices[batch_indices])
+                obj_patches = self.obj_model.forward(self.dset.patch_indices[batch_indices])
                 propagated_probes, overlap = self.forward_operator(
                     obj_patches, shifted_probes, descan_shifts
                 )
 
-                loss += (
+                loss = (
                     self.error_estimate(overlap, target_amplitudes[batch_indices])
-                    / self._mean_diffraction_intensity
+                    / self.dset.mean_diffraction_intensity
                 )
 
                 if (
@@ -239,7 +242,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     obj_patches,
                     propagated_probes,
                     overlap,
-                    self._patch_indices[batch_indices],  # replace with just passing indices
+                    self.dset.patch_indices[batch_indices],  # replace with just passing indices
                     target_amplitudes[batch_indices],
                 )
                 for opt in self.optimizers.values():

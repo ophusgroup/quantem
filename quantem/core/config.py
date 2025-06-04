@@ -482,7 +482,8 @@ def check_key_val(key: str, val: Any, deprecations: dict = deprecations) -> tupl
     return key, new_val
 
 
-def validate_device(dev: str | int) -> tuple[str, int]:
+# TODO clean this up
+def validate_device(dev: "str | int | torch.device") -> tuple[str, int]:
     """validate the input device given as a string or int, and return the torch formatted
     string of the device id and the device id int. Checks to make sure cupy and or torch are available if a gpu
     device is chosen, but does not actually set the device."""
@@ -505,8 +506,17 @@ def validate_device(dev: str | int) -> tuple[str, int]:
             raise NotImplementedError(f"new case for string device id: {dev}")
     elif isinstance(dev, int):
         id = dev
+    elif config["has_torch"]:
+        if isinstance(dev, torch.device):
+            id = dev.index
+            dev = dev.type
+            if dev == "cpu":
+                return "cpu", -1
+        else:
+            raise NotImplementedError(f"new case for device id: {dev} of type {type(dev)}")
     else:
         raise NotImplementedError(f"new case for device id: {dev} of type {type(dev)}")
+
     if id > NUM_DEVICES - 1:
         raise ValueError(
             f"Trying to set device {dev} but found {NUM_DEVICES} GPUs | "

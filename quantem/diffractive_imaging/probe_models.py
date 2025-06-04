@@ -217,6 +217,11 @@ class ProbeBase(AutoSerialize):
     def device(self) -> str:
         return self._device
 
+    @device.setter
+    def device(self, device: str | torch.device):
+        dev, _id = config.validate_device(device)
+        self._device = dev
+
     def _to_torch(
         self, array: "np.ndarray | torch.Tensor", dtype: "str | torch.dtype" = "same"
     ) -> "torch.Tensor":
@@ -291,8 +296,9 @@ class ProbeBase(AutoSerialize):
                 raise ValueError(f"Missing probe parameter '{k}' in probe_params")
 
     @abstractmethod
-    def to_device(self, device: str | torch.device):
+    def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
+        self.device = device
         raise NotImplementedError()
 
     @property
@@ -466,10 +472,6 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
 
     def forward(self, fract_positions: torch.Tensor) -> torch.Tensor:
         shifted_probes = fourier_shift_expand(self.probe, fract_positions).swapaxes(0, 1)
-        # TODO remove this
-        # print("skiping fract shift probes")
-        # shifted_probes = self.probe.expand(1, fract_positions.shape[0], *self.roi_shape)
-        ## shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         return shifted_probes
 
     def set_initial_probe(
@@ -493,7 +495,6 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
             prb = ComplexProbe(
                 gpts=tuple(self.roi_shape),
                 sampling=tuple(1 / (self.roi_shape * self.reciprocal_sampling)),
-                # sampling=tuple(1 / (self.roi_shape * self.reciprocal_sampling)),
                 energy=self.probe_params["energy"],
                 semiangle_cutoff=self.probe_params["semiangle_cutoff"],
                 defocus=self.probe_params["defocus"],
@@ -531,10 +532,11 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
         return
 
     def reset(self):
-        self._probe = self._initial_probe.clone()
+        self.probe = self._initial_probe.clone()
 
-    def to_device(self, device: str | torch.device):
-        self._probe = self._probe.to(device)
+    def to(self, device: str | torch.device):
+        self.device = device
+        self._probe = self._probe.to(self.device)
 
     @property
     def name(self) -> str:

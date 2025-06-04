@@ -2,7 +2,7 @@ from typing import TYPE_CHECKING, Any, List, Optional, Tuple, Union
 from warnings import warn
 
 import numpy as np
-from numpy.typing import DTypeLike
+from numpy.typing import ArrayLike, DTypeLike
 
 from quantem.core import config
 from quantem.core.utils import array_funcs as arr
@@ -350,7 +350,9 @@ def validate_float(value: float, name: str) -> float:
         raise TypeError(f"{name} must be a float, got {type(value)}")
 
 
-def validate_arraylike(value: Any, name: str):
+def validate_arraylike(
+    value: "ArrayLike | torch.Tensor", name: str
+) -> "np.ndarray | cp.ndarray | torch.Tensor":
     if isinstance(value, np.ndarray):
         return value
     if config.get("has_cupy"):
@@ -359,55 +361,29 @@ def validate_arraylike(value: Any, name: str):
     if config.get("has_torch"):
         if isinstance(value, torch.Tensor):
             return value
-    elif isinstance(value, (list, tuple)):
-        return np.array(value)
-    else:
-        try:
-            return np.array(value)
-        except Exception as e:
-            raise TypeError(f"{name} must be array or tensorlike, got type {type(value)}: {e}")
-
-
-def validate_xplike(value: Any, name: str) -> np.ndarray:
-    """for np.ndarray and cp.ndarray, returns the array as is. For a torch.Tensor or any other type
-    (including list, tuple, etc.) tries to convert and return a np.ndarray."""
-    if isinstance(value, np.ndarray):
-        return value
-    if config.get("has_cupy"):
-        if isinstance(value, cp.ndarray):
-            return value
-    if config.get("has_torch"):
-        if isinstance(value, torch.Tensor):
-            return value.cpu().detach().numpy()
     try:
         return np.array(value)
     except Exception as e:
-        raise TypeError(f"{name} must be array like, got type {type(value)}: {e}")
+        raise TypeError(f"{name} must be array or tensorlike, got type {type(value)}: {e}")
 
 
-def canonical_dtype_str(dtype):
-    """
-    Converts a dtype (NumPy, CuPy, torch, or string) to a canonical string for comparison.
-    """
-    if isinstance(dtype, str):
-        return dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
-    elif hasattr(dtype, "name"):
-        return dtype.name.lower()
-    elif config.get("has_torch"):
-        if isinstance(dtype, torch.dtype):
-            return str(dtype).split(".")[-1].lower()
-    return str(dtype).lower()
-
-
-def validate_array(
-    value: "np.ndarray | cp.ndarray | torch.Tensor",
+def validate_array_or_tensor(
+    value: "ArrayLike | torch.Tensor",
     name: str,
     dtype: "DTypeLike | torch.dtype | str | None" = None,
     ndim: int | None = None,
     shape: np.ndarray | tuple | None = None,
     expand_dims: bool = False,
+    allow_tensor: bool = True,
 ) -> "np.ndarray | cp.ndarray":
     value = validate_arraylike(value, name)
+    if config.get("has_torch"):
+        if isinstance(value, torch.Tensor):
+            if not allow_tensor:
+                warn(
+                    f"{name} is a torch tensor on device {value.device}. Converting to CPU numpy array."
+                )
+                value = value.cpu().detach().numpy()
     if dtype is not None:
         val_dtype_str = canonical_dtype_str(value.dtype)
         req_dtype_str = canonical_dtype_str(dtype)
@@ -424,7 +400,73 @@ def validate_array(
     return value
 
 
-def validate_np_len(value: np.ndarray | float | int, length: int, name: str = "") -> np.ndarray:
+def validate_xplike(value: ArrayLike, name: str) -> "np.ndarray|cp.ndarray":
+    """for np.ndarray and cp.ndarray, returns the array as is. For a torch.Tensor or any other type
+    (including list, tuple, etc.) tries to convert and return a np.ndarray."""
+    if isinstance(value, np.ndarray):
+        return value
+    if config.get("has_cupy"):
+        if isinstance(value, cp.ndarray):
+            return value
+    if config.get("has_torch"):
+        if isinstance(value, torch.Tensor):
+            return value.cpu().detach().numpy()
+    try:
+        return np.array(value)
+    except Exception as e:
+        raise TypeError(f"{name} must be array like, got type {type(value)}: {e}")
+
+
+def canonical_dtype_str(dtype: "DTypeLike | torch.dtype"):
+    """
+    Converts a dtype (NumPy, CuPy, torch, Python, or string) to a canonical string for comparison.
+    """
+    if isinstance(dtype, str):
+        return dtype.lower().replace("torch.", "").replace("numpy.", "").replace("cp.", "")
+    if isinstance(dtype, type):
+        return dtype.__name__.lower()
+    elif hasattr(dtype, "name"):
+        return str(getattr(dtype, "name")).lower()
+    elif config.get("has_torch"):
+        if isinstance(dtype, torch.dtype):
+            return str(dtype).split(".")[-1].lower()
+    return str(dtype).lower()
+
+
+def validate_array(
+    value: "ArrayLike | torch.Tensor",
+    name: str,
+    dtype: "DTypeLike | torch.dtype | str | None" = None,
+    ndim: int | None = None,
+    shape: np.ndarray | tuple | None = None,
+    expand_dims: bool = False,
+) -> "np.ndarray | cp.ndarray":
+    value = validate_array_or_tensor(
+        value, name, dtype, ndim, shape, expand_dims, allow_tensor=False
+    )
+    return value
+
+
+def validate_tensor(
+    value: "ArrayLike | torch.Tensor",
+    name: str,
+    dtype: "DTypeLike | torch.dtype | str | None" = None,
+    ndim: int | None = None,
+    shape: np.ndarray | tuple | None = None,
+    expand_dims: bool = False,
+) -> "torch.Tensor":
+    if not config.get("has_torch"):
+        raise ImportError("Torch is not available, cannot validate torch tensors.")
+    value = validate_array_or_tensor(
+        value, name, dtype, ndim, shape, expand_dims, allow_tensor=True
+    )
+    if isinstance(value, torch.Tensor):
+        return value
+    else:
+        return torch.tensor(value)
+
+
+def validate_np_len(value: ArrayLike, length: int, name: str = "") -> np.ndarray:
     if isinstance(value, np.ndarray):
         pass
     elif isinstance(value, (float, int)):
