@@ -4,19 +4,14 @@ import numpy as np
 from tqdm.auto import tqdm
 
 from quantem.core import config
-from quantem.diffractive_imaging.dataset_models import PtychographyDatasetRaster
-from quantem.diffractive_imaging.detector_models import DetectorPixelated
-from quantem.diffractive_imaging.object_models import ObjectPixelated
-from quantem.diffractive_imaging.probe_models import ProbePixelated
+from quantem.diffractive_imaging.dataset_models import DatasetModelType
+from quantem.diffractive_imaging.detector_models import DetectorModelType
+from quantem.diffractive_imaging.object_models import ObjectModelType
+from quantem.diffractive_imaging.probe_models import ProbeModelType
 from quantem.diffractive_imaging.ptycho_utils import SimpleBatcher
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 from quantem.diffractive_imaging.ptychography_ml import PtychographyML
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
-
-ObjectModelType = ObjectPixelated  # | ProbeDIP | ProbeImplicit
-ProbeModelType = ProbePixelated  # | ProbeParameterized
-DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
-DetectorModelType = DetectorPixelated  # | DetectorPixelatedDIP
 
 if TYPE_CHECKING:
     import torch
@@ -144,7 +139,8 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                 w = weight[0]
             else:
                 w = weight[1]
-            loss += w * torch.mean(torch.abs(array.diff(dim=dim)))
+            if w > 0:
+                loss += w * torch.mean(torch.abs(array.diff(dim=dim)))  # careful w/ mean -> NaN
         loss /= array.ndim
         return loss
 
@@ -269,6 +265,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     batch_indices,
                     amplitude_error=True,
                     use_unshifted=learn_descan,
+                    loss_type="l2",
                 )
 
                 loss += self._soft_constraints() / len(batch_indices)

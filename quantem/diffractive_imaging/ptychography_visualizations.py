@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -7,9 +7,6 @@ import numpy as np
 from quantem.core import config
 from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-
-if TYPE_CHECKING:
-    pass
 
 
 # TODO make dataclass

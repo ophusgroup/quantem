@@ -28,3 +28,6 @@ class DetectorPixelated(DetectorBase):
         exit_fft = torch.fft.fft2(exit_waves)
         intensities = torch.sum(torch.abs(exit_fft) ** 2, dim=0)
         return torch.fft.fftshift(intensities, dim=(-2, -1))  # detector centering
+
+
+DetectorModelType = DetectorPixelated  # | DetectorPixelatedDIP

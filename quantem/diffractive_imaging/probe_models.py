@@ -547,3 +547,6 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         obj_normalization = torch.sum(torch.abs(obj_patches[0]) ** 2, dim=0).max()
         probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization
         self._probe.grad = -1 * probe_grad.clone().detach()
+
+
+ProbeModelType = ProbePixelated  # | ProbeParameterized

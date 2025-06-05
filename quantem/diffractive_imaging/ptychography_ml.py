@@ -1,12 +1,7 @@
-from typing import TYPE_CHECKING, Any, Sequence
+from typing import TYPE_CHECKING, Any, Generator, Iterator, Sequence
 
 from quantem.core import config
-from quantem.diffractive_imaging.dataset_models import (
-    PtychographyDatasetRaster,
-)
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-
-DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
 
 if TYPE_CHECKING:
     import torch
@@ -97,7 +92,10 @@ class PtychographyML(PtychographyBase):
         return
 
     def _add_optimizer(
-        self, key: str, params: "torch.Tensor|Sequence[torch.Tensor]", opt_params: dict
+        self,
+        key: str,
+        params: "torch.Tensor|Sequence[torch.Tensor]|Iterator[torch.Tensor]",
+        opt_params: dict,
     ) -> None:
         """Can be used to add an optimizer without resetting the other optimizers."""
         if key not in self.OPTIMIZABLE_VALS:
@@ -106,6 +104,8 @@ class PtychographyML(PtychographyBase):
             )
         if isinstance(params, torch.Tensor):
             params = [params]
+        elif isinstance(params, Generator):
+            params = list(params)
         [p.requires_grad_(True) for p in params]
         self.optimizer_params[key] = opt_params
         opt_params = opt_params.copy()

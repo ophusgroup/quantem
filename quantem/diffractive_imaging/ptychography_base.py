@@ -21,12 +21,12 @@ from quantem.core.utils.validators import (
     validate_tensor,
 )
 from quantem.diffractive_imaging.dataset_models import (
+    DatasetModelType,
     PtychographyDatasetBase,
-    PtychographyDatasetRaster,
 )
-from quantem.diffractive_imaging.detector_models import DetectorBase, DetectorPixelated
-from quantem.diffractive_imaging.object_models import ObjectBase, ObjectPixelated
-from quantem.diffractive_imaging.probe_models import ProbeBase, ProbePixelated
+from quantem.diffractive_imaging.detector_models import DetectorBase, DetectorModelType
+from quantem.diffractive_imaging.object_models import ObjectBase, ObjectModelType, ObjectPixelated
+from quantem.diffractive_imaging.probe_models import ProbeBase, ProbeModelType
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
     center_crop_arr,
@@ -40,11 +40,6 @@ else:
     if config.get("has_torch"):
         import torch
 
-
-ObjectModelType = ObjectPixelated  # | ProbeDIP | ProbeImplicit
-ProbeModelType = ProbePixelated  # | ProbeParameterized
-DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
-DetectorModelType = DetectorPixelated  # | DetectorPixelatedDIP
 
 """
 design patterns:
@@ -508,14 +503,17 @@ class PtychographyBase(AutoSerialize):
                 raise TypeError(
                     f"obj_model must be a subclass of ObjectModelType, got {type(model)}"
                 )
-            print("initializing new model obj")
-            num_slices = self.num_slices if num_slices is None else int(num_slices)
-            self._obj_model = model(
-                num_slices=num_slices,
-                slice_thicknesses=slice_thicknesses,
-                device=self.device,
-                obj_type=obj_type,
-            )
+            if issubclass(model, ObjectPixelated):
+                print("initializing new model obj")
+                num_slices = self.num_slices if num_slices is None else int(num_slices)
+                self._obj_model = model(
+                    num_slices=num_slices,
+                    slice_thicknesses=slice_thicknesses,
+                    device=self.device,
+                    obj_type=obj_type,
+                )
+            else:
+                raise TypeError("please pre-intialize the object model")
         # autoreload bug leads to type issues, so checking str also
         elif isinstance(model, ObjectBase) or "object" in str(type(model)):
             self._obj_model = model
@@ -954,6 +952,7 @@ class PtychographyBase(AutoSerialize):
         batch_indices: np.ndarray,
         amplitude_error: bool = True,
         use_unshifted: bool = True,
+        loss_type: Literal["l1", "l2"] = "l2",
     ) -> tuple[torch.Tensor, torch.Tensor]:
         if amplitude_error:
             if use_unshifted:
@@ -967,9 +966,13 @@ class PtychographyBase(AutoSerialize):
             else:
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
-
-        mse = arr.sum(arr.abs(preds - targets) ** 2) / targets.shape[0]
-        loss = mse / self.dset.mean_diffraction_intensity
+        if loss_type == "l1":
+            error = arr.sum(arr.abs(preds - targets)) / targets.shape[0]
+        elif loss_type == "l2":
+            error = arr.sum(arr.abs(preds - targets) ** 2) / targets.shape[0]
+        else:
+            raise ValueError(f"Unknown loss type {loss_type}, should be 'l1' or 'l2'")
+        loss = error / self.dset.mean_diffraction_intensity
         return loss, targets
 
     # def error_estimate(
