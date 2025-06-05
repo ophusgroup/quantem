@@ -147,9 +147,7 @@ class CenteredInterval(BaseInterval):
         vmin = np.min(values)
         vmax = np.max(values)
 
-        half_range = np.maximum(
-            np.abs(vmin - self.vcenter), np.abs(vmax - self.vcenter)
-        )
+        half_range = np.maximum(np.abs(vmin - self.vcenter), np.abs(vmax - self.vcenter))
 
         return self.vcenter - half_range, self.vcenter + half_range
 
@@ -522,9 +520,7 @@ class CustomNormalization(colors.Normalize):
         None
         """
         self.vmin, self.vmax = self.interval.get_limits(data)
-        self.interval = ManualInterval(
-            self.vmin, self.vmax
-        )  # set explicitly with ManualInterval
+        self.interval = ManualInterval(self.vmin, self.vmax)  # set explicitly with ManualInterval
         return None
 
     def __call__(self, value: NDArray, clip: bool | None = None) -> NDArray:  # type: ignore[override]
@@ -615,14 +611,10 @@ NORMALIZATION_PRESETS = {
     "linear_minmax": lambda: NormalizationConfig(interval_type="manual"),
     "linear_centered": lambda: NormalizationConfig(interval_type="centered"),
     "log_auto": lambda: NormalizationConfig(stretch_type="logarithmic"),
-    "log_minmax": lambda: NormalizationConfig(
-        stretch_type="logarithmic", interval_type="manual"
-    ),
+    "log_minmax": lambda: NormalizationConfig(stretch_type="logarithmic", interval_type="manual"),
     "power_squared": lambda: NormalizationConfig(stretch_type="power", power=2.0),
     "power_sqrt": lambda: NormalizationConfig(stretch_type="power", power=0.5),
-    "asinh_centered": lambda: NormalizationConfig(
-        stretch_type="asinh", interval_type="centered"
-    ),
+    "asinh_centered": lambda: NormalizationConfig(stretch_type="asinh", interval_type="centered"),
 }
 
 
