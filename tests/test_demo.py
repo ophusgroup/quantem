@@ -88,8 +88,6 @@ def test_image1(image_file):
 
 
 # @pytest.mark.skipif(not sys.platform.startswith("win"), reason="windows only test")
-@pytest.mark.skipif(
-    sys.version_info > (3, 10), reason="test only for python3.10 or older"
-)
+@pytest.mark.skipif(sys.version_info > (3, 10), reason="test only for python3.10 or older")
 def test_function():
     assert 0

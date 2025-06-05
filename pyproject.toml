@@ -1,17 +1,6 @@
 [build-system]
-requires = ["setuptools >= 77.0.3"]
-build-backend = "setuptools.build_meta"
-
-[tool.setuptools]
-packages = [
-  "quantem",
-  "quantem.core",
-  "quantem.diffractive_imaging",
-  "quantem.imaging",
-  "quantem.spectroscopy",
-  "quantem.tomography",
-]
-
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 addopts = [
@@ -34,9 +23,12 @@ line-length = 99
 [tool.uv]
 config-settings = { editable_mode = "compat" }
 
+[tool.uv.sources]
+torch-radon = { git = "https://github.com/matteo-ronchetti/torch-radon.git" }
+
 [project]
 name = "quantem"
-version = "0.1.4"
+version = "0.1.5.post2"
 description = "quantitative electron microscopy analysis toolkit."
 keywords = ["EM","TEM","STEM","4DSTEM"]
 readme = "README.md"
@@ -53,14 +45,31 @@ dependencies = [
   "cmasher>=1.9.2",
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
-  "pytest>=8.3.5",
+  "plotly>=6.1.0",
+  "ipywidgets>=8.1.7",
+  "torch>=2.7.0",
+  "torch-radon",
+  "cupy-cuda12x>=13.4.1",
+]
+
+[tool.hatch.build.targets.sdist]
+# hatchling always includes:
+# pyproject.toml, .gitignore, any README, any LICENSE, AUTHORS
+only-include = [
+    "/src",
+    "/tests",
+    "/CITATION.cff"
 ]
 
 [dependency-groups]
+test = [
+    "pytest>=8.3.5",
+]
 dev = [
+    { include-group = "test" },
     "jupyterlab>=4.4.0",
     "packaging>=24.2",
     "pre-commit>=4.2.0",
     "ruff>=0.11.5",
+    "tomli>=2.2.1",
 ]
-

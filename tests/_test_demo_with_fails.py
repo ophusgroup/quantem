@@ -79,17 +79,13 @@ def test_image1(image_file):
 def test_image2(image_file):
     load_img = np.load(image_file)
     test = np.ones((16, 16))
-    assert np.array_equal(
-        load_img, test
-    )  ### fails, note it also shows the tempfile path
+    assert np.array_equal(load_img, test)  ### fails, note it also shows the tempfile path
 
 
 ### there are also markers for skipping certain tests or expected failures
 
 
 # @pytest.mark.skipif(not sys.platform.startswith("win"), reason="windows only test")
-@pytest.mark.skipif(
-    sys.version_info > (3, 10), reason="test only for python3.10 or older"
-)
+@pytest.mark.skipif(sys.version_info > (3, 10), reason="test only for python3.10 or older")
 def test_function():
     assert 0
