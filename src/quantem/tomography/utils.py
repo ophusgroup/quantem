@@ -2,6 +2,7 @@ import numpy as np
 import torch
 from scipy.ndimage import center_of_mass, gaussian_filter, shift
 from scipy.stats import norm
+from tqdm.auto import tqdm
 
 from quantem.core.utils.imaging_utils import cross_correlation_shift
 
@@ -131,7 +132,7 @@ def cross_correlation_align_stack(ref_img, stack):
     pred_shifts = []
 
     prev_img = ref_img
-    for img in stack:
+    for img in tqdm(stack):
         shift_pred = cross_correlation_shift(prev_img, img)
         shifted_image = shift(img, shift=shift_pred, mode="constant", cval=0.0)
 
