@@ -14,6 +14,7 @@ from quantem.core.utils.validators import (
     validate_array,
     validate_dict_keys,
     validate_gt,
+    validate_tensor,
 )
 from quantem.diffractive_imaging.complexprobe import (
     POLAR_ALIASES,
@@ -399,7 +400,7 @@ class ProbeConstraints(ProbeBase):
         return orthogonal_probes[intensities_order]
 
 
-class ProbePixelized(ProbeConstraints, ProbeBase):
+class ProbePixelated(ProbeConstraints, ProbeBase):
     def __init__(
         self,
         num_probes: int = 1,
@@ -430,7 +431,7 @@ class ProbePixelized(ProbeConstraints, ProbeBase):
 
     @probe.setter
     def probe(self, prb: "np.ndarray|torch.Tensor"):
-        prb = validate_array(
+        prb = validate_tensor(
             prb,
             name="probe",
             dtype=config.get("dtype_complex"),

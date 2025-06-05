@@ -245,7 +245,7 @@ class ObjectConstraints(ObjectBase):
         return obj2
 
 
-class ObjectPixelized(ObjectConstraints, ObjectBase):
+class ObjectPixelated(ObjectConstraints, ObjectBase):
     """
     Object model for pixelized objects.
     """

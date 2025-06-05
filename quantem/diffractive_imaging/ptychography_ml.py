@@ -1,12 +1,10 @@
-from typing import TYPE_CHECKING, Any, Literal, Sequence
-
-import numpy as np
+from typing import TYPE_CHECKING, Any, Sequence
 
 from quantem.core import config
-from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-from quantem.diffractive_imaging.ptychography_dataset import (
+from quantem.diffractive_imaging.dataset_models import (
     PtychographyDatasetRaster,
 )
+from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 
 DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
 
@@ -32,32 +30,6 @@ class PtychographyML(PtychographyBase):
         "tv_weight_yx": 0,
     }
     DEFAULT_OPTIMIZER_TYPE = "adam"
-
-    def __init__(  # TODO replace this init with no arguments, call inits explicitly in ptycho
-        self,
-        dset: DatasetModelType,
-        device: Literal["cpu", "gpu"] = "cpu",
-        verbose: int | bool = True,
-        rng: np.random.Generator | int | None = None,
-        _token: None | object = None,
-    ):
-        # init required as we're setting up new attributes such as _schedulers
-        # if _token is not self._token:
-        #     raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
-
-        super().__init__(
-            dset=dset,
-            device=device,
-            verbose=verbose,
-            rng=rng,
-            # _token=self._token,
-        )
-
-        self._obj_padding_force_power2_level = 3
-        self._schedulers = {}
-        self._optimizers = {}
-        self._scheduler_params = {}
-        self._optimizer_params = {}
 
     # region --- explicit properties and setters ---
 

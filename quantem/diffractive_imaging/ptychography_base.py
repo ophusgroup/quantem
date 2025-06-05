@@ -18,19 +18,20 @@ from quantem.core.utils.validators import (
     validate_gt,
     validate_int,
     validate_np_len,
-    validate_xplike,
+    validate_tensor,
 )
-from quantem.diffractive_imaging.object_models import ObjectBase, ObjectPixelized
-from quantem.diffractive_imaging.probe_models import ProbeBase, ProbePixelized
+from quantem.diffractive_imaging.dataset_models import (
+    PtychographyDatasetBase,
+    PtychographyDatasetRaster,
+)
+from quantem.diffractive_imaging.detector_models import DetectorBase, DetectorPixelated
+from quantem.diffractive_imaging.object_models import ObjectBase, ObjectPixelated
+from quantem.diffractive_imaging.probe_models import ProbeBase, ProbePixelated
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
     center_crop_arr,
     fourier_translation_operator,
     sum_patches,
-)
-from quantem.diffractive_imaging.ptychography_dataset import (
-    PtychographyDatasetBase,
-    PtychographyDatasetRaster,
 )
 
 if TYPE_CHECKING:
@@ -40,9 +41,10 @@ else:
         import torch
 
 
-ObjectModelType = ObjectPixelized  # | ProbeDIP | ProbeImplicit
-ProbeModelType = ProbePixelized  # | ProbeParameterized
+ObjectModelType = ObjectPixelated  # | ProbeDIP | ProbeImplicit
+ProbeModelType = ProbePixelated  # | ProbeParameterized
 DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
+DetectorModelType = DetectorPixelated  # | DetectorPixelatedDIP
 
 """
 design patterns:
@@ -83,20 +85,21 @@ class PtychographyBase(AutoSerialize):
         },
     }
 
-    # _token = object()
+    _token = object()
 
     def __init__(  # TODO prevent direct instantiation
         self,
         dset: DatasetModelType,
-        # obj_model: ObjectModelType | type | None = None,
-        # probe_model: ProbeModelType | type | None = None,
+        obj_model: ObjectModelType,
+        probe_model: ProbeModelType,
+        detector_model: DetectorModelType,
         device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
-        # _token: None | object = None,
+        _token: None | object = None,
     ):
-        # if _token is not self._token:
-        #     raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
+        if _token is not self._token:
+            raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
 
         if not config.get("has_torch"):
             raise RuntimeError("the quantEM Ptychography module requires torch to be installed.")
@@ -108,7 +111,7 @@ class PtychographyBase(AutoSerialize):
 
         # initializing default attributes
         self._preprocessed: bool = False
-        self._obj_padding_force_power2_level: int = 0
+        self._obj_padding_force_power2_level: int = 3
         self._store_iterations: bool = False
         self._store_iterations_every: int = 1
         self._epoch_losses: list[float] = []
@@ -116,6 +119,19 @@ class PtychographyBase(AutoSerialize):
         self._epoch_lrs: dict[str, list] = {}  # LRs/step_sizes across epochs
         self._epoch_snapshots: list[dict[str, int | np.ndarray]] = []
         self._constraints = self.DEFAULT_CONSTRAINTS.copy()
+        self._obj_padding_px = np.array([0, 0])
+        self.obj_fov_mask = torch.ones(self.dset._obj_shape_full_2d(self.obj_padding_px).shape)
+
+        self._schedulers = {}
+        self._optimizers = {}
+        self._scheduler_params = {}
+        self._optimizer_params = {}
+
+        self.set_probe_model(probe_model)
+        self.set_obj_model(obj_model)
+        self.detector_model = detector_model
+        self._compute_propagator_arrays()
+        self.to(self.device)
 
     # region --- preprocessing ---
     ## hopefully will be able to remove some of thes preprocessing flags,
@@ -143,24 +159,33 @@ class PtychographyBase(AutoSerialize):
         customized pre-processing, they just call the functions themselves directly.
         """
         self.obj_padding_px = obj_padding_px
-        self.dset.preprocess(
-            com_fit_function=com_fit_function,
-            force_com_rotation=force_com_rotation,
-            force_com_transpose=force_com_transpose,
-            padded_diffraction_intensities_shape=padded_diffraction_intensities_shape,
-            obj_padding_px=obj_padding_px,
-            plot_rotation=plot_rotation,
-            plot_com=plot_com,
-            vectorized=vectorized,
-        )
+        if not self.dset.preprocessed:
+            self.dset.preprocess(
+                com_fit_function=com_fit_function,
+                force_com_rotation=force_com_rotation,
+                force_com_transpose=force_com_transpose,
+                padded_diffraction_intensities_shape=padded_diffraction_intensities_shape,
+                obj_padding_px=obj_padding_px,
+                plot_rotation=plot_rotation,
+                plot_com=plot_com,
+                vectorized=vectorized,
+            )
+        else:
+            # change obj_padding_px and whatever else needs to be changed
+            self.dset._set_initial_scan_positions_px(self.obj_padding_px)
+            self.dset._set_patch_indices(self.obj_padding_px)
 
-        self.set_probe_model(probe_model)
+        if probe_model is not None:
+            self.set_probe_model(probe_model)
 
-        self.set_obj_model(obj_model)
+        if obj_model is not None:
+            self.set_obj_model(obj_model)
+        # else:
+        #     self._obj_model.shape = tuple(self.obj_shape_full)
+        #     self._obj_model.reset()
 
         self._compute_propagator_arrays()
         self._set_obj_fov_mask()
-
         self._preprocessed = True
         self.reset_recon()  # force clear losses and everything
         return self
@@ -244,7 +269,7 @@ class PtychographyBase(AutoSerialize):
     # endregion --- preprocessing ---
 
     # region --- explicit class properties ---
-    @property  # FIXME depend on ptychodataset
+    @property
     def dset(self) -> DatasetModelType:
         return self._dset
 
@@ -255,6 +280,18 @@ class PtychographyBase(AutoSerialize):
         ):
             raise TypeError(f"dset should be a PtychographyDataset, got {type(new_dset)}")
         self._dset = new_dset
+
+    @property
+    def detector_model(self) -> DetectorModelType:
+        return self._detector_model
+
+    @detector_model.setter
+    def detector_model(self, new_detector_model: DetectorModelType):
+        if not isinstance(new_detector_model, DetectorBase) and "Detector" not in str(
+            type(new_detector_model)
+        ):
+            raise TypeError(f"detector_model should be a Detector, got {type(new_detector_model)}")
+        self._detector_model = new_detector_model
 
     @property
     def obj_type(self) -> str:
@@ -331,10 +368,9 @@ class PtychographyBase(AutoSerialize):
 
     @obj_padding_px.setter
     def obj_padding_px(self, pad: np.ndarray | tuple[int, int]):
-        p2 = validate_xplike(pad, "obj_padding_px")
         p2 = self._to_numpy(
             validate_array(
-                validate_np_len(p2, 2, name="obj_padding_px"),
+                validate_np_len(pad, 2, name="obj_padding_px"),
                 dtype="int16",
                 ndim=1,
                 name="obj_padding_px",
@@ -347,7 +383,9 @@ class PtychographyBase(AutoSerialize):
                 self._obj_padding_force_power2_level,
             )
         self._obj_padding_px = p2
-        print("Need to be updating dset scan positions and patch indices")
+        self.obj_model.shape = tuple(self.obj_shape_full)
+        self.dset._set_initial_scan_positions_px(self.obj_padding_px)
+        self.dset._set_patch_indices(self.obj_padding_px)
 
     @property
     def obj_fov_mask(self) -> np.ndarray:
@@ -355,7 +393,7 @@ class PtychographyBase(AutoSerialize):
 
     @obj_fov_mask.setter
     def obj_fov_mask(self, mask: "np.ndarray|torch.Tensor"):
-        mask = validate_array(
+        mask = validate_tensor(
             mask,
             dtype=config.get("dtype_real"),
             ndim=3,
@@ -701,15 +739,7 @@ class PtychographyBase(AutoSerialize):
     def obj_shape_full(self) -> np.ndarray:
         rotshape = self.dset._obj_shape_full_2d(self.obj_padding_px)
         shape = np.concatenate([[self.num_slices], rotshape])
-        # TODO remove these checks at some point
-        model_shape = np.array(self.obj_model.shape).astype("int")
-        if not np.array_equal(shape, model_shape):
-            raise ValueError(
-                f"Object shape {shape} does not match the model shape {model_shape}. \n"
-                "Maybe the com_rotation got changed, but it's def a bug that it was allowed to "
-                + "get to this point before failing."
-            )
-        return model_shape
+        return shape
 
     # endregion --- implicit class properties ---
 
@@ -920,13 +950,37 @@ class PtychographyBase(AutoSerialize):
 
     def error_estimate(
         self,
-        overlap: torch.Tensor,
-        true_amplitudes: torch.Tensor,
-    ) -> torch.Tensor:
-        farfield_amplitudes = self.estimate_amplitudes(overlap)
-        raw_error = arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
-        ave_error = raw_error / farfield_amplitudes.shape[0]  # normalize by # patterns
-        return ave_error
+        pred_intensities: torch.Tensor,
+        batch_indices: np.ndarray,
+        amplitude_error: bool = True,
+        use_unshifted: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        if amplitude_error:
+            if use_unshifted:
+                targets = self.dset.amplitudes[batch_indices]
+            else:
+                targets = self.dset.centered_amplitudes[batch_indices]
+            preds = torch.sqrt(pred_intensities + 1e-9)  # add eps to avoid diverging gradients
+        else:
+            if use_unshifted:
+                targets = self.dset.intensities[batch_indices]
+            else:
+                targets = self.dset.centered_intensities[batch_indices]
+            preds = pred_intensities
+
+        mse = arr.sum(arr.abs(preds - targets) ** 2) / targets.shape[0]
+        loss = mse / self.dset.mean_diffraction_intensity
+        return loss, targets
+
+    # def error_estimate(
+    #     self,
+    #     overlap: torch.Tensor,
+    #     true_amplitudes: torch.Tensor,
+    # ) -> torch.Tensor:
+    #     farfield_amplitudes = self.estimate_amplitudes(overlap)
+    #     raw_error = arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
+    #     ave_error = raw_error / farfield_amplitudes.shape[0]  # normalize by # patterns
+    #     return ave_error
 
     def error_estimate_intensities(
         self,
@@ -956,7 +1010,7 @@ class PtychographyBase(AutoSerialize):
         self, overlap_array: "torch.Tensor", corner_centered: bool = False
     ) -> "torch.Tensor":
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
-        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
         eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
         overlap_fft = torch.fft.fft2(overlap_array)
@@ -968,7 +1022,7 @@ class PtychographyBase(AutoSerialize):
 
     def estimate_intensities(self, overlap_array: "torch.Tensor") -> "torch.Tensor":
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
-        # overlap shape: (batch_size, nprobes, roi_shape[0], roi_shape[1])
+        # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
         overlap_fft = torch.fft.fft2(overlap_array)
         return torch.sum(torch.abs(overlap_fft) ** 2, dim=0)

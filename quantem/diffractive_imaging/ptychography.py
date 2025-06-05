@@ -1,18 +1,23 @@
 from typing import TYPE_CHECKING, Literal, Self
 
 import numpy as np
-from tqdm import trange
+from tqdm.auto import tqdm
 
 from quantem.core import config
-from quantem.core.utils.utils import generate_batches
+from quantem.diffractive_imaging.dataset_models import PtychographyDatasetRaster
+from quantem.diffractive_imaging.detector_models import DetectorPixelated
+from quantem.diffractive_imaging.object_models import ObjectPixelated
+from quantem.diffractive_imaging.probe_models import ProbePixelated
+from quantem.diffractive_imaging.ptycho_utils import SimpleBatcher
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-from quantem.diffractive_imaging.ptychography_dataset import (
-    PtychographyDatasetRaster,
-)
 from quantem.diffractive_imaging.ptychography_ml import PtychographyML
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
+ObjectModelType = ObjectPixelated  # | ProbeDIP | ProbeImplicit
+ProbeModelType = ProbePixelated  # | ProbeParameterized
 DatasetModelType = PtychographyDatasetRaster  # | PtychographyDatasetSpiral
+DetectorModelType = DetectorPixelated  # | DetectorPixelatedDIP
+
 if TYPE_CHECKING:
     import torch
 else:
@@ -40,22 +45,47 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
     def __init__(
         self,
         dset: DatasetModelType,
-        device: Literal["cpu", "gpu"] = "cpu",
+        obj_model: ObjectModelType,
+        probe_model: ProbeModelType,
+        detector_model: DetectorModelType,
+        device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
-        # _token: None | object = None,
+        _token: None | object = None,
     ):
-        # if _token is not self._token:
-        #     raise RuntimeError("Use Dataset.from_array() to instantiate this class.")
-
         super().__init__(
             dset=dset,
+            obj_model=obj_model,
+            probe_model=probe_model,
+            detector_model=detector_model,
             device=device,
             verbose=verbose,
             rng=rng,
-            # _token=self._token,
+            _token=_token,
         )
         self._autograd = True
+
+    @classmethod
+    def from_models(
+        cls,
+        dset: DatasetModelType,
+        obj_model: ObjectModelType,
+        probe_model: ProbeModelType,
+        detector_model: DetectorModelType,
+        device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
+        verbose: int | bool = True,
+        rng: np.random.Generator | int | None = None,
+    ):
+        return cls(
+            dset=dset,
+            obj_model=obj_model,
+            probe_model=probe_model,
+            detector_model=detector_model,
+            device=device,
+            verbose=verbose,
+            rng=rng,
+            _token=cls._token,
+        )
 
     # region --- explicit properties and setters ---
 
@@ -68,10 +98,6 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
         self._autograd = bool(autograd)
 
     # endregion --- explicit properties and setters ---
-
-    # region --- implicit properties ---
-
-    # endregion --- implicit properties ---
 
     # region --- methods ---
 
@@ -142,6 +168,30 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                 prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
                 self._epoch_lrs[key] = prev_lrs
 
+    def _soft_constraints(self) -> torch.Tensor:
+        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
+        if (
+            self.constraints["object"]["tv_weight_z"] > 0
+            or self.constraints["object"]["tv_weight_yx"] > 0
+        ):
+            loss += self.get_tv_loss(
+                self.obj_model.obj,
+                weights=(
+                    self.constraints["object"]["tv_weight_z"],
+                    self.constraints["object"]["tv_weight_yx"],
+                ),
+            )
+        if self.constraints["dataset"]["descan_tv_weight"] > 0:
+            loss += self.get_tv_loss(
+                self.dset.descan_shifts[:, 0],
+                weights=self.constraints["dataset"]["descan_tv_weight"],
+            )
+            loss += self.get_tv_loss(
+                self.dset.descan_shifts[:, 1],
+                weights=self.constraints["dataset"]["descan_tv_weight"],
+            )
+        return loss
+
     # endregion --- methods ---
 
     # region --- reconstruction ---
@@ -172,7 +222,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
         self.set_obj_type(obj_type, force=reset)
         if device is not None:
             self.to(device)
-        batch_size = self.gpts[0] * self.gpts[1] if batch_size is None else batch_size
+        batch_size = self.dset.num_gpts if batch_size is None else batch_size
         self.store_iterations = store_iterations
         self.store_iterations_every = store_iterations_every
         if reset:
@@ -193,21 +243,17 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
         if "descan" in self.optimizer_params.keys():
-            target_amplitudes = self.dset.amplitudes
-            learn_descan = True
+            learn_descan = True  # TODO clean this up... not sure how
         else:
-            target_amplitudes = self.dset.centered_amplitudes
             learn_descan = False
 
-        shuffled_indices = np.arange(self.gpts[0] * self.gpts[1])
+        batcher = SimpleBatcher(self.dset.num_gpts, batch_size, rng=self.rng)
 
-        # TODO add pbar with loss printout
-        for a0 in trange(num_iter, disable=not self.verbose):
-            self.rng.shuffle(shuffled_indices)
+        pbar = tqdm(range(num_iter), disable=not self.verbose)
+        for a0 in pbar:
             epoch_loss = 0.0
 
-            for start, end in generate_batches(num_items=self.dset.num_gpts, max_batch=batch_size):
-                batch_indices = shuffled_indices[start:end]
+            for batch_indices in batcher:
                 patch_indices, _positions_px, positions_px_fractional, descan_shifts = (
                     self.dset.forward(batch_indices, self.obj_padding_px, learn_descan)
                 )
@@ -216,18 +262,16 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                 propagated_probes, overlap = self.forward_operator(
                     obj_patches, shifted_probes, descan_shifts
                 )
+                pred_intensities = self.detector_model.forward(overlap)
 
-                loss = self.error_estimate(overlap, target_amplitudes[batch_indices])
-                loss /= self.dset.mean_diffraction_intensity
+                loss, targets = self.error_estimate(
+                    pred_intensities,
+                    batch_indices,
+                    amplitude_error=True,
+                    use_unshifted=learn_descan,
+                )
 
-                if (
-                    self.constraints["object"]["tv_weight_z"] > 0
-                    or self.constraints["object"]["tv_weight_yx"] > 0
-                ):
-                    # TODO change this to a loss += self.obj_model.soft_constraints()
-                    # likewise for probe (and descan, so make a loss += self.soft_constraints())
-                    # that calls each
-                    loss += self.get_tv_loss(self.obj_model.obj) * (end - start)
+                loss += self._soft_constraints() / len(batch_indices)
 
                 self.backward(
                     loss,
@@ -235,18 +279,12 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     obj_patches,
                     propagated_probes,
                     overlap,
-                    patch_indices,  # replace with just passing indices
-                    target_amplitudes[batch_indices],
+                    patch_indices,
+                    targets,
                 )
                 for opt in self.optimizers.values():
                     opt.step()
                     opt.zero_grad()
-
-                # additional constraints
-                # data constraints
-                # detector constraints
-                # with torch.no_grad():
-                #     self._descan_shifts = torch.ones_like(self._descan_shifts) * self._descan_shifts.mean(dim=0, keepdim=True)
 
                 epoch_loss += loss.item()
 
@@ -261,6 +299,8 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
             self._epoch_recon_types.append(f"{self.obj_model.name}-{self.probe_model.name}")
             if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self.obj, self.probe)
+
+            pbar.set_description(f"Epoch {a0 + 1}/{num_iter}, Loss: {epoch_loss:.4f}, ")
 
         return self
 

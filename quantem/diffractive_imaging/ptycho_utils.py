@@ -21,6 +21,40 @@ else:
 # TODO: figure out what here should be put into ptycho base vs kept in a utilities file
 
 
+class SimpleBatcher:
+    def __init__(
+        self,
+        num: int,
+        batch_size: int | None,
+        shuffle: bool = True,
+        rng: np.random.Generator | int | None = None,
+    ):
+        self.indices = np.arange(num)
+        self.batch_size = batch_size if batch_size is not None else num
+        self.shuffle = shuffle
+        self.rng = rng
+
+    @property
+    def rng(self) -> np.random.Generator:
+        return self._rng
+
+    @rng.setter
+    def rng(self, rng: np.random.Generator | int | None):
+        if rng is None:
+            rng = np.random.default_rng()
+        elif isinstance(rng, (int, float)):
+            rng = np.random.default_rng(rng)
+        elif not isinstance(rng, np.random.Generator):
+            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
+        self._rng = rng
+
+    def __iter__(self):
+        if self.shuffle:
+            self.indices = self.rng.permutation(self.indices)
+        for i in range(0, len(self.indices), self.batch_size):
+            yield self.indices[i : i + self.batch_size]
+
+
 @overload
 def fourier_shift_expand(
     array: np.ndarray, positions: np.ndarray, expand_dim: bool = True
