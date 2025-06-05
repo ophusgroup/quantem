@@ -307,8 +307,9 @@ class TomographyBase(AutoSerialize):
     
     def plot_projections(
         self,
-        cmap = 'turbo',
-        loss = False,
+        cmap: str = 'turbo',
+        loss: bool = False,
+        fft: bool = False,
     ):  
         if loss == True:
             fig, ax = plt.subplots(ncols = 4, figsize = (25, 8))
@@ -318,6 +319,7 @@ class TomographyBase(AutoSerialize):
             ax[3].set_title("Loss")
         else:
             fig, ax = plt.subplots(ncols = 3, figsize = (20, 8))
+
         
         show_2d(
             self.recon_volume.array.sum(axis = 0),
@@ -337,6 +339,29 @@ class TomographyBase(AutoSerialize):
             cmap = cmap,
             title = "Y-Z Projection"
         )
+        
+        if fft:
+            fig, ax = plt.subplots(ncols = 3, figsize = (25, 8))
+            
+            show_2d(
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis = 0))))),
+                figax = (fig, ax[0]),
+                cmap = cmap,
+                title = "Z-X Projection FFT",
+            )
+            
+            show_2d(
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis = 1))))),
+                figax = (fig, ax[1]),
+                cmap = cmap,
+                title = "Y-X Projection FFT",
+            )
+            show_2d(
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis = 2))))),
+                figax = (fig, ax[2]),
+                cmap = cmap,
+                title = "Y-Z Projection FFT",
+            )
         
     def plot_slice(
         self,
