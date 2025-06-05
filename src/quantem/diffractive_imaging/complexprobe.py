@@ -154,9 +154,7 @@ class ComplexProbe:
         self._sampling = sampling
         self._device = device
 
-        self._parameters: dict[str, float] = dict(
-            zip(POLAR_SYMBOLS, [0.0] * len(POLAR_SYMBOLS))
-        )
+        self._parameters: dict[str, float] = dict(zip(POLAR_SYMBOLS, [0.0] * len(POLAR_SYMBOLS)))
 
         if parameters is None:
             parameters = {}
@@ -204,9 +202,7 @@ class ComplexProbe:
                     device=self._device,
                 )
             else:
-                vacuum_probe_intensity = xp.asarray(
-                    self._vacuum_probe_intensity, dtype=xp.float32
-                )
+                vacuum_probe_intensity = xp.asarray(self._vacuum_probe_intensity, dtype=xp.float32)
             vacuum_probe_amplitude = xp.sqrt(xp.maximum(vacuum_probe_intensity, 0))
             return vacuum_probe_amplitude
 
@@ -215,9 +211,7 @@ class ComplexProbe:
 
         if self._rolloff > 0.0:
             rolloff = self._rolloff / 1000.0  # * semiangle_cutoff
-            array = 0.5 * (
-                1 + xp.cos(np.pi * (alpha - semiangle_cutoff + rolloff) / rolloff)
-            )
+            array = 0.5 * (1 + xp.cos(np.pi * (alpha - semiangle_cutoff + rolloff) / rolloff))
             array[alpha > semiangle_cutoff] = 0.0
             array = xp.where(
                 alpha > semiangle_cutoff - rolloff,
@@ -228,17 +222,13 @@ class ComplexProbe:
             array = xp.array(alpha < semiangle_cutoff).astype(xp.float32)
         return array
 
-    def evaluate_temporal_envelope(
-        self, alpha: float | np.ndarray
-    ) -> float | np.ndarray:
+    def evaluate_temporal_envelope(self, alpha: float | np.ndarray) -> float | np.ndarray:
         xp = self._xp
         return xp.exp(
             -((0.5 * xp.pi / self._wavelength * self._focal_spread * alpha**2) ** 2)
         ).astype(xp.float32)
 
-    def evaluate_gaussian_envelope(
-        self, alpha: float | np.ndarray
-    ) -> float | np.ndarray:
+    def evaluate_gaussian_envelope(self, alpha: float | np.ndarray) -> float | np.ndarray:
         xp = self._xp
         return xp.exp(-0.5 * self._gaussian_spread**2 * alpha**2 / self._wavelength**2)
 
@@ -336,9 +326,7 @@ class ComplexProbe:
 
         array = xp.zeros(alpha.shape, dtype=np.float32)
         if any([p[symbol] != 0.0 for symbol in ("C10", "C12", "phi12")]):
-            array += (
-                1 / 2 * alpha2 * (p["C10"] + p["C12"] * xp.cos(2 * (phi - p["phi12"])))
-            )
+            array += 1 / 2 * alpha2 * (p["C10"] + p["C12"] * xp.cos(2 * (phi - p["phi12"])))
 
         if any([p[symbol] != 0.0 for symbol in ("C21", "phi21", "C23", "phi23")]):
             array += (
@@ -346,15 +334,10 @@ class ComplexProbe:
                 / 3
                 * alpha2
                 * alpha
-                * (
-                    p["C21"] * xp.cos(phi - p["phi21"])
-                    + p["C23"] * xp.cos(3 * (phi - p["phi23"]))
-                )
+                * (p["C21"] * xp.cos(phi - p["phi21"]) + p["C23"] * xp.cos(3 * (phi - p["phi23"])))
             )
 
-        if any(
-            [p[symbol] != 0.0 for symbol in ("C30", "C32", "phi32", "C34", "phi34")]
-        ):
+        if any([p[symbol] != 0.0 for symbol in ("C30", "C32", "phi32", "C34", "phi34")]):
             array += (
                 1
                 / 4
@@ -366,12 +349,7 @@ class ComplexProbe:
                 )
             )
 
-        if any(
-            [
-                p[symbol] != 0.0
-                for symbol in ("C41", "phi41", "C43", "phi43", "C45", "phi41")
-            ]
-        ):
+        if any([p[symbol] != 0.0 for symbol in ("C41", "phi41", "C43", "phi43", "C45", "phi41")]):
             array += (
                 1
                 / 5
@@ -411,9 +389,7 @@ class ComplexProbe:
         xp = self._xp
         return xp.exp(-1.0j * self.evaluate_chi(alpha, phi))
 
-    def evaluate(
-        self, alpha: float | np.ndarray, phi: float | np.ndarray
-    ) -> float | np.ndarray:
+    def evaluate(self, alpha: float | np.ndarray, phi: float | np.ndarray) -> float | np.ndarray:
         array = self.evaluate_aberrations(alpha, phi)
 
         if self._semiangle_cutoff < np.inf or self._vacuum_probe_intensity is not None:
@@ -438,9 +414,7 @@ class ComplexProbe:
 
     def get_scattering_angles(self):
         kx, ky = self.get_spatial_frequencies()
-        alpha, phi = self.polar_coordinates(
-            kx * self._wavelength, ky * self._wavelength
-        )
+        alpha, phi = self.polar_coordinates(kx * self._wavelength, ky * self._wavelength)
         return alpha, phi
 
     def get_spatial_frequencies(self):
@@ -510,6 +484,4 @@ def spatial_frequencies(gpts: tuple[int, int], sampling: tuple[float, float], xp
     tuple of arrays
     """
 
-    return tuple(
-        xp.fft.fftfreq(n, d).astype(xp.float32) for n, d in zip(gpts, sampling)
-    )
+    return tuple(xp.fft.fftfreq(n, d).astype(xp.float32) for n, d in zip(gpts, sampling))

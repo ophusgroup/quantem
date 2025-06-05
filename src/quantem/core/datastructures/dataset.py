@@ -4,7 +4,7 @@ import numpy as np
 from numpy.typing import DTypeLike, NDArray
 
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import get_array_module, to_numpy
+from quantem.core.utils.utils import get_array_module
 from quantem.core.utils.validators import (
     ensure_valid_array,
     validate_ndinfo,
@@ -447,4 +447,3 @@ class Dataset(AutoSerialize):
             self.array = np.sum(
                 self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
             )
-
