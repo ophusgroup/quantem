@@ -330,8 +330,13 @@ def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: in
 # --- Miscellaneous Validation Functions ---
 ### for now just adding all the validator cases, can combine later as necessary
 ### currently doing a mix of converting and validating, probably should make that explicit
-def validate_gt(value: float | int, cutoff: float | int, name: str) -> float | int:
-    if value <= cutoff:
+def validate_gt(
+    value: float | int, cutoff: float | int, name: str, geq: bool = False
+) -> float | int:
+    if geq:  # greater than or equal to
+        if value < cutoff:
+            raise ValueError(f"{name} must be greater than or equal to {cutoff}, got {value}")
+    elif value <= cutoff:
         raise ValueError(f"{name} must be greater than {cutoff}, got {value}")
     return value
 
