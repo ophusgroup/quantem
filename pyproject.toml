@@ -23,9 +23,6 @@ line-length = 99
 [tool.uv]
 config-settings = { editable_mode = "compat" }
 
-[tool.uv.sources]
-torch-radon = { git = "https://github.com/matteo-ronchetti/torch-radon.git" }
-
 [project]
 name = "quantem"
 version = "0.1.5.post2"
@@ -48,7 +45,6 @@ dependencies = [
   "plotly>=6.1.0",
   "ipywidgets>=8.1.7",
   "torch>=2.7.0",
-  "torch-radon",
   "cupy-cuda12x>=13.4.1",
 ]
 
