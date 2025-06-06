@@ -62,9 +62,7 @@ class PtychographyAD(AutoSerialize):
         self.scan_sampling = data.sampling[:2]
         self.shifted_amplitudes = np.asarray(
             np.sqrt(
-                np.fft.ifftshift(self.data, axes=(-1, -2)).reshape(
-                    (-1,) + tuple(self.roi_shape)
-                )
+                np.fft.ifftshift(self.data, axes=(-1, -2)).reshape((-1,) + tuple(self.roi_shape))
             )
         )
 
@@ -170,12 +168,8 @@ class PtychographyAD(AutoSerialize):
         x0 = np.round(self.positions_px[:, 0]).astype(np.int32)
         y0 = np.round(self.positions_px[:, 1]).astype(np.int32)
 
-        x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(
-            np.int32
-        )
-        y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(
-            np.int32
-        )
+        x_ind = np.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).astype(np.int32)
+        y_ind = np.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).astype(np.int32)
         row = (x0[:, None, None] + x_ind[None, :, None]) % self.object_shape_full[-2]
         col = (y0[:, None, None] + y_ind[None, None, :]) % self.object_shape_full[-1]
 
