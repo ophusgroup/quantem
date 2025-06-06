@@ -46,7 +46,11 @@ def ensure_valid_array(
     TypeError
         If the input could not be converted to a NumPy array
     """
-    if isinstance(array, (np.ndarray, cp.ndarray)):
+    is_cupy = False
+    if config.get("has_cupy"):
+        if isinstance(array, cp.ndarray):
+            is_cupy = True
+    if isinstance(array, np.ndarray) or is_cupy:
         if dtype is not None:
             validated_array = array.astype(dtype)  # copies the array
         else:
