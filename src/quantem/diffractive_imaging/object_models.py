@@ -286,6 +286,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
     Object model for pixelized objects.
     """
 
+    # TODO -- class method for object inits? not sure if necessary
     def __init__(
         self,
         num_slices: int = 1,

@@ -967,12 +967,12 @@ class PtychographyBase(AutoSerialize):
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
         if loss_type == "l1":
-            error = arr.sum(arr.abs(preds - targets)) / targets.shape[0]
+            error = arr.sum(arr.abs(preds - targets))
         elif loss_type == "l2":
-            error = arr.sum(arr.abs(preds - targets) ** 2) / targets.shape[0]
+            error = arr.sum(arr.abs(preds - targets) ** 2)
         else:
             raise ValueError(f"Unknown loss type {loss_type}, should be 'l1' or 'l2'")
-        loss = error / self.dset.mean_diffraction_intensity
+        loss = error / self.dset.mean_diffraction_intensity / targets.shape[0]
         return loss, targets
 
     # def error_estimate(

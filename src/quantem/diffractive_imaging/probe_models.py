@@ -423,6 +423,9 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.initial_probe_array = initial_probe_array
 
+    # TODO write classmethods for from_params and from_array
+    # from_params should accept vacuum probe as well
+
     @property
     def probe(self) -> torch.Tensor:
         """get the full probe"""

@@ -67,7 +67,7 @@ def fourier_shift_expand(
     array: ArrayLike, positions: ArrayLike, expand_dim: bool = True
 ) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
-    phase = fourier_translation_operator(positions, array.shape, expand_dim)
+    phase = fourier_translation_operator(positions, array.shape, expand_dim, dtype=array.dtype)
     fourier_array = arr.fft2(array)
     shifted_fourier_array = fourier_array * phase
     shifted_array = arr.ifft2(shifted_fourier_array)
@@ -79,14 +79,23 @@ def fourier_shift_expand(
 
 @overload
 def fourier_translation_operator(
-    positions: np.ndarray, shape: tuple, expand_dim: bool = True
+    positions: np.ndarray,
+    shape: tuple,
+    expand_dim: bool = True,
+    dtype: "str|torch.dtype|None" = None,
 ) -> np.ndarray: ...
 @overload
 def fourier_translation_operator(
-    positions: "torch.Tensor", shape: tuple, expand_dim: bool = True
+    positions: "torch.Tensor",
+    shape: tuple,
+    expand_dim: bool = True,
+    dtype: "str|torch.dtype|None" = None,
 ) -> "torch.Tensor": ...
 def fourier_translation_operator(
-    positions: ArrayLike, shape: tuple, expand_dim: bool = True
+    positions: ArrayLike,
+    shape: tuple,
+    expand_dim: bool = True,
+    dtype: "str|torch.dtype|None" = None,
 ) -> ArrayLike:
     """Returns phase ramp for fourier-shifting array of shape `shape`."""
     nr, nc = shape[-2:]
@@ -100,6 +109,8 @@ def fourier_translation_operator(
     if expand_dim:
         for _ in range(len(shape) - 2):
             ramp = ramp[:, None, ...]
+    if dtype is not None:
+        ramp = arr.as_type(ramp, dtype)
     return ramp
 
 

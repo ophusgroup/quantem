@@ -3,7 +3,7 @@ Array module ambivalent functions, e.g. clip, exp, min, max, etc. that apply to 
 numpy/cupy are interchangeable and treated the same, but torch is not
 """
 
-from typing import TYPE_CHECKING, Union, overload
+from typing import TYPE_CHECKING, Literal, Union, overload
 
 import numpy as np
 
@@ -254,30 +254,33 @@ def mean(a: ArrayLike, axis: int | None = None, keepdim: bool = False) -> ArrayL
     return np.mean(a, axis=axis, keepdims=keepdim)
 
 
+fft_norm_kind = Literal["backward", "ortho", "forward", None]
+
+
 @overload
-def fft2(a: np.ndarray) -> np.ndarray: ...
+def fft2(a: np.ndarray, norm: fft_norm_kind = None) -> np.ndarray: ...
 @overload
-def fft2(a: "torch.Tensor") -> "torch.Tensor": ...
-def fft2(a: ArrayLike) -> ArrayLike:
+def fft2(a: "torch.Tensor", norm: fft_norm_kind = None) -> "torch.Tensor": ...
+def fft2(a: ArrayLike, norm: fft_norm_kind = None) -> ArrayLike:
     """Compute the 2-dimensional discrete Fourier Transform."""
     validate_arraylike(a)
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
-            return torch.fft.fft2(a)
-    return np.fft.fft2(a)
+            return torch.fft.fft2(a, norm=norm)
+    return np.fft.fft2(a, norm=norm)
 
 
 @overload
-def ifft2(a: np.ndarray) -> np.ndarray: ...
+def ifft2(a: np.ndarray, norm: fft_norm_kind = None) -> np.ndarray: ...
 @overload
-def ifft2(a: "torch.Tensor") -> "torch.Tensor": ...
-def ifft2(a: ArrayLike) -> ArrayLike:
+def ifft2(a: "torch.Tensor", norm: fft_norm_kind = None) -> "torch.Tensor": ...
+def ifft2(a: ArrayLike, norm: fft_norm_kind = None) -> ArrayLike:
     """Compute the 2-dimensional inverse discrete Fourier Transform."""
     validate_arraylike(a)
     if config.get("has_torch"):
         if isinstance(a, torch.Tensor):
-            return torch.fft.ifft2(a)
-    return np.fft.ifft2(a)
+            return torch.fft.ifft2(a, norm=norm)
+    return np.fft.ifft2(a, norm=norm)
 
 
 @overload
