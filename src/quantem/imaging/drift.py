@@ -720,12 +720,47 @@ class DriftCorrection(AutoSerialize):
         upsample_factor: int = 2,
         output_original_shape: bool = True,
         fourier_filter: bool = True,
+        filter_midpoint: float = 0.25,
         kde_sigma: float = 0.5,
         show_image: bool = True,
         **kwargs,
     ):
         """
-        Generate the final output image, after drift correction.
+        Generate the final drift-corrected image after aligning a stack of input images.
+
+        Parameters
+        ----------
+        upsample_factor : int, default 2
+            Factor to upsample the output image for enhanced interpolation accuracy.
+        output_original_shape : bool, default True
+            If True, crop the output image back to the original input dimensions after processing.
+        fourier_filter : bool, default True
+            Whether to apply Fourier-based directional filtering to merge corrected images.
+        filter_midpoint : float, default 0.5
+            Midpoint for the sigmoid-based Fourier weighting filter, determining transition smoothness.
+            Setting this to a low value close to 0 will include more signal but also more slow scan artifacts.
+            If using 2 images at 0 and 90 degrees scan angles, any value >0.75 will be unstable.
+            Only use larger values (close to 1.0) if multiple images covering many scan angles are used.
+        kde_sigma : float, default 0.5
+            Standard deviation for kernel density estimation used during image interpolation. Defaults
+            to the object's stored kde_sigma if set to None.
+        show_image : bool, default True
+            Whether to display the final corrected image after processing.
+        **kwargs : dict
+            Additional keyword arguments passed to the plotting function when displaying the image.
+
+        Returns
+        -------
+        image_corr : Dataset2d
+            The final drift-corrected output image encapsulated in a Dataset2d object.
+
+        Notes
+        -----
+        - The function applies per-frame warping using knot-based interpolation and optionally
+          performs directional Fourier filtering to blend multiple warped images.
+        - The Fourier filter suppresses directional artifacts by weighting image contributions based
+          on their scan angles, utilizing a bounded sine sigmoid for smooth transition.
+        - Upsampling enhances interpolation precision but may increase computational cost.
         """
 
         # init
@@ -753,18 +788,26 @@ class DriftCorrection(AutoSerialize):
             # Apply fourier filtering
             kx = np.fft.fftfreq(stack_corr.shape[1])[:, None]
             ky = np.fft.fftfreq(stack_corr.shape[2])[None, :]
-            kr = np.sqrt(kx**2 + ky**2)
+            # kr = np.sqrt(kx**2 + ky**2)
+            kt = np.arctan2(ky, kx)
 
             stack_fft = np.fft.fft2(stack_corr)
             weights = np.zeros_like(stack_corr)
 
             for ind in range(stack_corr.shape[0]):
-                weights[ind] = np.divide(
-                    np.abs(self.scan_fast[ind, 0] * kx + self.scan_fast[ind, 1] * ky),
-                    kr,
-                    where=kr > 0.0,
-                )
+                # Calculate weights as a function of angle
+                weights[ind] = np.abs(
+                    np.mod((kt - self.scan_direction[ind]) / np.pi + 0.5, 1.0) - 0.5
+                ) / (1 / 2)
                 weights[ind][0, 0] = 1.0
+
+                # Apply sigmoid to weighting function
+                weights[ind] = bounded_sine_sigmoid(
+                    weights[ind],
+                    midpoint=filter_midpoint,
+                )
+
+                # Weight the fourier transformed images
                 stack_fft[ind] *= weights[ind]
 
             weights_sum = np.sum(weights, axis=0)
@@ -943,3 +986,41 @@ class DriftInterpolator:
         )
 
         return image_interp
+
+
+def bounded_sine_sigmoid(x, midpoint=0.5, width=1.0):
+    """
+    Piecewise bounded sigmoid: zero, raised sine squared, one.
+
+    Parameters
+    ----------
+    x : array-like, shape (...,)
+        Input values in [0, 1].
+    midpoint : float
+        Center of the sigmoid transition.
+    width : float
+        Width of the sigmoid (range over which it ramps from 0 to 1).
+    Returns
+    -------
+    y : array-like
+        Output in [0, 1], same shape as x.
+    """
+    x = np.asarray(x)
+    # Truncate width if midpoint too close to edge
+    left_max = midpoint - width / 2
+    right_min = midpoint + width / 2
+    if left_max < 0:
+        width = 2 * midpoint  # can't start below zero
+    if right_min > 1:
+        width = 2 * (1 - midpoint)  # can't extend above one
+    # Recalculate edges
+    left = midpoint - width / 2
+    right = midpoint + width / 2
+
+    y = np.zeros_like(x, dtype=float)
+    in_band = (x >= left) & (x <= right)
+    # Map [left, right] to [0, pi/2]
+    t = (x[in_band] - left) / width  # goes from 0 to 1
+    y[in_band] = np.sin(t * np.pi / 2) ** 2
+    y[x > right] = 1.0
+    return y
