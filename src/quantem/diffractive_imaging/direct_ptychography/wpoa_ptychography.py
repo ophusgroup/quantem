@@ -78,9 +78,9 @@ class WPOAPtychography(AutoSerialize):
         cls,
         dataset: Dataset4d,
         energy: float,
-        rotation_angle: float,
         aberration_coefs: dict,
         semiangle_cutoff: float,
+        rotation_angle: float | None = None,
         max_batch_size: int | None = None,
         fit_method: str = "plane",
         mode: str = "bicubic",
@@ -101,6 +101,10 @@ class WPOAPtychography(AutoSerialize):
             origin.fit_origin_background(fit_method=fit_method)
         else:
             origin.origin_fitted = force_fitted_origin
+
+        if rotation_angle is None:
+            origin.estimate_detector_rotation()
+            rotation_angle = origin.detector_rotation_deg / 180 * math.pi
 
         # shift to origin
         origin.shift_origin_to(

@@ -183,3 +183,5 @@ cython_debug/
 *.zip
 *.npy
 *.h5
+*.raw
+*.xml

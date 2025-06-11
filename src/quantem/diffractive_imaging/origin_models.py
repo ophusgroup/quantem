@@ -246,12 +246,84 @@ class CenterOfMassOriginModel(AutoSerialize):
     def shifted_tensor(self, value: torch.Tensor):
         self._shifted_tensor = ensure_valid_tensor(value, dtype=torch.float)
 
+    @staticmethod
+    def _estimate_detector_rotation(
+        com_normalized: torch.Tensor, rotation_angles_rad: torch.Tensor
+    ):
+        """ """
+
+        com_measured_x = (
+            torch.cos(rotation_angles_rad) * com_normalized[None, :, :, 0]
+            - torch.sin(rotation_angles_rad) * com_normalized[None, :, :, 1]
+        )
+        com_measured_y = (
+            torch.sin(rotation_angles_rad) * com_normalized[None, :, :, 0]
+            + torch.cos(rotation_angles_rad) * com_normalized[None, :, :, 1]
+        )
+
+        com_grad_x_y = com_measured_x[:, 1:-1, 2:] - com_measured_x[:, 1:-1, :-2]
+        com_grad_y_x = com_measured_y[:, 2:, 1:-1] - com_measured_y[:, :-2, 1:-1]
+        rotation_curl = torch.mean(torch.abs(com_grad_y_x - com_grad_x_y), dim=(-2, -1))
+
+        return rotation_curl
+
+    def estimate_detector_rotation(self, rotation_angles_deg: torch.Tensor | NDArray | None = None):
+        """ """
+        if rotation_angles_deg is None:
+            rotation_angles_deg = torch.arange(-89, 90, 1).float()
+
+        rotation_angles_deg = torch.as_tensor(rotation_angles_deg, dtype=torch.float)
+        rotation_angles_rad = torch.deg2rad(rotation_angles_deg)[:, None, None]
+
+        com_measured = self.origin_measured.reshape((self.tensor.shape[:2]) + (2,))
+        com_fitted = self.origin_fitted.reshape((self.tensor.shape[:2]) + (2,))
+        com_normalized = com_measured - com_fitted
+
+        curl_no_transpose = self._estimate_detector_rotation(
+            com_normalized,
+            rotation_angles_rad,
+        )
+
+        curl_transpose = self._estimate_detector_rotation(
+            com_normalized.flip([-1]),
+            rotation_angles_rad,
+        )
+
+        if curl_no_transpose.min() < curl_transpose.min():
+            self._detector_transpose = False
+            ind_min = torch.argmin(curl_no_transpose)
+        else:
+            self._detector_transpose = True
+            ind_min = torch.argmin(curl_transpose)
+
+        self._detector_rotation_deg = rotation_angles_deg[ind_min].item()
+
+        return self
+
+    @property
+    def detector_rotation_deg(self) -> float:
+        return self._detector_rotation_deg
+
+    @detector_rotation_deg.setter
+    def detector_rotation_deg(self, value: float):
+        self._detector_rotation_deg = float(value)
+
+    @property
+    def detector_transpose(self) -> float:
+        return self._detector_transpose
+
+    @detector_transpose.setter
+    def detector_transpose(self, value: float):
+        self._detector_transpose = bool(value)
+
     def forward(
         self,
         max_batch_size: int | None = None,
         fit_origin_bkg: bool = True,
         probe_positions: torch.Tensor | NDArray | None = None,
         fit_method: str = "plane",
+        estimate_detector_orientation: bool = True,
+        rotation_angles_deg: torch.Tensor | NDArray | None = None,
         shift_to_origin: bool = True,
         origin_coordinate: Tuple[int | float, int | float] = (0, 0),
         mode: str = "bicubic",
@@ -276,7 +348,8 @@ class CenterOfMassOriginModel(AutoSerialize):
 
         if fit_origin_bkg:
             self.fit_origin_background(probe_positions, fit_method)
-
+            if estimate_detector_orientation:
+                self.estimate_detector_rotation(rotation_angles_deg)
             if shift_to_origin:
                 self.shift_origin_to(origin_coordinate, max_batch_size, mode)
 
