@@ -21,7 +21,10 @@ mkl:
 warnings: ### not sure how handling warnings yet
   # Show a warning when the grid is overspecified
   suppress-all-: false
-visualize:
+viz:
+  # default interpolation method to use for plotting
+  # "nearest" is the default of imshow, "none" is no interpolation and the default of matshow
+  interpolation: "nearest"
   # The default units to use in real space
   real_space_units: "Angstrom"
   # The default units to use in reciprocal space

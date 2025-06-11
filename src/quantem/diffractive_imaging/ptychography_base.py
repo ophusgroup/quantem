@@ -319,7 +319,7 @@ class PtychographyBase(AutoSerialize):
         if self.num_slices == 1:
             self._propagators = torch.tensor([])
         else:
-            prop = validate_array(
+            prop = validate_tensor(
                 prop,
                 name="propagators",
                 dtype=config.get("dtype_complex"),

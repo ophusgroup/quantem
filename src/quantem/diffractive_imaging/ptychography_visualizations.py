@@ -32,7 +32,7 @@ class PtychographyVisualizations(PtychographyBase):
         else:
             raise ValueError(f"Unknown interval type: {interval_type}")
 
-        ph_cmap = config.get("visualize.phase_cmap")
+        ph_cmap = config.get("viz.phase_cmap")
         if obj.shape[0] > 1:
             t = "Summed "
         else:
@@ -110,16 +110,16 @@ class PtychographyVisualizations(PtychographyBase):
         if self.obj_type == "potential":
             ims.append(np.abs(self.obj_cropped).sum(0))
             titles.append("Potential")
-            cmaps.append(config.get("visualize.phase_cmap"))
+            cmaps.append(config.get("viz.phase_cmap"))
         elif self.obj_type == "pure_phase":
             ims.append(np.angle(self.obj_cropped).sum(0))
             titles.append("Pure Phase")
-            cmaps.append(config.get("visualize.phase_cmap"))
+            cmaps.append(config.get("viz.phase_cmap"))
         else:
             ims.append(np.angle(self.obj_cropped).sum(0))
             ims.append(np.abs(self.obj_cropped).sum(0))
             titles.extend(["Phase", "Amplitude"])
-            cmaps.extend([config.get("visualize.phase_cmap"), config.get("visualize.cmap")])
+            cmaps.extend([config.get("viz.phase_cmap"), config.get("viz.cmap")])
 
         ims.append(np.fft.fftshift(self.probe.sum(0)))
         titles.append("Probe")
@@ -141,6 +141,8 @@ class PtychographyVisualizations(PtychographyBase):
         obj: np.ndarray | None = None,
         cbar: bool = False,
         interval_type: Literal["quantile", "manual"] = "quantile",
+        interval_scaling: Literal["each", "all"] = "each",
+        max_width: int = 4,
     ):
         if obj is None:
             obj = self.obj_cropped
@@ -149,31 +151,40 @@ class PtychographyVisualizations(PtychographyBase):
             if obj.ndim == 2:
                 obj = obj[None, ...]
 
+        if self.obj_type == "potential":
+            objs_flat = [np.abs(obj[i]) for i in range(len(obj))]
+            titles_flat = [f"Potential {i + 1}/{len(obj)}" for i in range(len(obj))]
+        elif self.obj_type == "pure_phase":
+            objs_flat = [np.angle(obj[i]) for i in range(len(obj))]
+            titles_flat = [f"Pure Phase {i + 1}/{len(obj)}" for i in range(len(obj))]
+        else:
+            objs_flat = [np.angle(obj[i]) for i in range(len(obj))]
+            titles_flat = [f"Phase {i + 1}/{len(obj)}" for i in range(len(obj))]
+
+        # Nest lists with max length max_width
+        objs = [objs_flat[i : i + max_width] for i in range(0, len(objs_flat), max_width)]
+        titles = [titles_flat[i : i + max_width] for i in range(0, len(titles_flat), max_width)]
+
+        scalebars: list = [[None for _ in row] for row in objs]
+        scalebars[0][0] = {"sampling": self.sampling[0], "units": "Å"}
+
         if interval_type == "quantile":
             norm = {"interval_type": "quantile"}
         elif interval_type in ["manual", "minmax", "abs"]:
             norm = {"interval_type": "manual"}
+            if interval_scaling == "all":
+                norm["vmin"] = np.min(objs_flat)
+                norm["vmax"] = np.max(objs_flat)
         else:
             raise ValueError(f"Unknown interval type: {interval_type}")
 
-        if self.obj_type == "potential":
-            objs = [np.abs(obj[i]) for i in range(len(obj))]
-            titles = [f"Potential {i + 1}/{len(objs)}" for i in range(len(objs))]
-        elif self.obj_type == "pure_phase":
-            objs = [np.angle(obj[i]) for i in range(len(obj))]
-            titles = [f"Pure Phase {i + 1}/{len(objs)}" for i in range(len(objs))]
-        else:
-            objs = [np.angle(obj[i]) for i in range(len(obj))]
-            titles = [f"Phase {i + 1}/{len(objs)}" for i in range(len(objs))]
-
-        scalebar = [{"sampling": self.sampling[0], "units": "Å"}] + [None] * (len(objs) - 1)
         show_2d(
             objs,
             title=titles,
-            cmap=config.get("visualize.phase_cmap"),
+            cmap=config.get("viz.phase_cmap"),
             norm=norm,
             cbar=cbar,
-            scalebar=scalebar,
+            scalebar=scalebars,
         )
 
     def plot_losses(self, figax: tuple | None = None, plot_lrs: bool = True):
