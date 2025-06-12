@@ -33,4 +33,36 @@ viz:
   cmap: "gray"
   # The default colormap to use for plotting the phase
   phase_cmap: "magma"
-  default_colors: ""
+  # plotting default colors 
+  colors: 
+    # categorical color lists for plotting
+    # https://coolors.co/3a7d44-e83f85-775aeb-ed8607-74d4b5-808080-c51d20-7c6a0a-00b4d8-774936
+    # can set global colors with: 
+    # from cycler import cycler
+    # plt.rcParams['axes.prop_cycle'] = cycler(color=config.get("viz.colors.set"))
+    set: [
+      "#3A7D44", # green
+      "#E83F85", # pink
+      "#775AEB", # purple
+      "#ED8607", # orange
+      "#74D4B5", # turquoise
+      "#808080", # gray
+      "#C51D20", # red
+      "#7C6A0A", # olive 
+      "#00B4D8", # cyan
+      "#774936", # brown
+      ]
+    # paired 
+    paired: [
+      "#3A7D44", "#A2C899",  # Forest Green + Soft Green
+      "#E83F85", "#FFA5C5",  # Pink-Red + Pastel Pink
+      "#775AEB", "#C2B4F4",  # Deep Purple + Lavender
+      "#ED8607", "#F9C689",  # Bold Orange + Peach
+      "#74D4B5", "#C2F0DE",  # Mint Teal + Pale Teal
+      "#808080", "#C0C0C0",  # Medium Gray + Light Gray
+      "#C51D20", "#F28E8E",  # Brick Red + Salmon
+      "#7C6A0A", "#C5B86A",  # Olive + Mustard
+      "#00B4D8", "#80D9EB",  # Cyan + Light Cyan
+      "#774936", "#B38B7D",  # Dark Brown + Tan
+      ]
+    

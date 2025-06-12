@@ -276,6 +276,7 @@ class PtychographyML(PtychographyBase):
                 base_lr=params.get("base_lr", base_LR / 4),
                 max_lr=params.get("max_lr", base_LR * 4),
                 step_size_up=params.get("step_size_up", 100),
+                step_size_down=params.get("step_size_down", params.get("step_size_up", 100)),
                 mode=params.get("mode", "triangular2"),
                 cycle_momentum=params.get("momentum", False),
             )

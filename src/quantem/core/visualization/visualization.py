@@ -183,6 +183,8 @@ def _show_2d_combined(
         (fig, ax) tuple to use for plotting. If None, a new figure and axes are created.
     figsize : tuple, default=(8, 8)
         Figure size in inches, used only if figax is None.
+    title : str, optional
+        Title for the plot.
 
     Returns
     -------
@@ -267,7 +269,14 @@ def _normalize_show_input_to_grid(
         Normalized grid format where each inner list represents a row of arrays.
     """
     if isinstance(arrays, np.ndarray):
-        return [[arrays]]
+        if arrays.ndim == 2:
+            return [[arrays]]
+        elif arrays.ndim == 3:
+            if arrays.shape[0] == 1:
+                return [[arrays[0]]]
+            elif arrays.shape[2] == 1:
+                return [[arrays[:, :, 0]]]
+        raise ValueError(f"Input array must be 2D, got shape {arrays.shape}")
     if isinstance(arrays, Sequence) and not isinstance(arrays[0], Sequence):
         # Convert sequence to list and ensure each element is an NDArray
         return [[cast(NDArray, arr) for arr in arrays]]
@@ -344,8 +353,14 @@ def _norm_show_args(
     elif len(args_grid) == nrows and all(len(row) == 1 for row in args_grid):
         return [[cast(str | bool | float, row[0]) for _ in range(ncols)] for row in args_grid]
     else:
-        # hope the user is doing it correctly and it's not a full grid
-        return [[cast(str | bool | float, arg) for arg in row] for row in args_grid]
+        # Fill out the last row with None values if needed
+        result = []
+        for row in args_grid:
+            row_casted = [cast(str | bool | float, arg) for arg in row]
+            if len(row_casted) < ncols:
+                row_casted += [None] * (ncols - len(row_casted))
+            result.append(row_casted)
+        return result
 
 
 def _normalize_show_args_to_grid(

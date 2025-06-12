@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -143,6 +143,7 @@ class PtychographyVisualizations(PtychographyBase):
         interval_type: Literal["quantile", "manual"] = "quantile",
         interval_scaling: Literal["each", "all"] = "each",
         max_width: int = 4,
+        **kwargs,
     ):
         if obj is None:
             obj = self.obj_cropped
@@ -170,11 +171,15 @@ class PtychographyVisualizations(PtychographyBase):
 
         if interval_type == "quantile":
             norm = {"interval_type": "quantile"}
+            # TODO -- make this work with interval_scaling
         elif interval_type in ["manual", "minmax", "abs"]:
-            norm = {"interval_type": "manual"}
+            norm: dict[str, Any] = {"interval_type": "manual"}
             if interval_scaling == "all":
                 norm["vmin"] = np.min(objs_flat)
                 norm["vmax"] = np.max(objs_flat)
+            else:
+                norm["vmin"] = kwargs.get("vmin")
+                norm["vmax"] = kwargs.get("vmax")
         else:
             raise ValueError(f"Unknown interval type: {interval_type}")
 

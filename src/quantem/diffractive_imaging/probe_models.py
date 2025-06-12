@@ -294,6 +294,10 @@ class ProbeBase(AutoSerialize):
     def check_probe_params(self):
         for k in self.DEFAULT_PROBE_PARAMS.keys():
             if self.probe_params[k] is None:
+                if k == "defocus":
+                    if self.probe_params["polar_parameters"]["C10"] != 0:
+                        self.probe_params[k] = -1 * self.probe_params["polar_parameters"]["C10"]
+                        continue
                 raise ValueError(f"Missing probe parameter '{k}' in probe_params")
 
     @abstractmethod

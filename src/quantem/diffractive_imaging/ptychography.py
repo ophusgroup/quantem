@@ -134,14 +134,33 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
 
     def _calc_tv_loss(self, array: torch.Tensor, weight: tuple[float, float]) -> torch.Tensor:
         loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
+        calc_dim = 0
         for dim in range(array.ndim):
             if dim == 0 and array.ndim == 3:  # there's surely a cleaner way but whatev
                 w = weight[0]
             else:
                 w = weight[1]
             if w > 0:
+                calc_dim += 1
                 loss += w * torch.mean(torch.abs(array.diff(dim=dim)))  # careful w/ mean -> NaN
-        loss /= array.ndim
+        loss /= calc_dim
+        return loss
+
+    def get_surface_zero_loss(
+        self, array: torch.Tensor, weight: float | int = 0.0
+    ) -> torch.Tensor:
+        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
+        if weight == 0:
+            return loss
+        if array.shape[0] < 3:
+            return loss  # no surfaces to zero
+        if array.is_complex():
+            amp = array.abs()
+            ph = array.angle()
+            loss += weight * (torch.mean(amp[0]) + torch.mean(amp[-1]))
+            loss += weight * (torch.mean(torch.diff(ph[0])) + torch.mean(torch.diff(ph[-1])))
+        else:
+            loss += weight * (torch.mean(array[0]) + torch.mean(array[-1]))
         return loss
 
     def reset_recon(self) -> None:
@@ -177,6 +196,11 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     self.constraints["object"]["tv_weight_yx"],
                 ),
             )
+        if self.constraints["object"]["surface_zero_weight"] > 0:
+            loss += self.get_surface_zero_loss(
+                self.obj_model.obj,
+                weight=self.constraints["object"]["surface_zero_weight"],
+            )
         if self.constraints["dataset"]["descan_tv_weight"] > 0:
             loss += self.get_tv_loss(
                 self.dset.descan_shifts[:, 0],
@@ -186,6 +210,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                 self.dset.descan_shifts[:, 1],
                 weights=self.constraints["dataset"]["descan_tv_weight"],
             )
+
         return loss
 
     # endregion --- methods ---
