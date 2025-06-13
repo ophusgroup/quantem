@@ -426,6 +426,8 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.initial_probe_array = initial_probe_array
+        if initial_probe_array is not None:
+            self.roi_shape = initial_probe_array.shape
 
     # TODO write classmethods for from_params and from_array
     # from_params should accept vacuum probe as well
@@ -472,9 +474,6 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
                 initial_probe,
                 name="initial_probe",
                 dtype=config.get("dtype_complex"),
-                ndim=3,
-                shape=(self.num_probes, *self.roi_shape),
-                expand_dims=True,
             )
             self._initial_probe_array = probe
 
@@ -498,7 +497,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
 
         if self.initial_probe_array is not None:
             probes = self.initial_probe_array
-        if self.probe_params is not None:
+        elif self.probe_params is not None:
             self.check_probe_params()
             prb = ComplexProbe(
                 gpts=tuple(self.roi_shape),

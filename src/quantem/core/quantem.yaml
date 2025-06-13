@@ -5,11 +5,7 @@
 device: cpu
 dtype_real: float32
 dtype_complex: complex64
-# global verbosity, ?? unecessary 
-# The float precision to use. Options are 'float32' or 'float64'
-# ?? will this control both real and complex?
-precision: float32
-# global verbosity, ?? unecessary
+# global verbosity, not currently used
 verbose: 1
 cupy:
   # The size of the fft cache in MB used by cupy
@@ -19,21 +15,20 @@ mkl:
   # The number of threads to use for mkl
   threads: 2
 warnings: ### not sure how handling warnings yet
-  # Show a warning when the grid is overspecified
   suppress-all-: false
 viz:
-  # default interpolation method to use for plotting
+  # default interpolation method to use for showing images
   # "nearest" is the default of imshow, "none" is no interpolation and the default of matshow
   interpolation: "nearest"
   # The default units to use in real space
-  real_space_units: "Angstrom"
+  real_space_units: "A"
   # The default units to use in reciprocal space
-  reciprocal_space_units: "Angstrom"
-  # The default colormap to use for plotting
+  reciprocal_space_units: "A^-1"
+  # The default colormap to use for showing images
   cmap: "gray"
-  # The default colormap to use for plotting the phase
+  # The default colormap to use for showing the phase
   phase_cmap: "magma"
-  # plotting default colors 
+  # plotting default colors: 
   colors: 
     # categorical color lists for plotting
     # https://coolors.co/3a7d44-e83f85-775aeb-ed8607-74d4b5-808080-c51d20-7c6a0a-00b4d8-774936
@@ -65,4 +60,3 @@ viz:
       "#00B4D8", "#80D9EB",  # Cyan + Light Cyan
       "#774936", "#B38B7D",  # Dark Brown + Tan
       ]
-    
