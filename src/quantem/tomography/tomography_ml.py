@@ -30,6 +30,14 @@ class TomographyML(TomographyBase):
     2. 3D-UNet Reconstruction 
     """
 
+    def _run_epoch(self):
+        """
+        Run a single epoch of training.
+        This method should be implemented in subclasses.
+        """
+
+        raise NotImplementedError()
+
     # --- Properties ---
     @property
     def optimizers(self) -> dict:

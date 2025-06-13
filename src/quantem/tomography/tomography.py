@@ -135,6 +135,13 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             signal_units=self.tilt_series.signal_units,
         )
 
+    def voxel_wise_recon(
+        self,
+    ):
+        raise NotImplementedError(
+            "Voxel-wise reconstruction is not implemented yet. Please use the SIRT method for now."
+        )
+
     def recon_ML(
         self,
     ):
