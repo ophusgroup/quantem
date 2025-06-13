@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 from typing import List, Optional, Union
 
+import matplotlib.pyplot as plt
 import numpy as np
 from numpy.typing import NDArray
 from scipy.interpolate import interp1d
@@ -299,7 +300,8 @@ class DriftCorrection(AutoSerialize):
     def align_translation(
         self,
         upsample_factor: int = 8,
-        max_image_shift: int = 32,
+        min_image_shift: Optional[float] = None,
+        max_image_shift: float = 32,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -336,6 +338,11 @@ class DriftCorrection(AutoSerialize):
 
         # Normalize dxy
         dxy -= np.mean(dxy, axis=0)
+
+        # Minimum image shift
+        if min_image_shift is not None:
+            if np.linalg.norm(dxy[ind]) < min_image_shift:
+                dxy[ind] = 0.0
 
         # Apply shifts to knots
         for ind in range(self.shape[0]):
@@ -557,13 +564,15 @@ class DriftCorrection(AutoSerialize):
     # non-rigid alignment
     def align_nonrigid(
         self,
-        num_iterations: int = 4,
+        num_iterations: int = 8,
         max_optimize_iterations: int = 10,
-        regularization_sigma_px=1.0,
+        regularization_sigma_px: float = 16.0,
         regularization_poly_order: int = 1,
         regularization_max_image_shift_px: Optional[float] = None,
+        regularization_update_step_size: Optional[float] = 0.8,
         solve_individual_rows: bool = True,
-        max_image_shift: float | None = 32,
+        min_image_shift: Optional[float] = None,
+        max_image_shift: float | None = 32.0,
         show_merged: bool = True,
         show_images: bool = False,
         show_knots: bool = True,
@@ -699,6 +708,14 @@ class DriftCorrection(AutoSerialize):
 
                     knots_updated = knots_smoothed
 
+                # Apply step size if needed
+                if regularization_update_step_size is not None:
+                    knots_updated = (
+                        self.knots[ind]
+                        + (knots_updated - self.knots[ind])
+                        * regularization_update_step_size
+                    )
+
                 # Update knots with optimized values
                 self.knots[ind] = knots_updated
 
@@ -713,6 +730,7 @@ class DriftCorrection(AutoSerialize):
 
             # Translation alignment
             self.align_translation(
+                min_image_shift=min_image_shift,
                 max_image_shift=max_image_shift,
                 show_images=False,
                 show_merged=False,
@@ -865,11 +883,16 @@ class DriftCorrection(AutoSerialize):
         self,
         mode,
     ):
+        # Mask for error estimate
+        mask = np.prod(self.weights_warped.array, axis=0)
+
         # Estimate current error
         images_mean = np.mean(self.images_warped.array, axis=0)
         sig_diff = np.mean(
-            np.abs(self.images_warped.array - images_mean[None, :, :]), axis=(1, 2)
-        )
+            mask[None, :, :]
+            * np.abs(self.images_warped.array - images_mean[None, :, :]),
+            axis=(1, 2),
+        ) / np.sum(mask)
 
         # Error vector
         error_current = np.hstack((mode, np.mean(sig_diff), sig_diff))
@@ -894,6 +917,66 @@ class DriftCorrection(AutoSerialize):
                     x,
                     color="r",
                 )
+
+    def plot_convergence(
+        self,
+        figsize=(8, 3),
+        **kwargs,
+    ):
+        """
+        Plot the convergence of the drift correction.
+        """
+        sub = np.abs(self.error_track[:, 0] - 2) < 0.1
+        error = self.error_track[:, 1]
+        it = np.arange(error.shape[0])
+
+        from matplotlib.ticker import FormatStrFormatter, MaxNLocator
+
+        fig, ax = plt.subplots(1, 2, figsize=figsize)
+        color = (1, 0, 0)  # red
+
+        # Plot Affine
+        if np.any(~sub):
+            ax[0].plot(
+                it[~sub],
+                100 * error[~sub],
+                marker="o",
+                color=color,
+                linestyle="-",
+                label="Affine",
+                **kwargs,
+            )
+            ax[0].set_xlabel("Affine Iterations")
+            ax[0].set_ylabel("Mean Error [%]")
+            ax[0].xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax[0].yaxis.set_major_formatter(FormatStrFormatter("%.4f"))
+        else:
+            ax[0].axis("off")
+
+        # Plot Non-Rigid
+        if np.any(sub):
+            first_true = np.argmax(sub)
+            if first_true > 0:
+                sub[first_true - 1] = True
+
+            ax[1].plot(
+                it[sub],
+                100 * error[sub],
+                marker="o",
+                color=color,
+                linestyle="-",
+                label="Non-Rigid",
+                **kwargs,
+            )
+            ax[1].set_xlabel("Non-Rigid Iterations")
+            ax[1].xaxis.set_major_locator(MaxNLocator(integer=True))
+            ax[1].yaxis.set_major_formatter(FormatStrFormatter("%.4f"))
+        else:
+            ax[1].axis("off")
+
+        plt.tight_layout()
+
+        return self
 
     def plot_merged_images(self, show_knots: bool = True, **kwargs):
         """
