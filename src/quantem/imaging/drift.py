@@ -761,7 +761,7 @@ class DriftCorrection(AutoSerialize):
         upsample_factor: int = 2,
         output_original_shape: bool = True,
         fourier_filter: bool = True,
-        filter_midpoint: float = 0.25,
+        filter_midpoint: float = 0.5,
         kde_sigma: float = 0.5,
         show_image: bool = True,
         **kwargs,
