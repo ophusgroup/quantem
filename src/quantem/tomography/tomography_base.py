@@ -10,6 +10,7 @@ from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.visualization.visualization import show_2d
 from quantem.imaging.drift import cross_correlation_shift
+from quantem.tomography.object_models import ObjectModelType
 from quantem.tomography.tilt_series_dataset import TiltSeries
 
 
@@ -19,7 +20,7 @@ class TomographyBase(AutoSerialize):
     def __init__(
         self,
         tilt_series: Dataset3d,
-        recon_volume: Dataset3d | None,
+        volume_obj: Dataset3d | ObjectModelType | None,  # ObjectDIP?
         device: str = "cuda",
         # ABF/HAADF property
         _token: object | None = None,
@@ -41,7 +42,7 @@ class TomographyBase(AutoSerialize):
 
         self._device = device
         self._tilt_series = tilt_series
-        self._recon_volume = recon_volume
+        self._volume_obj = volume_obj
         self._loss = []
         self._mode = []
 
@@ -51,7 +52,7 @@ class TomographyBase(AutoSerialize):
         device: str,
         tilt_series: NDArray | Dataset3d | Any,
         tilt_angles: list | NDArray = None,
-        recon_volume: NDArray | Dataset3d | None = None,
+        volume_obj: NDArray | Dataset3d | ObjectModelType | None = None,
         name: str | None = None,
         origin: NDArray | tuple | list | float | int | None = None,
         sampling: NDArray | tuple | list | float | int | None = None,
@@ -70,10 +71,10 @@ class TomographyBase(AutoSerialize):
             signal_units=signal_units,
         )
 
-        if recon_volume is not None:
-            if not isinstance(recon_volume, Dataset3d):
-                recon_volume = Dataset3d.from_array(
-                    array=recon_volume,
+        if volume_obj is not None:
+            if not isinstance(volume_obj, Dataset3d):
+                volume_obj = Dataset3d.from_array(
+                    array=volume_obj,
                     name=name,
                     origin=origin,
                     sampling=sampling,
@@ -90,7 +91,7 @@ class TomographyBase(AutoSerialize):
                 dtype=tilt_series.array.dtype,
             )
 
-            recon_volume = Dataset3d.from_array(
+            volume_obj = Dataset3d.from_array(
                 array=empty_recon_vol,
                 name=name,
                 origin=origin,
@@ -101,7 +102,7 @@ class TomographyBase(AutoSerialize):
 
         return cls(
             tilt_series=tilt_series,
-            recon_volume=recon_volume,
+            volume_obj=volume_obj,
             device=device,
             _token=cls._token,
         )
@@ -140,18 +141,21 @@ class TomographyBase(AutoSerialize):
         self._tilt_series = tilt_series
 
     @property
-    def recon_volume(self) -> Dataset3d | None:
+    def volume_obj(self) -> Dataset3d | ObjectModelType | None:
         """Reconstruction volume dataset."""
 
-        return self._recon_volume
+        return self._volume_obj
 
-    @recon_volume.setter
-    def recon_volume(self, recon_volume: Dataset3d | NDArray):
+    @volume_obj.setter
+    # TODO: add support for ObjectModelType
+    def volume_obj(self, volume_obj: Dataset3d | NDArray):
         """Set the reconstruction volume dataset."""
+        if isinstance(volume_obj, ObjectModelType):
+            raise NotImplementedError("ObjectModelType is not supported for volume_obj.")
 
-        if not isinstance(recon_volume, Dataset3d):
-            recon_volume = Dataset3d.from_array(
-                array=recon_volume,
+        if not isinstance(volume_obj, Dataset3d):
+            volume_obj = Dataset3d.from_array(
+                array=volume_obj,
                 name=self._tilt_series.name,
                 origin=self._tilt_series.origin,
                 sampling=self._tilt_series.sampling,
@@ -159,7 +163,7 @@ class TomographyBase(AutoSerialize):
                 signal_units=self._tilt_series.signal_units,
             )
 
-        self._recon_volume = recon_volume
+        self._volume_obj = volume_obj
 
     @property
     def device(self) -> str:
@@ -265,11 +269,11 @@ class TomographyBase(AutoSerialize):
         Returns:
             masked_volume: tensor with all masks applied
         """
-        H, W, D = self.recon_volume.array.shape
+        H, W, D = self.volume_obj.array.shape
         device = self.device
         dtype = torch.float32
-        recon_volume = torch.tensor(
-            self.recon_volume.array,
+        volume_obj = torch.tensor(
+            self.volume_obj.array,
             device=self.device,
             dtype=dtype,
         )
@@ -287,15 +291,15 @@ class TomographyBase(AutoSerialize):
         # Broadcast and multiply all masks together
         total_mask = mask0 * mask1 * mask2  # shape (H, W, D)
 
-        recon_volume = recon_volume * total_mask
-        recon_volume = recon_volume.detach().cpu().numpy()
-        self.recon_volume = Dataset3d.from_array(
-            array=recon_volume,
-            name=self.recon_volume.name,
-            origin=self.recon_volume.origin,
-            sampling=self.recon_volume.sampling,
-            units=self.recon_volume.units,
-            signal_units=self.recon_volume.signal_units,
+        volume_obj = volume_obj * total_mask
+        volume_obj = volume_obj.detach().cpu().numpy()
+        self.volume_obj = Dataset3d.from_array(
+            array=volume_obj,
+            name=self.volume_obj.name,
+            origin=self.volume_obj.origin,
+            sampling=self.volume_obj.sampling,
+            units=self.volume_obj.units,
+            signal_units=self.volume_obj.signal_units,
         )
 
     # --- Visualizations ---
@@ -316,19 +320,19 @@ class TomographyBase(AutoSerialize):
             fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
 
         show_2d(
-            self.recon_volume.array.sum(axis=0),
+            self.volume_obj.array.sum(axis=0),
             figax=(fig, ax[0]),
             cmap=cmap,
             title="Z-X Projection",
         )
         show_2d(
-            self.recon_volume.array.sum(axis=1),
+            self.volume_obj.array.sum(axis=1),
             figax=(fig, ax[1]),
             cmap=cmap,
             title="Y-X Projection",
         )
         show_2d(
-            self.recon_volume.array.sum(axis=2),
+            self.volume_obj.array.sum(axis=2),
             figax=(fig, ax[2]),
             cmap=cmap,
             title="Y-Z Projection",
@@ -338,20 +342,20 @@ class TomographyBase(AutoSerialize):
             fig, ax = plt.subplots(ncols=3, figsize=(25, 8))
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis=0))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=0))))),
                 figax=(fig, ax[0]),
                 cmap=cmap,
                 title="Z-X Projection FFT",
             )
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis=1))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=1))))),
                 figax=(fig, ax[1]),
                 cmap=cmap,
                 title="Y-X Projection FFT",
             )
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.recon_volume.array.sum(axis=2))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=2))))),
                 figax=(fig, ax[2]),
                 cmap=cmap,
                 title="Y-Z Projection FFT",
@@ -366,7 +370,7 @@ class TomographyBase(AutoSerialize):
         fig, ax = plt.subplots(figsize=(15, 8), ncols=3)
 
         # show_2d(
-        #     self.recon_volume.array[slice_index, :, :],
+        #     self.volume_obj.array[slice_index, :, :],
         #     figax = (fig, ax[0]),
         #     cmap = cmap,
         #     title = f"Z-X Slice {slice_index}",
@@ -374,14 +378,14 @@ class TomographyBase(AutoSerialize):
         #     cbar = True,
         # )
         # show_2d(
-        #     self.recon_volume.array[:, slice_index, :],
+        #     self.volume_obj.array[:, slice_index, :],
         #     figax = (fig, ax[1]),
         #     cmap = cmap,
         #     title = f"Y-X Sliec {slice_index}",
         #     norm = norm,
         # )
         # show_2d(
-        #     self.recon_volume.array[:, :, slice_index],
+        #     self.volume_obj.array[:, :, slice_index],
         #     figax = (fig, ax[2]),
         #     cmap = cmap,
         #     title = f"Y-Z Slice {slice_index}",
@@ -389,19 +393,19 @@ class TomographyBase(AutoSerialize):
         # )
 
         ax[0].matshow(
-            self.recon_volume.array[slice_index, :, :],
+            self.volume_obj.array[slice_index, :, :],
             cmap=cmap,
             vmin=vmin,
         )
 
         ax[1].matshow(
-            self.recon_volume.array[:, slice_index, :],
+            self.volume_obj.array[:, slice_index, :],
             cmap=cmap,
             vmin=vmin,
         )
 
         ax[2].matshow(
-            self.recon_volume.array[:, :, slice_index],
+            self.volume_obj.array[:, :, slice_index],
             cmap=cmap,
             vmin=vmin,
         )

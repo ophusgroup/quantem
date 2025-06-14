@@ -18,6 +18,9 @@ class TiltSeries(Dataset3d):
         sampling: NDArray | tuple | list | float | int,
         units: list[str] | tuple | list,
         tilt_angles: list | NDArray,
+        z1_angles: list | NDArray,
+        z3_angles: list | NDArray,
+        shifts: list[tuple[float, float]] | NDArray,
         signal_units: str = "arb. units",
         _token: object | None = None,
     ):
@@ -32,12 +35,18 @@ class TiltSeries(Dataset3d):
         )
 
         self._tilt_angles = tilt_angles
+        self._z1_angles = z1_angles
+        self._z3_angles = z3_angles
+        self._shifts = shifts
 
     @classmethod
     def from_array(
         cls,
         array: NDArray | List[Dataset2d] | Any,
         tilt_angles: list | NDArray = None,
+        z1_angles: list | NDArray = None,
+        z3_angles: list | NDArray = None,
+        shifts: list[tuple[float, float]] | NDArray = None,
         name: str | None = None,
         origin: NDArray | tuple | list | float | int | None = None,
         sampling: NDArray | tuple | list | float | int | None = None,
@@ -87,3 +96,37 @@ class TiltSeries(Dataset3d):
             self._tilt_angles = np.array(angles)
         else:
             self._tilt_angles = angles
+
+    @property
+    def z1_angles(self) -> NDArray:
+        """Get the z1 angles of the dataset."""
+        return self._z1_angles
+
+    @z1_angles.setter
+    def z1_angles(self, angles: NDArray | list) -> None:
+        """Set the z1 angles of the dataset."""
+        if len(angles) != self.shape[0]:
+            raise ValueError("Z1 angles must match the number of projections.")
+        self._z1_angles = angles
+
+    @property
+    def z3_angles(self) -> NDArray:
+        """Get the z3 angles of the dataset."""
+        return self._z3_angles
+
+    @z3_angles.setter
+    def z3_angles(self, angles: NDArray | list) -> None:
+        """Set the z3 angles of the dataset."""
+        if len(angles) != self.shape[0]:
+            raise ValueError("Z3 angles must match the number of projections.")
+        self._z3_angles = angles
+
+    @property
+    def shifts(self) -> NDArray:
+        """Get the shifts of the dataset."""
+        return self._shifts
+
+    @shifts.setter
+    def shifts(self, shifts: list[tuple[float, float]] | NDArray) -> None:
+        """Set the shifts of the dataset."""
+        self._shifts = shifts

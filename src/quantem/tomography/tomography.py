@@ -138,6 +138,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
     def voxel_wise_recon(
         self,
     ):
+        if not isinstance(self.recon_volume):
+            raise NotImplementedError()
         raise NotImplementedError(
             "Voxel-wise reconstruction is not implemented yet. Please use the SIRT method for now."
         )
