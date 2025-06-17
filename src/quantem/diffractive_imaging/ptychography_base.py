@@ -63,9 +63,10 @@ class PtychographyBase(AutoSerialize):
         "object": {
             "fix_potential_baseline": False,
             "identical_slices": False,
+            "apply_fov_mask": False,
             "tv_weight_yx": 0.0,
             "tv_weight_z": 0.0,
-            "apply_fov_mask": False,
+            "surface_zero_weight": 0.0,
         },
         "probe": {
             "fix_probe": False,
@@ -212,6 +213,7 @@ class PtychographyBase(AutoSerialize):
             return
 
         kr, kc = tuple(torch.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
+        k2 = (kr[:, None] ** 2 + kc[None] ** 2).to(torch.complex64)  # broadcasting to match shape
         wavelength = electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
         propagators = torch.empty(
             (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=torch.complex64
@@ -219,8 +221,8 @@ class PtychographyBase(AutoSerialize):
 
         # TODO vectorize -- allow for optimizing over tilts
         for i, dz in enumerate(self.slice_thicknesses):
-            propagators[i] = torch.exp(1.0j * (-(kr**2)[:, None] * np.pi * wavelength * dz))
-            propagators[i] *= torch.exp(1.0j * (-(kc**2)[None] * np.pi * wavelength * dz))
+            phase_factor = torch.tensor(-1.0j * np.pi * wavelength * dz)
+            propagators[i] = torch.exp(phase_factor * k2)
 
             if theta_r is not None:
                 propagators[i] *= torch.exp(
@@ -242,6 +244,7 @@ class PtychographyBase(AutoSerialize):
         ov = ndi.binary_dilation(ov, iterations=min(32, np.min(self.obj_padding_px) // 4))
         ov = ndi.gaussian_filter(ov.astype(config.get("dtype_real")), sigma=gaussian_sigma)
         self.obj_fov_mask = ov
+        self.obj_model.mask = ov
         return
 
     def _get_probe_overlap(self, max_batch_size: int | None = None) -> np.ndarray:
@@ -319,7 +322,7 @@ class PtychographyBase(AutoSerialize):
         if self.num_slices == 1:
             self._propagators = torch.tensor([])
         else:
-            prop = validate_array(
+            prop = validate_tensor(
                 prop,
                 name="propagators",
                 dtype=config.get("dtype_complex"),
@@ -374,7 +377,7 @@ class PtychographyBase(AutoSerialize):
         if self._obj_padding_force_power2_level > 0:
             p2 = adjust_padding_power2(
                 p2,
-                self.dset._obj_shape_crop_2d,
+                self.dset._obj_shape_full_2d(),
                 self._obj_padding_force_power2_level,
             )
         self._obj_padding_px = p2
@@ -967,12 +970,12 @@ class PtychographyBase(AutoSerialize):
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
         if loss_type == "l1":
-            error = arr.sum(arr.abs(preds - targets)) / targets.shape[0]
+            error = arr.sum(arr.abs(preds - targets))
         elif loss_type == "l2":
-            error = arr.sum(arr.abs(preds - targets) ** 2) / targets.shape[0]
+            error = arr.sum(arr.abs(preds - targets) ** 2)
         else:
             raise ValueError(f"Unknown loss type {loss_type}, should be 'l1' or 'l2'")
-        loss = error / self.dset.mean_diffraction_intensity
+        loss = error / self.dset.mean_diffraction_intensity / targets.shape[0]
         return loss, targets
 
     # def error_estimate(

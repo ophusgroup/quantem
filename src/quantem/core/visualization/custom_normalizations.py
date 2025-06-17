@@ -609,6 +609,7 @@ class NormalizationConfig:
 NORMALIZATION_PRESETS = {
     "linear_auto": lambda: NormalizationConfig(),
     "linear_minmax": lambda: NormalizationConfig(interval_type="manual"),
+    "minmax": lambda: NormalizationConfig(interval_type="manual"),
     "linear_centered": lambda: NormalizationConfig(interval_type="centered"),
     "log_auto": lambda: NormalizationConfig(stretch_type="logarithmic"),
     "log_minmax": lambda: NormalizationConfig(stretch_type="logarithmic", interval_type="manual"),
@@ -618,7 +619,7 @@ NORMALIZATION_PRESETS = {
 }
 
 
-def _resolve_normalization(norm) -> NormalizationConfig:
+def _resolve_normalization(norm, **kwargs) -> NormalizationConfig:
     """Resolve various input types to a NormalizationConfig object.
 
     This function takes different input types and converts them to a
@@ -642,7 +643,21 @@ def _resolve_normalization(norm) -> NormalizationConfig:
         If norm is not one of the supported types.
     """
     if norm is None:
-        return NormalizationConfig()
+        if "vmin" in kwargs or "vmax" in kwargs:
+            return NormalizationConfig(
+                interval_type="manual",
+                stretch_type=kwargs.get("stretch_type", "linear"),
+                vmin=kwargs.get("vmin"),
+                vmax=kwargs.get("vmax"),
+            )
+        elif "lower_quantile" in kwargs or "upper_quantile" in kwargs:
+            return NormalizationConfig(
+                interval_type="quantile",
+                lower_quantile=kwargs.get("lower_quantile", 0.02),
+                upper_quantile=kwargs.get("upper_quantile", 0.98),
+            )
+        else:
+            return NormalizationConfig()
     elif isinstance(norm, dict):
         return NormalizationConfig(**norm)
     elif isinstance(norm, str):

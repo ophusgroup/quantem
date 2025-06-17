@@ -31,17 +31,20 @@ class ObjectBase(AutoSerialize):
     def __init__(
         self,
         num_slices: int = 1,
-        slice_thicknesses: float | Sequence | None = None,
+        slice_thicknesses: float | Sequence | torch.Tensor | None = None,
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
+        rng: np.random.Generator | int | None = None,
         *args,
     ):
         self._shape = (-1, -1, -1)
         self.num_slices = num_slices
-        self.slice_thicknesses = slice_thicknesses
         self._device = device
         self._obj_type = obj_type
+        self.slice_thicknesses = slice_thicknesses
         self._constraints = {}
+        self._mask = None
+        self.rng = rng
 
     @property
     def shape(self) -> tuple:
@@ -110,7 +113,7 @@ class ObjectBase(AutoSerialize):
         return self._slice_thicknesses
 
     @slice_thicknesses.setter
-    def slice_thicknesses(self, val: float | Sequence | None) -> None:
+    def slice_thicknesses(self, val: float | Sequence | torch.Tensor | None) -> None:
         if val is None:
             if self.num_slices > 1:
                 raise ValueError(
@@ -133,9 +136,28 @@ class ObjectBase(AutoSerialize):
             )
             arr = validate_arr_gt(arr, 0, "slice_thicknesses")
             arr = validate_np_len(arr, self.num_slices - 1, name="slice_thicknesses")
-            self._slice_thicknesses = torch.tensor(
-                arr, dtype=config.get("dtype_real"), device=self.device
+            dt = getattr(torch, config.get("dtype_real"))
+            self._slice_thicknesses = torch.tensor(arr, dtype=dt, device=self.device)
+
+    @property
+    def mask(self) -> torch.Tensor | None:
+        """get the mask for the object model"""
+        return self._mask
+
+    @mask.setter
+    def mask(self, mask: torch.Tensor | np.ndarray | None):
+        """set the mask for the object model"""
+        if mask is not None:
+            mask = validate_tensor(
+                mask,
+                name="mask",
+                dtype=self.dtype,
+                ndim=3,
+                expand_dims=True,
             )
+            self._mask = mask.to(self.device).expand(self.num_slices, -1, -1)
+        else:
+            self._mask = None
 
     @property
     def obj(self):
@@ -205,6 +227,22 @@ class ObjectBase(AutoSerialize):
             f"Analytical gradients are not implemented for {Self}, use autograd=True"
         )
 
+    @property
+    def rng(self) -> np.random.Generator:
+        return self._rng
+
+    @rng.setter
+    def rng(self, rng: np.random.Generator | int | None):
+        if rng is None:
+            rng = np.random.default_rng()
+        elif isinstance(rng, (int, float)):
+            rng = np.random.default_rng(rng)
+        elif not isinstance(rng, np.random.Generator):
+            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
+        self._rng = rng
+        seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## seed from the generator
+        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
+
 
 class ObjectConstraints(ObjectBase):
     DEFAULT_CONSTRAINTS = {
@@ -249,12 +287,19 @@ class ObjectConstraints(ObjectBase):
             else:
                 obj2 = amp * torch.exp(1.0j * phase)
         else:  # is potential, apply positivity
-            obj2 = torch.clamp(obj, min=0.0)
             if self.constraints["fix_potential_baseline"]:
                 ### pushing towards 0 can make reconstruction worse?
                 if mask is not None:
-                    offset = obj2[mask < 0.5 * mask.max()].mean()
-                    obj2 -= offset.item()
+                    offset = obj[mask < 0.5 * mask.max()].mean() / 2
+                else:
+                    offset = torch.mean(obj) / 2
+            else:
+                offset = 0
+
+            obj2 = torch.clamp(obj - offset, min=0.0)
+
+        if self.constraints["apply_fov_mask"] and mask is not None:
+            obj2 *= mask
 
         if self.num_slices > 1:
             if self.constraints["identical_slices"]:
@@ -268,24 +313,27 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
     Object model for pixelized objects.
     """
 
+    # TODO -- class method for object inits? not sure if necessary
     def __init__(
         self,
         num_slices: int = 1,
         slice_thicknesses: float | Sequence | None = None,
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
+        rng: np.random.Generator | int | None = None,
     ):
         super().__init__(
             num_slices=num_slices,
             slice_thicknesses=slice_thicknesses,
             device=device,
             obj_type=obj_type,
+            rng=rng,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     @property
     def obj(self):
-        return self.apply_constraints(self._obj)
+        return self.apply_constraints(self._obj, mask=self.mask)
         # return self._obj
 
     @property
@@ -355,7 +403,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
 
 class ObjectDIP(ObjectConstraints):
     """
-    Object for
+    DIP/model based object model.
     """
 
     def __init__(
@@ -363,15 +411,18 @@ class ObjectDIP(ObjectConstraints):
         model: "torch.nn.Module",
         model_input: torch.Tensor | None = None,
         num_slices: int = 1,
-        slice_thicknesses: float | Sequence | None = None,
+        slice_thicknesses: float | Sequence | torch.Tensor | None = None,
+        input_noise_std: float = 0.0,
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
+        rng: np.random.Generator | int | None = None,
     ):
         super().__init__(
             num_slices=num_slices,
             slice_thicknesses=slice_thicknesses,
             device=device,
             obj_type=obj_type,
+            rng=rng,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.model = model
@@ -379,11 +430,12 @@ class ObjectDIP(ObjectConstraints):
             self.model_input = torch.ones((1, 1, 1, 1), dtype=self.dtype, device=self.device)
         else:
             self.model_input = model_input.clone().detach()
-        self._pretrain_target = self.model_input.clone().detach()
+        self.pretrain_target = self.model_input.clone().detach()
         self._optimizer = None
         self._scheduler = None
         self._pretrain_losses = []
         self._pretrain_lrs = []
+        self._model_input_noise_std = input_noise_std
 
     @property
     def name(self) -> str:
@@ -409,7 +461,6 @@ class ObjectDIP(ObjectConstraints):
 
     def set_pretrained_weights(self, model: torch.nn.Module):
         """set the pretrained weights of the DIP model"""
-        print("setting pretrained weights")
         if not isinstance(model, torch.nn.Module):
             raise TypeError(f"Pretrained model must be a torch.nn.Module, got {type(model)}")
         self._pretrained_weights = deepcopy(model.state_dict())
@@ -430,6 +481,39 @@ class ObjectDIP(ObjectConstraints):
             expand_dims=True,
         )
         self._model_input = inp.to(self.device)
+
+    @property
+    def pretrain_target(self) -> torch.Tensor:
+        """get the pretrain target"""
+        return self._pretrain_target
+
+    @pretrain_target.setter
+    def pretrain_target(self, target: torch.Tensor):
+        """set the pretrain target"""
+        if target.ndim == 4:
+            target = target.squeeze(0)
+        target = validate_tensor(
+            target,
+            name="pretrain_target",
+            ndim=3,
+            dtype=self.dtype,
+            expand_dims=True,
+        )
+        if target.shape[-3:] != self.model_input.shape[-3:]:
+            raise ValueError(
+                f"Pretrain target shape {target.shape} does not match model input shape {self.model_input.shape}"
+            )
+        self._pretrain_target = target.to(self.device)
+
+    @property
+    def _model_input_noise_std(self) -> float:
+        """standard deviation of the gaussian noise added to the model input each forward call"""
+        return self._input_noise_std
+
+    @_model_input_noise_std.setter
+    def _model_input_noise_std(self, std: float):
+        validate_gt(std, 0.0, "input_noise_std", geq=True)
+        self._input_noise_std = std
 
     @property
     def optimizer(self) -> torch.optim.Optimizer:
@@ -516,10 +600,21 @@ class ObjectDIP(ObjectConstraints):
     @property
     def obj(self):
         obj = self.model(self._model_input)[0]
-        return self.apply_constraints(obj)
+        return self.apply_constraints(obj, mask=self.mask)
 
     def forward(self, patch_indices: torch.Tensor):
         """Get patch indices of the object"""
+        if self._input_noise_std > 0.0:
+            noise = (
+                torch.randn(
+                    self.model_input.shape,
+                    dtype=self.dtype,
+                    device=self.device,
+                    generator=self._rng_torch,
+                )
+                * self._input_noise_std
+            )
+            self._model_input += noise
         return self._get_obj_patches(self.obj, patch_indices)
 
     def to(self, device: str | torch.device):
@@ -565,13 +660,13 @@ class ObjectDIP(ObjectConstraints):
         if model_input is not None:
             self.model_input = model_input
         if pretrain_target is not None:
-            if pretrain_target.shape != self.model_input.shape:
+            if pretrain_target.shape[-3:] != self.model_input.shape[-3:]:
                 raise ValueError(
                     f"Model target shape {pretrain_target.shape} does not match model input shape {self.model_input.shape}"
                 )
-            self._pretrain_target = pretrain_target.to(self.device)
-        elif self._pretrain_target is None:
-            self._pretrain_target = self.model_input.clone().detach()
+            self.pretrain_target = pretrain_target.clone().detach().to(self.device)
+        elif self.pretrain_target is None:
+            self.pretrain_target = self.model_input.clone().detach()
 
         loss_fn = get_loss_function(loss_fn, self.dtype)
         # set model pretrained weights
@@ -593,7 +688,7 @@ class ObjectDIP(ObjectConstraints):
         """
         Pretrain the DIP model.
         """
-        if not hasattr(self, "_pretrain_target"):
+        if not hasattr(self, "pretrain_target"):
             raise ValueError("Pretrain target is not set. Use pretrain_target to set it.")
 
         self._model.train()
@@ -601,12 +696,25 @@ class ObjectDIP(ObjectConstraints):
         sch = self.scheduler
         pbar = tqdm(range(num_epochs))
         output = self.obj
+
         for a0 in pbar:
+            if self._input_noise_std > 0.0:
+                noise = (
+                    torch.randn(
+                        self.model_input.shape,
+                        dtype=self.dtype,
+                        device=self.device,
+                        generator=self._rng_torch,
+                    )
+                    * self._input_noise_std
+                )
+                self._model_input += noise
+
             if apply_constraints:
                 output = self.obj
             else:
                 output = self.model(self.model_input)[0]
-            loss: torch.Tensor = loss_fn(output, self._pretrain_target)
+            loss: torch.Tensor = loss_fn(output, self.pretrain_target)
             loss.backward()
             optimizer.step()
             optimizer.zero_grad()
@@ -658,7 +766,7 @@ class ObjectDIP(ObjectConstraints):
         n_bot = 4 if self.obj_type == "complex" else 2
         gs_bot = gridspec.GridSpecFromSubplotSpec(1, n_bot, subplot_spec=gs[1])
         axs_bot = np.array([fig.add_subplot(gs_bot[0, i]) for i in range(n_bot)])
-        target = self._pretrain_target[0]
+        target = self.pretrain_target
         if n_bot == 4:
             show_2d(
                 [
@@ -678,7 +786,16 @@ class ObjectDIP(ObjectConstraints):
                 cbar=True,
             )
         else:
-            raise NotImplementedError
+            show_2d(
+                [
+                    pred_obj.mean(0).cpu().detach().numpy(),
+                    target.mean(0).cpu().detach().numpy(),
+                ],
+                figax=(fig, axs_bot),
+                title=["Predicted Object Potential", "Target Object Potential"],
+                cmap="magma",
+                cbar=True,
+            )
         plt.suptitle(
             f"Final loss: {self._pretrain_losses[-1]:.3e} | Epochs: {len(self._pretrain_losses)}",
             fontsize=14,
@@ -689,7 +806,9 @@ class ObjectDIP(ObjectConstraints):
 
 # class ObjectImplicit(ObjectBase):
 #     """
-#     Object model for implicit objects.
+#     Object model for implicit objects. Importantly, the forward call from scan positions
+#     for this model will not require subpixel shifting of the object probe, as subpixel shifting
+#     will be done in the object model itself, so it is properly aligned around the probe positions
 #     """
 
 #     def __init__(self, *args, **kwargs):

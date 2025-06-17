@@ -11,7 +11,7 @@ from numpy.typing import NDArray
 from quantem.core import config
 from quantem.core.datastructures.dataset4dstem import Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
-from quantem.core.utils.utils import tqdmnd
+from quantem.core.utils.utils import electron_wavelength_angstrom, tqdmnd
 from quantem.core.utils.validators import (
     validate_array,
     validate_float,
@@ -38,12 +38,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
             raise TypeError(f"Expected a Dataset4dstem instance, got {type(dset)}")
         if dset.units[-1] != "A^-1":
             if dset.units[-1] == "mrad":
-                raise NotImplementedError(
-                    "The Dataset4dstem must have diffraction units of A^-1, "
-                    + "but these are in mrad\n Converting from mrad -> A^-1 requires the probe energy,"
-                    + " so we could either require conversion in advance or accept the energy here?\n"
-                    + "if energy is hidden in metadata, we could potentially convert on dataset init"
-                )
+                pass
+                # raise NotImplementedError(
+                #     "The Dataset4dstem must have diffraction units of A^-1, "
+                #     + "but these are in mrad\n Converting from mrad -> A^-1 requires the probe energy,"
+                #     + " so we could either require conversion in advance or accept the energy here?\n"
+                #     + "if energy is hidden in metadata, we could potentially convert on dataset init"
+                # )
             else:
                 raise ValueError(f"Expected diffraction units to be 'A^-1', got {dset.units[-1]}")
         self.dset = dset
@@ -61,6 +62,7 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         )
         self.register_buffer("_last_patch_positions_px", torch.zeros(self.num_gpts, 2))
         self._constraints = {}
+        self._probe_energy = None
         self._preprocessed = False
 
     @classmethod
@@ -358,6 +360,18 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         difs = np.nan_to_num(self.com_measured - self.com_fit)
         return difs * self.reciprocal_sampling[:, None, None]
 
+    @property
+    def probe_energy(self) -> float | None:
+        """Probe energy in eV, if known"""
+        return self._probe_energy
+
+    @probe_energy.setter
+    def probe_energy(self, energy: float | None) -> None:
+        if energy is None:
+            self._probe_energy = None
+        else:
+            self._probe_energy = validate_float(energy, "probe_energy")
+
     # endregion --- explicit properties (have setters) ---
 
     # region --- implicit properties (no setters) ---
@@ -419,15 +433,12 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         if units[0] == "A^-1":
             pass
         elif units[0] == "mrad":
-            raise NotImplementedError("Probe energy required to convert mrad -> A^-1")
-            # if self.probe_model.probe_params["energy"] is not None:  # convert mrad -> A^-1
-            #     sampling = (
-            #         sampling
-            #         / electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
-            #         / 1e3
-            #     )
-            # else:
-            #     raise ValueError("dc units given in mrad but no energy defined to convert to A^-1")
+            if self.probe_energy is None:
+                raise ValueError(
+                    "dset Q units given in mrad but no probe energy defined to "
+                    + "convert to A^-1. Please set probe_energy in preprocess()"
+                )
+            sampling = sampling / electron_wavelength_angstrom(self.probe_energy) / 1e3
         elif units[0] == "pixels":
             raise ValueError("dset Q units given in pixels, needs calibration")
         else:
@@ -447,7 +458,7 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         shp = shp.astype("int")
         return shp
 
-    def _obj_shape_full_2d(self, obj_padding_px: np.ndarray | tuple) -> np.ndarray:
+    def _obj_shape_full_2d(self, obj_padding_px: np.ndarray | tuple = (0, 0)) -> np.ndarray:
         cshape = self._obj_shape_crop_2d.copy()
         rotshape = np.floor(
             [
@@ -673,7 +684,11 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
         plot_rotation: bool = True,
         plot_com: str | bool = True,
         vectorized: bool = True,
+        probe_energy: float | None = None,
     ):
+        if probe_energy is not None:
+            self.probe_energy = probe_energy
+
         if padded_diffraction_intensities_shape is not None:
             self.diffraction_padding = np.array(padded_diffraction_intensities_shape)
             self.dset.pad(

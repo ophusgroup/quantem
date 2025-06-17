@@ -46,7 +46,11 @@ def ensure_valid_array(
     TypeError
         If the input could not be converted to a NumPy array
     """
-    if isinstance(array, (np.ndarray, cp.ndarray)):
+    is_cupy = False
+    if config.get("has_cupy"):
+        if isinstance(array, cp.ndarray):
+            is_cupy = True
+    if isinstance(array, np.ndarray) or is_cupy:
         if dtype is not None:
             validated_array = array.astype(dtype)  # copies the array
         else:
@@ -330,8 +334,13 @@ def validate_vector_data(data: List[Any], shape: Tuple[int, ...], num_fields: in
 # --- Miscellaneous Validation Functions ---
 ### for now just adding all the validator cases, can combine later as necessary
 ### currently doing a mix of converting and validating, probably should make that explicit
-def validate_gt(value: float | int, cutoff: float | int, name: str) -> float | int:
-    if value <= cutoff:
+def validate_gt(
+    value: float | int, cutoff: float | int, name: str, geq: bool = False
+) -> float | int:
+    if geq:  # greater than or equal to
+        if value < cutoff:
+            raise ValueError(f"{name} must be greater than or equal to {cutoff}, got {value}")
+    elif value <= cutoff:
         raise ValueError(f"{name} must be greater than {cutoff}, got {value}")
     return value
 

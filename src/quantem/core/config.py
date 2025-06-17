@@ -30,6 +30,11 @@ try:
     _defaults["has_cupy"] = True
 except ModuleNotFoundError:
     _defaults["has_cupy"] = False
+except Exception as e:
+    if "cuda" in str(e):
+        NUM_DEVICES = 0
+    _defaults["has_cupy"] = False
+
 
 defaults: list[Mapping] = [_defaults]
 no_default = "__no_default__"
