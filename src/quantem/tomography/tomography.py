@@ -1,5 +1,6 @@
 import torch
-from torch_radon.radon import ParallelBeam as Radon
+
+# from torch_radon.radon import ParallelBeam as Radon
 from tqdm.auto import tqdm
 
 from quantem.core.datastructures.dataset3d import Dataset3d
@@ -18,116 +19,92 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
     def __init__(
         self,
         tilt_series,
-        recon_volume,
+        volume_obj,
         device,
         _token,
     ):
-        super().__init__(tilt_series, recon_volume, device, _token)
+        super().__init__(tilt_series, volume_obj, device, _token)
 
     # --- Reconstruction Method ---
 
     def sirt_recon(
         self,
         num_iterations: int = 10,
-        step_size: float = 0.25,
         inline_alignment: bool = False,
         enforce_positivity: bool = True,
-        smoothing_sigma: float = None,
+        volume_shape: tuple = None,
         reset: bool = True,
-        mode: str = "batch",
+        smoothing_sigma: float = None,
         shrinkage: float = None,
     ):
         num_slices, num_angles, num_rows = self.tilt_series.array.shape
 
-        if reset:
-            self.loss = []
-            stack_recon = torch.zeros(
-                (num_slices, num_rows, num_rows),
-                device=self.device,
-                dtype=torch.float32,
-            )
+        if volume_shape is None:
+            volume_shape = (num_rows, num_rows, num_rows)
         else:
-            stack_recon = torch.tensor(
-                self.recon_volume.array,
+            D, H, W = volume_shape
+
+        if reset:
+            volume = torch.zeros((D, H, W), device=self.device, dtype=torch.float32)
+            self.loss = []
+        else:
+            volume = torch.tensor(
+                self.volume_obj.array,
                 device=self.device,
                 dtype=torch.float32,
             )
 
-        stack_torch = torch.tensor(
+        tilt_series_torch = torch.tensor(
             self.tilt_series.array,
             device=self.device,
             dtype=torch.float32,
         )
 
-        torch_angles = torch.tensor(
-            self.tilt_series.tilt_angles_rad,
+        tilt_angles_torch = torch.tensor(
+            self.tilt_series.tilt_angles,
             device=self.device,
             dtype=torch.float32,
         )
 
-        radon = Radon(
-            det_count=num_rows,
-            angles=torch_angles,
-        )
+        proj_forward = torch.zeros_like(tilt_series_torch)
 
-        proj_forward = torch.zeros(
-            (num_slices, num_angles, num_rows),
-            dtype=torch.float32,
-            device="cuda",
-        )
+        pbar = tqdm(range(num_iterations), desc="SIRT Reconstruction")
 
         if smoothing_sigma is not None:
-            kernel_1d = gaussian_kernel_1d(smoothing_sigma).to(self.device)
+            gaussian_kernel = gaussian_kernel_1d(smoothing_sigma).to(self.device)
         else:
-            kernel_1d = None
+            gaussian_kernel = None
 
-        pbar = tqdm(range(num_iterations), desc="SIRT Iterations")
-        if mode == "batch":
-            for a0 in pbar:
-                if inline_alignment and a0 > 2:
-                    stack_recon, loss = self._sirt_run_epoch(
-                        radon=radon,
-                        stack_recon=stack_recon,
-                        stack_torch=stack_torch,
-                        proj_forward=proj_forward,
-                        step_size=step_size,
-                        gaussian_kernel=kernel_1d,
-                        inline_alignment=True,
-                        enforce_positivity=enforce_positivity,
-                        shrinkage=shrinkage,
-                    )
-                else:
-                    stack_recon, loss = self._sirt_run_epoch(
-                        radon=radon,
-                        stack_recon=stack_recon,
-                        stack_torch=stack_torch,
-                        proj_forward=proj_forward,
-                        step_size=step_size,
-                        gaussian_kernel=kernel_1d,
-                        inline_alignment=False,
-                        enforce_positivity=enforce_positivity,
-                        shrinkage=shrinkage,
-                    )
-
-                self.loss.append(loss.item())
-
-        elif mode == "serial":
-            for a0 in pbar:
-                stack_recon, loss = self._sirt_serial_run_epoch(
-                    radon=radon,
-                    stack_recon=stack_recon,
-                    stack_torch=stack_torch,
+        for iter in pbar:
+            if iter > 0 and inline_alignment:
+                volume, proj_forward, loss = self._sirt_run_epoch(
+                    volume=volume,
+                    tilt_series=tilt_series_torch,
                     proj_forward=proj_forward,
-                    step_size=step_size,
-                    gaussian_kernel=kernel_1d,
-                    inline_alignment=inline_alignment,
+                    angles=tilt_angles_torch,
+                    inline_alignment=True,
                     enforce_positivity=enforce_positivity,
+                    shrinkage=shrinkage,
+                    gaussian_kernel=gaussian_kernel,
+                )
+            else:
+                volume, proj_forward, loss = self._sirt_run_epoch(
+                    volume=volume,
+                    tilt_series=tilt_series_torch,
+                    proj_forward=proj_forward,
+                    angles=tilt_angles_torch,
+                    inline_alignment=False,
+                    enforce_positivity=enforce_positivity,
+                    shrinkage=shrinkage,
+                    gaussian_kernel=gaussian_kernel,
                 )
 
-                self.loss.append(loss.item())
+            pbar.set_description(f"SIRT Reconstruction | Loss: {loss.item():.4f}")
 
-        self.recon_volume = Dataset3d.from_array(
-            array=stack_recon.cpu().numpy(),
+            self.loss.append(loss.item())
+
+        self.volume_obj = Dataset3d.from_array(
+            array=volume.cpu().numpy(),
             name=self.tilt_series.name,
             origin=self.tilt_series.origin,
             sampling=self.tilt_series.sampling,
@@ -138,7 +115,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
     def voxel_wise_recon(
         self,
     ):
-        if not isinstance(self.recon_volume):
+        if not isinstance(self.volume_obj):
             raise NotImplementedError()
         raise NotImplementedError(
             "Voxel-wise reconstruction is not implemented yet. Please use the SIRT method for now."

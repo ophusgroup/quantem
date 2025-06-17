@@ -58,13 +58,16 @@ class TiltSeries(Dataset3d):
         else:
             validated_tilt_angles = None
 
-        array = np.transpose(array, axes=(2, 0, 1))
+        # array = np.transpose(array, axes=(2, 0, 1))
 
         return cls(
             array=array,
             tilt_angles=validated_tilt_angles
             if validated_tilt_angles is not None
             else ["duck" for _ in range(array.shape[0])],
+            z1_angles=z1_angles,
+            z3_angles=z3_angles,
+            shifts=shifts,
             name=name if name is not None else "Tilt Series Dataset",
             origin=origin if origin is not None else np.zeros(3),
             sampling=sampling if sampling is not None else np.ones(3),

@@ -105,7 +105,7 @@ class ObjectConstraints(ObjectBase):
         return obj2
 
 
-class ObjectVoxelwise(ObjectBase, ObjectConstraints):
+class ObjectVoxelwise(ObjectConstraints):
     """
     Object model for voxelwise objects.
     """

@@ -1,12 +1,15 @@
 """
-A fully torch based implementation of the Radon transform. Compatible with CPU and GPU.
+A fully torch based implementation of the Radon transform based on compatible with CPU and GPU.
+
+Implementation using scikit-image's radon and iradon functions.
+Reference: van der Walt, S., et al. (2014). scikit-image: image processing in Python. PeerJ, 2, e453.
 """
 
 import torch
 import torch.nn.functional as F
 
 
-def radon_torch(image, theta=None, circle=True, preserve_range=False, device=None):
+def radon_torch(image, theta=None, device=None):
     """
     Radon transform implemented in PyTorch.
 
@@ -65,7 +68,7 @@ def radon_torch(image, theta=None, circle=True, preserve_range=False, device=Non
     if image.shape[0] != image.shape[1]:
         raise ValueError("Image must be square after padding or cropping.")
     center = N // 2
-    radon_image = torch.zeros((N, len(theta)), dtype=image.dtype, device=device)
+    radon_image = torch.zeros((len(theta), N), dtype=image.dtype, device=device)
 
     # Create grid for affine grid sample
     grid_y, grid_x = torch.meshgrid(
@@ -97,9 +100,85 @@ def radon_torch(image, theta=None, circle=True, preserve_range=False, device=Non
             image_batch, grid, mode="bilinear", padding_mode="zeros", align_corners=True
         )
         projection = sampled.squeeze().sum(0)
-        radon_image[:, i] = projection
+        radon_image[i, :] = projection
 
     return radon_image
+
+
+def iradon_torch(
+    sinogram,
+    theta=None,
+    output_size=None,
+    filter_name="ramp",
+    circle=True,
+    device=None,
+):
+    """
+    Inverse Radon transform (filtered backprojection) using PyTorch.
+    sinogram: shape [N_angles, N_pixels]
+    """
+
+    if sinogram.ndim != 2:
+        raise ValueError("Input sinogram must be 2D")
+
+    if theta is None:
+        theta = torch.linspace(0, 180, steps=sinogram.shape[0], device=device)
+
+    num_angles, N = sinogram.shape
+    if theta.shape[0] != num_angles:
+        raise ValueError("theta does not match number of projections")
+
+    if output_size is None:
+        output_size = N if circle else int(torch.floor(torch.sqrt(N**2 / 2.0)))
+
+    device = sinogram.device if device is None else device
+    sinogram = sinogram.to(dtype=torch.float32, device=device)
+
+    # Padding for FFT
+    padded_size = max(
+        64, int(2 ** torch.ceil(torch.log2(torch.tensor(2 * N, dtype=torch.float32))))
+    )
+    pad_y = padded_size - N
+    padded = F.pad(sinogram, (0, pad_y))  # pad vertically
+
+    # Apply Fourier filter
+    f_filter = get_fourier_filter_torch(padded_size, filter_name, device=device)
+    spectrum = torch.fft.fft(padded, dim=1)  # Changed from dim=0 to dim=1
+    filtered = torch.real(torch.fft.ifft(spectrum * f_filter, dim=1))[
+        :, :N
+    ]  # Changed from dim=0 to dim=1
+
+    # Reconstruct by backprojection
+    recon = torch.zeros((output_size, output_size), dtype=filtered.dtype, device=device)
+    radius = output_size // 2
+    y, x = torch.meshgrid(
+        torch.arange(output_size, device=device) - radius,
+        torch.arange(output_size, device=device) - radius,
+        indexing="ij",
+    )
+    x = x.flatten()
+    y = y.flatten()
+
+    for i, angle in enumerate(torch.deg2rad(theta)):
+        t = (x * torch.cos(angle) - y * torch.sin(angle)).reshape(output_size, output_size)
+        t_idx = t + (N // 2)
+
+        # Linear interpolation
+        t0 = torch.floor(t_idx).long().clamp(0, N - 2)
+        t1 = t0 + 1
+        w = t_idx - t0.float()
+        val0 = filtered[i, t0]  # Changed indexing to match new dimensions
+        val1 = filtered[i, t1]  # Changed indexing to match new dimensions
+        proj = (1 - w) * val0 + w * val1
+        recon += proj
+
+    if circle:
+        mask = (
+            x.reshape(output_size, output_size) ** 2 + y.reshape(output_size, output_size) ** 2
+        ) > radius**2
+        recon[mask] = 0.0
+
+    return recon * torch.pi / (2 * num_angles)
 
 
 def get_fourier_filter_torch(size, filter_name="ramp", device=None, dtype=torch.float32):
@@ -140,79 +219,5 @@ def get_fourier_filter_torch(size, filter_name="ramp", device=None, dtype=torch.
     else:
         raise ValueError(f"Unknown filter: {filter_name}")
 
-    return fourier_filter[:, None]  # Add singleton dimension for broadcasting
-
-
-def iradon_torch(
-    sinogram,
-    theta=None,
-    output_size=None,
-    filter_name="ramp",
-    interpolation="linear",
-    circle=True,
-    device=None,
-):
-    """
-    Inverse Radon transform (filtered backprojection) using PyTorch.
-    sinogram: shape [N_pixels, N_angles]
-    """
-    if sinogram.ndim != 2:
-        raise ValueError("Input sinogram must be 2D")
-
-    if theta is None:
-        theta = torch.linspace(0, 180, steps=sinogram.shape[1], device=device)
-    # else:
-    #     theta = torch.tensor(theta, dtype=torch.float32, device=device)
-
-    N, num_angles = sinogram.shape
-    if theta.shape[0] != num_angles:
-        raise ValueError("theta does not match number of projections")
-
-    if output_size is None:
-        output_size = N if circle else int(torch.floor(torch.sqrt(N**2 / 2.0)))
-
-    device = sinogram.device if device is None else device
-    sinogram = sinogram.to(dtype=torch.float32, device=device)
-    # Padding for FFT
-    padded_size = max(
-        64, int(2 ** torch.ceil(torch.log2(torch.tensor(2 * N, dtype=torch.float32))))
-    )
-    pad_y = padded_size - N
-    padded = F.pad(sinogram, (0, 0, 0, pad_y))  # pad vertically
-
-    # Apply Fourier filter
-    f_filter = get_fourier_filter_torch(padded_size, filter_name, device=device)
-    spectrum = torch.fft.fft(padded, dim=0)
-    filtered = torch.real(torch.fft.ifft(spectrum * f_filter, dim=0))[:N, :]
-
-    # Reconstruct by backprojection
-    recon = torch.zeros((output_size, output_size), dtype=filtered.dtype, device=device)
-    radius = output_size // 2
-    y, x = torch.meshgrid(
-        torch.arange(output_size, device=device) - radius,
-        torch.arange(output_size, device=device) - radius,
-        indexing="ij",
-    )
-    x = x.flatten()
-    y = y.flatten()
-
-    for i, angle in enumerate(torch.deg2rad(theta)):
-        t = (x * torch.cos(angle) - y * torch.sin(angle)).reshape(output_size, output_size)
-        t_idx = t + (N // 2)
-
-        # Linear interpolation
-        t0 = torch.floor(t_idx).long().clamp(0, N - 2)
-        t1 = t0 + 1
-        w = t_idx - t0.float()
-        val0 = filtered[t0, i]
-        val1 = filtered[t1, i]
-        proj = (1 - w) * val0 + w * val1
-        recon += proj
-
-    if circle:
-        mask = (
-            x.reshape(output_size, output_size) ** 2 + y.reshape(output_size, output_size) ** 2
-        ) > radius**2
-        recon[mask] = 0.0
-
-    return recon * torch.pi / (2 * num_angles)
+    # Reshape filter for broadcasting with sinogram
+    return fourier_filter.unsqueeze(0)  # Shape: [1, size] for broadcasting with [num_angles, size]

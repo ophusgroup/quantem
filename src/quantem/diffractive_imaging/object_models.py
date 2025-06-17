@@ -353,7 +353,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         return gradient
 
 
-class ObjectDIP(ObjectConstraints, ObjectBase):
+class ObjectDIP(ObjectConstraints):
     """
     Object for
     """
