@@ -21,7 +21,7 @@ class ObjectBase(AutoSerialize):
         self._shape = volume_shape
 
         self._obj = torch.zeros(self._shape, device=device, dtype=torch.float32) + offset_obj
-
+        self._offset_obj = offset_obj
         self._device = device
         self._hard_constraints = {}
         self._soft_constraints = {}
@@ -33,6 +33,22 @@ class ObjectBase(AutoSerialize):
     @shape.setter
     def shape(self, shape: tuple[int, int, int]):
         self._shape = shape
+
+    @property
+    def offset_obj(self) -> float:
+        return self._offset_obj
+
+    @offset_obj.setter
+    def offset_obj(self, offset_obj: float):
+        self._offset_obj = offset_obj
+
+    @property
+    def obj(self) -> torch.Tensor:
+        pass
+
+    @obj.setter
+    def obj(self, obj: torch.Tensor):
+        self._obj = obj
 
     @property
     def device(self) -> str:
@@ -130,11 +146,12 @@ class ObjectConstraints(ObjectBase):
         """
         Apply constraints to the object model.
         """
-
+        obj2 = obj.clone()
         if self.hard_constraints["positivity"]:
             obj2 = torch.clamp(obj, min=0.0, max=None)
-        else:
-            obj2 = obj
+        if self.hard_constraints["shrinkage"]:
+            obj2 = torch.max(obj2 - self.hard_constraints["shrinkage"], torch.zeros_like(obj2))
+
         return obj2
 
     def apply_soft_constraints(
@@ -164,6 +181,7 @@ class ObjectVoxelwise(ObjectConstraints):
         self,
         volume_shape: tuple[int, int, int],
         device: str,
+        initial_volume: torch.Tensor | None = None,
     ):
         super().__init__(
             volume_shape=volume_shape,
@@ -172,16 +190,39 @@ class ObjectVoxelwise(ObjectConstraints):
         self.hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
         self.soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
 
+        if initial_volume is not None:
+            self._initial_obj = initial_volume
+        else:
+            self.initial_obj = (
+                torch.zeros(self._shape, device=self._device, dtype=torch.float32)
+                + self.offset_obj
+            )
+
     @property
     def obj(self):
         return self.apply_hard_constraints(self._obj)
+
+    @obj.setter
+    def obj(self, obj: torch.Tensor):
+        self._obj = obj
+
+    @property
+    def initial_obj(self):
+        return self._initial_obj
+
+    @initial_obj.setter
+    def initial_obj(self, initial_obj: torch.Tensor):
+        if not isinstance(initial_obj, torch.Tensor):
+            raise ValueError("initial_obj must be a torch.Tensor")
+
+        self._initial_obj = initial_obj
 
     def forward(self):
         return self.obj
 
     def reset(self):
         self._obj = (
-            torch.zeros(self._shape, device=self._device, dtype=torch.float32) + self._offset_obj
+            torch.zeros(self._shape, device=self._device, dtype=torch.float32) + self.offset_obj
         )
 
     def to(self, device: str):

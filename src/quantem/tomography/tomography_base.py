@@ -9,7 +9,7 @@ from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.visualization.visualization import show_2d
 from quantem.imaging.drift import cross_correlation_shift
-from quantem.tomography.object_models import ObjectModelType
+from quantem.tomography.object_models import ObjectModelType, ObjectVoxelwise
 
 # from quantem.tomography.tilt_series_dataset import TomographyDataset
 from quantem.tomography.tomography_dataset import TomographyDataset
@@ -18,10 +18,21 @@ from quantem.tomography.tomography_dataset import TomographyDataset
 class TomographyBase(AutoSerialize):
     _token = object()
 
+    DEFAULT_HARD_CONSTRAINTS = {
+        "positivity": False,
+        "shrinkage": False,
+        "circular_mask": False,
+        "fourier_filter": False,
+    }
+
+    DEFAULT_SOFT_CONSTRAINTS = {
+        "tv_vol": 0.0,
+    }
+
     def __init__(
         self,
         dataset: TomographyDataset,
-        volume_obj: Dataset3d | ObjectModelType | None,  # ObjectDIP?
+        volume_obj: ObjectModelType,  # ObjectDIP?
         device: str = "cuda",
         # ABF/HAADF property
         _token: object | None = None,
@@ -47,6 +58,9 @@ class TomographyBase(AutoSerialize):
         self._loss = []
         self._mode = []
 
+        self._hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
+        self._soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
+
     @classmethod
     def from_tilt_series(
         cls,
@@ -70,24 +84,26 @@ class TomographyBase(AutoSerialize):
 
         dataset.to(device)
 
-        if volume_obj is not None:
-            if not isinstance(volume_obj, Dataset3d):
-                volume_obj = Dataset3d.from_array(
-                    array=volume_obj,
-                )
+        if volume_obj is None:
+            max_shape = max(dataset.tilt_series.shape)
+            volume_obj = ObjectVoxelwise(
+                volume_shape=(max_shape, max_shape, max_shape),
+                device=device,
+            )
+        elif isinstance(volume_obj, Dataset3d):
+            volume = torch.from_numpy(volume_obj.array)
+            volume_obj = ObjectVoxelwise(
+                volume_shape=volume_obj.shape, device=device, initial_volume=volume
+            )
+            volume_obj.obj = volume
+        elif isinstance(volume_obj, np.ndarray):
+            volume = torch.from_numpy(volume_obj)
+            volume_obj = ObjectVoxelwise(
+                volume_shape=volume_obj.shape, device=device, initial_volume=volume
+            )
+            volume_obj.obj = volume
         else:
-            empty_recon_vol = np.zeros(
-                (
-                    dataset.tilt_series.shape[2],
-                    dataset.tilt_series.shape[2],
-                    dataset.tilt_series.shape[2],
-                ),
-                dtype=np.float32,
-            )
-
-            volume_obj = Dataset3d.from_array(
-                array=empty_recon_vol,
-            )
+            raise ValueError("volume_obj must be a Dataset3d, NDArray ObjectModelType")
 
         return cls(
             dataset=dataset,
@@ -191,6 +207,59 @@ class TomographyBase(AutoSerialize):
         """List of modes used during reconstruction."""
 
         return self._mode
+
+    @property
+    def epochs(self) -> int:
+        """Number of epochs used during reconstruction."""
+        return len(self.loss)
+
+    # --- Constraints ---
+
+    @property
+    def hard_constraints(self) -> dict:
+        """Hard constraints for the reconstruction."""
+        return self._hard_constraints
+
+    @hard_constraints.setter
+    def hard_constraints(self, hard_constraints: dict):
+        """Set the hard constraints for the reconstruction."""
+
+        gkeys = self.DEFAULT_HARD_CONSTRAINTS.keys()
+        for key, value in hard_constraints.items():
+            if key not in gkeys:
+                raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
+            self._hard_constraints[key] = value
+
+        self._hard_constraints = hard_constraints
+
+    @property
+    def soft_constraints(self) -> dict:
+        """Soft constraints for the reconstruction."""
+        return self._soft_constraints
+
+    @soft_constraints.setter
+    def soft_constraints(self, soft_constraints: dict):
+        """Set the soft constraints for the reconstruction."""
+
+        gkeys = self.DEFAULT_SOFT_CONSTRAINTS.keys()
+        for key, value in soft_constraints.items():
+            if key not in gkeys:
+                raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
+            self._soft_constraints[key] = value
+
+        self._soft_constraints = soft_constraints
+
+    # --- RESET ---
+
+    def reset_recon(self) -> None:
+        self.volume_obj.reset()
+        self.dataset.reset()
+        self.loss = []
+        self.hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
+        self.soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
+
+        self._optimizers = {}
+        self._schedulers = {}
 
     # --- Preprocessing ---
 
@@ -305,6 +374,7 @@ class TomographyBase(AutoSerialize):
         loss: bool = False,
         fft: bool = False,
     ):
+        volume_obj_np = self.volume_obj.obj.detach().cpu().numpy()
         if loss:
             fig, ax = plt.subplots(ncols=4, figsize=(25, 8))
             ax[3].semilogy(
@@ -315,19 +385,19 @@ class TomographyBase(AutoSerialize):
             fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
 
         show_2d(
-            self.volume_obj.array.sum(axis=0),
+            volume_obj_np.sum(axis=0),
             figax=(fig, ax[0]),
             cmap=cmap,
             title="Z-X Projection",
         )
         show_2d(
-            self.volume_obj.array.sum(axis=1),
+            volume_obj_np.sum(axis=1),
             figax=(fig, ax[1]),
             cmap=cmap,
             title="Y-X Projection",
         )
         show_2d(
-            self.volume_obj.array.sum(axis=2),
+            volume_obj_np.sum(axis=2),
             figax=(fig, ax[2]),
             cmap=cmap,
             title="Y-Z Projection",
@@ -337,20 +407,20 @@ class TomographyBase(AutoSerialize):
             fig, ax = plt.subplots(ncols=3, figsize=(25, 8))
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=0))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=0))))),
                 figax=(fig, ax[0]),
                 cmap=cmap,
                 title="Z-X Projection FFT",
             )
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=1))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=1))))),
                 figax=(fig, ax[1]),
                 cmap=cmap,
                 title="Y-X Projection FFT",
             )
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(self.volume_obj.array.sum(axis=2))))),
+                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=2))))),
                 figax=(fig, ax[2]),
                 cmap=cmap,
                 title="Y-Z Projection FFT",

@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 
 from quantem.tomography.radon.radon import iradon_torch, radon_torch
 from quantem.tomography.tomography_base import TomographyBase
-from quantem.tomography.utils import gaussian_filter_2d_stack, torch_phase_cross_correlation
+from quantem.tomography.utils import torch_phase_cross_correlation
 
 
 class TomographyConv(TomographyBase):
@@ -22,7 +22,7 @@ class TomographyConv(TomographyBase):
 
     def _sirt_run_epoch(
         self,
-        volume: torch.Tensor,
+        # volume: torch.Tensor,
         tilt_series: torch.Tensor,
         proj_forward: torch.Tensor,
         angles: torch.Tensor,
@@ -34,6 +34,13 @@ class TomographyConv(TomographyBase):
         circle: bool,
     ):
         loss = 0
+
+        hard_constraints = {
+            "positivity": enforce_positivity,
+            "shrinkage": shrinkage,
+        }
+
+        self.volume_obj.hard_constraints = hard_constraints
 
         if inline_alignment:
             for ind in range(len(self.dataset.tilt_angles)):
@@ -62,8 +69,8 @@ class TomographyConv(TomographyBase):
 
         # Forward projection
 
-        for z in tqdm(range(volume.shape[0])):
-            slice_estimate = volume[z]
+        for z in tqdm(range(self.volume_obj.obj.shape[0])):
+            slice_estimate = self.volume_obj.obj[z]
             sinogram_est = radon_torch(slice_estimate, theta=angles, device=self.device)
 
             sinogram_true = tilt_series[:, :, z]
@@ -86,24 +93,18 @@ class TomographyConv(TomographyBase):
 
             correction /= normalization
 
-            volume[z] += correction
+            self.volume_obj._obj[z] += correction
 
             proj_forward[:, :, z] = sinogram_est
 
             loss += torch.mean(torch.abs(error))
 
-        loss /= volume.shape[0]
+        loss /= self.volume_obj._obj.shape[0]
 
-        if enforce_positivity:
-            volume = torch.clamp(volume, min=0)
+        # if gaussian_kernel is not None:
+        #     self.volume_obj.obj = gaussian_filter_2d_stack(self.volume_obj.obj, gaussian_kernel)
 
-        if shrinkage is not None:
-            volume = torch.max(volume - shrinkage, torch.zeros_like(volume))
-
-        if gaussian_kernel is not None:
-            volume = gaussian_filter_2d_stack(volume, gaussian_kernel)
-
-        return volume, proj_forward, loss
+        return proj_forward, loss
 
     # Deprecated torch_radon implementations
     # def _sirt_run_epoch(

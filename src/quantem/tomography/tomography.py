@@ -1,11 +1,8 @@
-from typing import Literal
-
 import torch
 
 # from torch_radon.radon import ParallelBeam as Radon
 from tqdm.auto import tqdm
 
-from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.tomography.object_models import ObjectVoxelwise
 from quantem.tomography.tomography_base import TomographyBase
 from quantem.tomography.tomography_conv import TomographyConv
@@ -50,14 +47,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             D, H, W = volume_shape
 
         if reset:
-            volume = torch.zeros((D, H, W), device=self.device, dtype=torch.float32)
+            self.volume_obj.reset()
             self.loss = []
-        else:
-            volume = torch.tensor(
-                self.volume_obj.array,
-                device=self.device,
-                dtype=torch.float32,
-            )
 
         proj_forward = torch.zeros_like(self.dataset.tilt_series)
 
@@ -70,8 +61,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
         for iter in pbar:
             if iter > 0 and inline_alignment:
-                volume, proj_forward, loss = self._sirt_run_epoch(
-                    volume=volume,
+                proj_forward, loss = self._sirt_run_epoch(
                     tilt_series=self.dataset.tilt_series,
                     proj_forward=proj_forward,
                     angles=self.dataset.tilt_angles,
@@ -83,8 +73,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                     circle=circle,
                 )
             else:
-                volume, proj_forward, loss = self._sirt_run_epoch(
-                    volume=volume,
+                proj_forward, loss = self._sirt_run_epoch(
                     tilt_series=self.dataset.tilt_series,
                     proj_forward=proj_forward,
                     angles=self.dataset.tilt_angles,
@@ -100,35 +89,31 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
             self.loss.append(loss.item())
 
-        self.volume_obj = Dataset3d.from_array(
-            array=volume.cpu().numpy(),
-            # name=self.tilt_series.name,
-            # origin=self.tilt_series.origin,
-            # sampling=self.tilt_series.sampling,
-            # units=self.tilt_series.units,
-            # signal_units=self.tilt_series.signal_units,
-        )
+        self.sirt_recon_vol = self.volume_obj
 
     def ad_recon(
         self,
+        optimizer_params: dict,
         num_iter: int = 0,
         reset: bool = False,
-        optimizer_params: dict | None = None,
         scheduler_params: dict | None = None,
-        hard_constraints: dict = {},
-        soft_constraints: dict = {},
-        batch_size: int | None = None,
+        hard_constraints: dict | None = None,
+        soft_constraints: dict | None = None,
         store_iterations: bool | None = None,
         store_iterations_every: int | None = None,
-        device: Literal["cpu", "gpu"] | None = None,
         autograd: bool = True,
     ):
-        # # Check if self.volume_obj is a ObjectModelType
-        if not isinstance(self.volume_obj, ObjectVoxelwise):
-            raise TypeError("volume_obj must be a ObjectVoxelwise")
+        if reset:
+            self.reset_recon()
 
+        self.hard_constraints = hard_constraints
+        self.soft_constraints = soft_constraints
+
+        # Make sure everything is in the correct device, might be redundant/cleaner way to do this
+        self.dataset.to(self.device)
         self.volume_obj.to(self.device)
 
+        # Making optimizable parameters into leaf tensors.
         self.dataset.shifts = self.dataset.shifts.detach().to(self.device).requires_grad_(True)
         self.dataset.z1_angles = (
             self.dataset.z1_angles.detach().to(self.device).requires_grad_(True)
@@ -145,8 +130,10 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             self.scheduler_params = scheduler_params
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        self.volume_obj.hard_constraints = hard_constraints
-        self.volume_obj.soft_constraints = soft_constraints
+        if hard_constraints is not None:
+            self.volume_obj.hard_constraints = hard_constraints
+        if soft_constraints is not None:
+            self.volume_obj.soft_constraints = soft_constraints
 
         pbar = tqdm(range(num_iter), desc="AD Reconstruction")
 
@@ -172,6 +159,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             loss /= len(self.dataset.tilt_series)
 
             loss += self.volume_obj.soft_loss
+            self.loss.append(loss.item())
+
             loss.backward()
 
             for opt in self.optimizers.values():
@@ -187,8 +176,17 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
             pbar.set_description(f"AD Reconstruction | Loss: {loss:.4f}")
 
+        self.ad_recon_vol = self.volume_obj.forward()
+
         return self
 
+    def reset_recon(self) -> None:
+        if isinstance(self.volume_obj, ObjectVoxelwise):
+            self.volume_obj.reset()
+
+        self.ad_recon_vol = None
+
+    # --- Projection Operators ----
     def projection_operator(
         self,
         vol,

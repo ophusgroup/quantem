@@ -35,6 +35,12 @@ class TomographyDataset(AutoSerialize):
         self._z3_angles = z3_angles
         self._shifts = shifts
 
+        self._initial_tilt_angles = tilt_angles.clone()
+        self._initial_z1_angles = z1_angles.clone()
+        self._initial_z3_angles = z3_angles.clone()
+        self._initial_shifts = shifts.clone()
+
+    # --- Class Methods ---
     @classmethod
     def from_data(
         cls,
@@ -110,6 +116,22 @@ class TomographyDataset(AutoSerialize):
     def shifts(self) -> Tensor:
         return self._shifts
 
+    @property
+    def initial_tilt_angles(self) -> Tensor:
+        return self._initial_tilt_angles
+
+    @property
+    def initial_z1_angles(self) -> Tensor:
+        return self._initial_z1_angles
+
+    @property
+    def initial_z3_angles(self) -> Tensor:
+        return self._initial_z3_angles
+
+    @property
+    def initial_shifts(self) -> Tensor:
+        return self._initial_shifts
+
     # --- Setters ---
 
     @tilt_series.setter
@@ -164,3 +186,27 @@ class TomographyDataset(AutoSerialize):
             validated_shifts = torch.tensor(validate_array(shifts, "shifts"))
 
         self._shifts = validated_shifts
+
+    @initial_tilt_angles.setter
+    def initial_tilt_angles(self, tilt_angles: NDArray | Tensor) -> None:
+        self._initial_tilt_angles = tilt_angles
+
+    @initial_z1_angles.setter
+    def initial_z1_angles(self, z1_angles: NDArray | Tensor) -> None:
+        self._initial_z1_angles = z1_angles
+
+    @initial_z3_angles.setter
+    def initial_z3_angles(self, z3_angles: NDArray | Tensor) -> None:
+        self._initial_z3_angles = z3_angles
+
+    @initial_shifts.setter
+    def initial_shifts(self, shifts: NDArray | Tensor) -> None:
+        self._initial_shifts = shifts
+
+    # --- RESET ---
+
+    def reset(self) -> None:
+        self._tilt_angles = self._initial_tilt_angles.clone()
+        self._z1_angles = self._initial_z1_angles.clone()
+        self._z3_angles = self._initial_z3_angles.clone()
+        self._shifts = self._initial_shifts.clone()
