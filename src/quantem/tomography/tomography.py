@@ -6,6 +6,7 @@ import torch
 from tqdm.auto import tqdm
 
 from quantem.core.datastructures.dataset3d import Dataset3d
+from quantem.tomography.object_models import ObjectVoxelwise
 from quantem.tomography.tomography_base import TomographyBase
 from quantem.tomography.tomography_conv import TomographyConv
 from quantem.tomography.tomography_ml import TomographyML
@@ -20,12 +21,12 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
     def __init__(
         self,
-        tilt_series,
+        dataset,
         volume_obj,
         device,
         _token,
     ):
-        super().__init__(tilt_series, volume_obj, device, _token)
+        super().__init__(dataset, volume_obj, device, _token)
 
     # --- Reconstruction Method ---
 
@@ -39,9 +40,9 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         smoothing_sigma: float = None,
         shrinkage: float = None,
         filter_name: str = "hamming",
-        circle: bool = False,
+        circle: bool = True,
     ):
-        num_slices, num_angles, num_rows = self.tilt_series.array.shape
+        num_angles, num_rows, num_cols = self.dataset.tilt_series.shape
 
         if volume_shape is None:
             volume_shape = (num_rows, num_rows, num_rows)
@@ -58,19 +59,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                 dtype=torch.float32,
             )
 
-        tilt_series_torch = torch.tensor(
-            self.tilt_series.array,
-            device=self.device,
-            dtype=torch.float32,
-        )
-
-        tilt_angles_torch = torch.tensor(
-            self.tilt_series.tilt_angles,
-            device=self.device,
-            dtype=torch.float32,
-        )
-
-        proj_forward = torch.zeros_like(tilt_series_torch)
+        proj_forward = torch.zeros_like(self.dataset.tilt_series)
 
         pbar = tqdm(range(num_iterations), desc="SIRT Reconstruction")
 
@@ -83,9 +72,9 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             if iter > 0 and inline_alignment:
                 volume, proj_forward, loss = self._sirt_run_epoch(
                     volume=volume,
-                    tilt_series=tilt_series_torch,
+                    tilt_series=self.dataset.tilt_series,
                     proj_forward=proj_forward,
-                    angles=tilt_angles_torch,
+                    angles=self.dataset.tilt_angles,
                     inline_alignment=True,
                     enforce_positivity=enforce_positivity,
                     shrinkage=shrinkage,
@@ -96,9 +85,9 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             else:
                 volume, proj_forward, loss = self._sirt_run_epoch(
                     volume=volume,
-                    tilt_series=tilt_series_torch,
+                    tilt_series=self.dataset.tilt_series,
                     proj_forward=proj_forward,
-                    angles=tilt_angles_torch,
+                    angles=self.dataset.tilt_angles,
                     inline_alignment=False,
                     enforce_positivity=enforce_positivity,
                     shrinkage=shrinkage,
@@ -113,11 +102,11 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
         self.volume_obj = Dataset3d.from_array(
             array=volume.cpu().numpy(),
-            name=self.tilt_series.name,
-            origin=self.tilt_series.origin,
-            sampling=self.tilt_series.sampling,
-            units=self.tilt_series.units,
-            signal_units=self.tilt_series.signal_units,
+            # name=self.tilt_series.name,
+            # origin=self.tilt_series.origin,
+            # sampling=self.tilt_series.sampling,
+            # units=self.tilt_series.units,
+            # signal_units=self.tilt_series.signal_units,
         )
 
     def ad_recon(
@@ -135,29 +124,17 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         autograd: bool = True,
     ):
         # # Check if self.volume_obj is a ObjectModelType
-        # if not isinstance(self.volume_obj, ObjectModelType):
-        #     raise TypeError("volume_obj must be a ObjectModelType")
-        tilt_series_torch = torch.tensor(
-            self.tilt_series.array,
-            device=self.device,
-            dtype=torch.float32,
-        )
-
-        tilt_angles_torch = torch.tensor(
-            self.tilt_series.tilt_angles,
-            device=self.device,
-            dtype=torch.float32,
-        )
+        if not isinstance(self.volume_obj, ObjectVoxelwise):
+            raise TypeError("volume_obj must be a ObjectVoxelwise")
 
         self.volume_obj.to(self.device)
-        self.tilt_series.shifts = (
-            self.tilt_series.shifts.detach().to(self.device).requires_grad_(True)
+
+        self.dataset.shifts = self.dataset.shifts.detach().to(self.device).requires_grad_(True)
+        self.dataset.z1_angles = (
+            self.dataset.z1_angles.detach().to(self.device).requires_grad_(True)
         )
-        self.tilt_series.z1_angles = (
-            self.tilt_series.z1_angles.detach().to(self.device).requires_grad_(True)
-        )
-        self.tilt_series.z3_angles = (
-            self.tilt_series.z3_angles.detach().to(self.device).requires_grad_(True)
+        self.dataset.z3_angles = (
+            self.dataset.z3_angles.detach().to(self.device).requires_grad_(True)
         )
 
         if optimizer_params is not None:
@@ -178,19 +155,21 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
             pred_volume = self.volume_obj.forward()
 
-            for i in range(len(tilt_series_torch)):
+            for i in range(len(self.dataset.tilt_series)):
                 forward_projection = self.projection_operator(
                     vol=pred_volume,
-                    z1=self.tilt_series.z1_angles[i],
-                    x=tilt_angles_torch[i],
-                    z3=self.tilt_series.z3_angles[i],
-                    shift_x=self.tilt_series.shifts[i, 0],
-                    shift_y=self.tilt_series.shifts[i, 1],
+                    z1=self.dataset.z1_angles[i],
+                    x=self.dataset.tilt_angles[i],
+                    z3=self.dataset.z3_angles[i],
+                    shift_x=self.dataset.shifts[i, 0],
+                    shift_y=self.dataset.shifts[i, 1],
                     device=self.device,
                 )
 
-                loss += torch.nn.functional.mse_loss(forward_projection, tilt_series_torch[i])
-            loss /= len(tilt_series_torch)
+                loss += torch.nn.functional.mse_loss(
+                    forward_projection, self.dataset.tilt_series[i]
+                )
+            loss /= len(self.dataset.tilt_series)
 
             loss += self.volume_obj.soft_loss
             loss.backward()
@@ -209,17 +188,6 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             pbar.set_description(f"AD Reconstruction | Loss: {loss:.4f}")
 
         return self
-
-    def recon_ML(
-        self,
-    ):
-        raise NotImplementedError(
-            "ML-based reconstruction is not implemented yet. Please use the SIRT method for now."
-        )
-
-    """
-    Torch forward operators for the AD reconstruction
-    """
 
     def projection_operator(
         self,

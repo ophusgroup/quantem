@@ -36,7 +36,7 @@ class TomographyConv(TomographyBase):
         loss = 0
 
         if inline_alignment:
-            for ind in range(len(self.tilt_series.tilt_angles)):
+            for ind in range(len(self.dataset.tilt_angles)):
                 im_proj = proj_forward[ind]
                 im_meas = tilt_series[ind]
 

@@ -1,9 +1,8 @@
-from typing import Any
-
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from numpy.typing import NDArray
+from torch._tensor import Tensor
 from tqdm.auto import tqdm
 
 from quantem.core.datastructures.dataset3d import Dataset3d
@@ -11,7 +10,9 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.visualization.visualization import show_2d
 from quantem.imaging.drift import cross_correlation_shift
 from quantem.tomography.object_models import ObjectModelType
-from quantem.tomography.tilt_series_dataset import TiltSeries
+
+# from quantem.tomography.tilt_series_dataset import TomographyDataset
+from quantem.tomography.tomography_dataset import TomographyDataset
 
 
 class TomographyBase(AutoSerialize):
@@ -19,7 +20,7 @@ class TomographyBase(AutoSerialize):
 
     def __init__(
         self,
-        tilt_series: Dataset3d,
+        dataset: TomographyDataset,
         volume_obj: Dataset3d | ObjectModelType | None,  # ObjectDIP?
         device: str = "cuda",
         # ABF/HAADF property
@@ -41,7 +42,7 @@ class TomographyBase(AutoSerialize):
             )
 
         self._device = device
-        self._tilt_series = tilt_series
+        self._dataset = dataset
         self._volume_obj = volume_obj
         self._loss = []
         self._mode = []
@@ -49,59 +50,47 @@ class TomographyBase(AutoSerialize):
     @classmethod
     def from_tilt_series(
         cls,
-        device: str,
-        tilt_series: NDArray | Dataset3d | Any,
-        tilt_angles: list | NDArray = None,
+        tilt_series: Dataset3d | NDArray | Tensor,
+        tilt_angles: NDArray | Tensor,
+        z1_angles: NDArray | Tensor | None = None,
+        z3_angles: NDArray | Tensor | None = None,
+        shifts: NDArray | Tensor | None = None,
         volume_obj: NDArray | Dataset3d | ObjectModelType | None = None,
-        name: str | None = None,
-        origin: NDArray | tuple | list | float | int | None = None,
-        sampling: NDArray | tuple | list | float | int | None = None,
-        units: list[str] | tuple | list | None = None,
-        signal_units: str = "arb. units",
+        device: str = "cpu",
     ):
         device = device.lower()
 
-        tilt_series = TiltSeries.from_array(
-            array=tilt_series,
+        dataset = TomographyDataset.from_data(
+            tilt_series=tilt_series,
             tilt_angles=tilt_angles,
-            name=name,
-            origin=origin,
-            sampling=sampling,
-            units=units,
-            signal_units=signal_units,
+            z1_angles=z1_angles,
+            z3_angles=z3_angles,
+            shifts=shifts,
         )
+
+        dataset.to(device)
 
         if volume_obj is not None:
             if not isinstance(volume_obj, Dataset3d):
                 volume_obj = Dataset3d.from_array(
                     array=volume_obj,
-                    name=name,
-                    origin=origin,
-                    sampling=sampling,
-                    units=units,
-                    signal_units=signal_units,
                 )
         else:
             empty_recon_vol = np.zeros(
                 (
-                    tilt_series.array.shape[2],
-                    tilt_series.array.shape[2],
-                    tilt_series.array.shape[2],
+                    dataset.tilt_series.shape[2],
+                    dataset.tilt_series.shape[2],
+                    dataset.tilt_series.shape[2],
                 ),
-                dtype=tilt_series.array.dtype,
+                dtype=np.float32,
             )
 
             volume_obj = Dataset3d.from_array(
                 array=empty_recon_vol,
-                name=name,
-                origin=origin,
-                sampling=sampling,
-                units=units,
-                signal_units=signal_units,
             )
 
         return cls(
-            tilt_series=tilt_series,
+            dataset=dataset,
             volume_obj=volume_obj,
             device=device,
             _token=cls._token,
@@ -109,36 +98,37 @@ class TomographyBase(AutoSerialize):
 
     # --- Properties ---
     @property
-    def tilt_series(self) -> TiltSeries:
-        """Tilt series dataset."""
+    def dataset(self) -> TomographyDataset:
+        """Tomography dataset."""
 
-        return self._tilt_series
+        return self._dataset
 
-    @tilt_series.setter
-    def tilt_series(
+    @dataset.setter
+    def dataset(
         self,
-        tilt_series: Dataset3d | NDArray | TiltSeries,
-        tilt_angles: list | NDArray = None,
-        name: str | None = None,
-        origin: NDArray | tuple | list | float | int | None = None,
-        sampling: NDArray | tuple | list | float | int | None = None,
-        units: list[str] | tuple | list | None = None,
-        signal_units: str = "arb. units",
+        tilt_series: Dataset3d | NDArray | TomographyDataset,
+        tilt_angles: NDArray | Tensor,
+        z1_angles: NDArray | Tensor | None = None,
+        z3_angles: NDArray | Tensor | None = None,
+        shifts: NDArray | Tensor | None = None,
+        # name: str | None = None,
+        # origin: NDArray | tuple | list | float | int | None = None,
+        # sampling: NDArray | tuple | list | float | int | None = None,
+        # units: list[str] | tuple | list | None = None,
+        # signal_units: str = "arb. units",
     ):
         """Set the tilt series dataset."""
 
-        if not isinstance(tilt_series, TiltSeries):
-            tilt_series = TiltSeries.from_array(
+        if not isinstance(tilt_series, TomographyDataset):
+            dataset = TomographyDataset.from_array(
                 array=tilt_series,
                 tilt_angles=tilt_angles,
-                name=name,
-                origin=origin,
-                sampling=sampling,
-                units=units,
-                signal_units=signal_units,
+                z1_angles=z1_angles,
+                z3_angles=z3_angles,
+                shifts=shifts,
             )
 
-        self._tilt_series = tilt_series
+        self._dataset = dataset
 
     @property
     def volume_obj(self) -> Dataset3d | ObjectModelType | None:
@@ -155,12 +145,14 @@ class TomographyBase(AutoSerialize):
         elif not isinstance(volume_obj, Dataset3d):
             volume_obj = Dataset3d.from_array(
                 array=volume_obj,
-                name=self._tilt_series.name,
-                origin=self._tilt_series.origin,
-                sampling=self._tilt_series.sampling,
-                units=self._tilt_series.units,
-                signal_units=self._tilt_series.signal_units,
+                # name=self._tilt_series.name,
+                # origin=self._tilt_series.origin,
+                # sampling=self._tilt_series.sampling,
+                # units=self._tilt_series.units,
+                # signal_units=self._tilt_series.signal_units,
             )
+        elif isinstance(volume_obj, Dataset3d):
+            self._volume_obj = volume_obj
         else:
             raise ValueError("volume_obj must be a Dataset3d or ObjectModelType")
 
@@ -216,27 +208,31 @@ class TomographyBase(AutoSerialize):
         upsample_factor: int = 1,
         overwrite: bool = False,
     ):
-        aligned_tilt_series = np.zeros_like(self.tilt_series.array)
-        aligned_tilt_series[:, 0, :] = self.tilt_series.array[:, 0, :]
+        # TODO: This needs to be able to work with torch tensors.
+
+        placeholder_tilt_series = self.dataset.tilt_series.clone().detach().cpu().numpy()
+
+        aligned_tilt_series = np.zeros_like(placeholder_tilt_series)
+        aligned_tilt_series[0] = placeholder_tilt_series[0]
         shifts = []
-        num_imgs = self.tilt_series.array.shape[1]
+        num_imgs = placeholder_tilt_series.shape[1]
 
         pbar = tqdm(range(num_imgs - 1), desc="Cross-correlation alignment")
 
         for i in pbar:
             shift, aligned_img = cross_correlation_shift(
-                self.tilt_series.array[:, i, :],
-                self.tilt_series.array[:, i + 1, :],
+                placeholder_tilt_series[i],
+                placeholder_tilt_series[i + 1],
                 upsample_factor=upsample_factor,
                 return_shifted_image=True,
             )
 
-            aligned_tilt_series[:, i + 1, :] = aligned_img
+            aligned_tilt_series[i + 1] = aligned_img
             shifts.append(shift)
 
         if overwrite:
             # TODO: Check this overwrite idea, maybe also need to save the relative shifts?
-            self.tilt_series.array = aligned_tilt_series
+            self.dataset.tilt_series = np.array(aligned_tilt_series)
 
         return np.array(aligned_tilt_series), np.array(shifts)
 
@@ -294,11 +290,11 @@ class TomographyBase(AutoSerialize):
         volume_obj = volume_obj.detach().cpu().numpy()
         self.volume_obj = Dataset3d.from_array(
             array=volume_obj,
-            name=self.volume_obj.name,
-            origin=self.volume_obj.origin,
-            sampling=self.volume_obj.sampling,
-            units=self.volume_obj.units,
-            signal_units=self.volume_obj.signal_units,
+            # name=self.volume_obj.name,
+            # origin=self.volume_obj.origin,
+            # sampling=self.volume_obj.sampling,
+            # units=self.volume_obj.units,
+            # signal_units=self.volume_obj.signal_units,
         )
 
     # --- Visualizations ---

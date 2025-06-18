@@ -3,7 +3,7 @@ from itertools import product
 from typing import TYPE_CHECKING, Any, Iterator, List, Optional, Sequence, Tuple
 
 import numpy as np
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from quantem.core import config
 

@@ -74,13 +74,13 @@ class TomographyML(TomographyBase):
             if key == "volume":
                 self._add_optimizer(key, self.volume_obj.params, self._optimizer_params[key])
             elif key == "shifts":
-                self._add_optimizer(key, self.tilt_series.shifts, self._optimizer_params[key])
+                self._add_optimizer(key, self.dataset.shifts, self._optimizer_params[key])
             elif key == "z1":
-                self._add_optimizer(key, self.tilt_series.z1_angles, self._optimizer_params[key])
+                self._add_optimizer(key, self.dataset.z1_angles, self._optimizer_params[key])
             elif key == "x":
-                self._add_optimizer(key, self.tilt_series.tilt_angles, self._optimizer_params[key])
+                self._add_optimizer(key, self.dataset.tilt_angles, self._optimizer_params[key])
             elif key == "z3":
-                self._add_optimizer(key, self.tilt_series.z3_angles, self._optimizer_params[key])
+                self._add_optimizer(key, self.dataset.z3_angles, self._optimizer_params[key])
             else:
                 raise ValueError(
                     f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
