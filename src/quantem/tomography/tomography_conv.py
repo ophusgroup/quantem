@@ -6,7 +6,7 @@ from tqdm.auto import tqdm
 
 from quantem.tomography.radon.radon import iradon_torch, radon_torch
 from quantem.tomography.tomography_base import TomographyBase
-from quantem.tomography.utils import torch_phase_cross_correlation
+from quantem.tomography.utils import gaussian_filter_2d_stack, torch_phase_cross_correlation
 
 
 class TomographyConv(TomographyBase):
@@ -15,32 +15,18 @@ class TomographyConv(TomographyBase):
     """
 
     # --- Reconstruction Methods ---
-    """
-    TODO
-    Implement _run_epoch
-    """
 
     def _sirt_run_epoch(
         self,
-        # volume: torch.Tensor,
         tilt_series: torch.Tensor,
         proj_forward: torch.Tensor,
         angles: torch.Tensor,
         inline_alignment: bool,
-        enforce_positivity: bool,
-        shrinkage: float,
-        gaussian_kernel: float,
         filter_name: str,
         circle: bool,
+        gaussian_kernel: torch.Tensor | None,
     ):
         loss = 0
-
-        hard_constraints = {
-            "positivity": enforce_positivity,
-            "shrinkage": shrinkage,
-        }
-
-        self.volume_obj.hard_constraints = hard_constraints
 
         if inline_alignment:
             for ind in range(len(self.dataset.tilt_angles)):
@@ -101,8 +87,8 @@ class TomographyConv(TomographyBase):
 
         loss /= self.volume_obj._obj.shape[0]
 
-        # if gaussian_kernel is not None:
-        #     self.volume_obj.obj = gaussian_filter_2d_stack(self.volume_obj.obj, gaussian_kernel)
+        if gaussian_kernel is not None:
+            self.volume_obj.obj = gaussian_filter_2d_stack(self.volume_obj.obj, gaussian_kernel)
 
         return proj_forward, loss
 

@@ -41,6 +41,12 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
     ):
         num_angles, num_rows, num_cols = self.dataset.tilt_series.shape
 
+        hard_constraints = {
+            "positivity": enforce_positivity,
+            "shrinkage": shrinkage,
+        }
+        self.volume_obj.hard_constraints = hard_constraints
+
         if volume_shape is None:
             volume_shape = (num_rows, num_rows, num_rows)
         else:
@@ -60,30 +66,15 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             gaussian_kernel = None
 
         for iter in pbar:
-            if iter > 0 and inline_alignment:
-                proj_forward, loss = self._sirt_run_epoch(
-                    tilt_series=self.dataset.tilt_series,
-                    proj_forward=proj_forward,
-                    angles=self.dataset.tilt_angles,
-                    inline_alignment=True,
-                    enforce_positivity=enforce_positivity,
-                    shrinkage=shrinkage,
-                    gaussian_kernel=gaussian_kernel,
-                    filter_name=filter_name,
-                    circle=circle,
-                )
-            else:
-                proj_forward, loss = self._sirt_run_epoch(
-                    tilt_series=self.dataset.tilt_series,
-                    proj_forward=proj_forward,
-                    angles=self.dataset.tilt_angles,
-                    inline_alignment=False,
-                    enforce_positivity=enforce_positivity,
-                    shrinkage=shrinkage,
-                    gaussian_kernel=gaussian_kernel,
-                    filter_name=filter_name,
-                    circle=circle,
-                )
+            proj_forward, loss = self._sirt_run_epoch(
+                tilt_series=self.dataset.tilt_series,
+                proj_forward=proj_forward,
+                angles=self.dataset.tilt_angles,
+                inline_alignment=iter > 0 and inline_alignment,
+                filter_name=filter_name,
+                gaussian_kernel=gaussian_kernel,
+                circle=circle,
+            )
 
             pbar.set_description(f"SIRT Reconstruction | Loss: {loss.item():.4f}")
 
@@ -99,9 +90,9 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         scheduler_params: dict | None = None,
         hard_constraints: dict | None = None,
         soft_constraints: dict | None = None,
-        store_iterations: bool | None = None,
-        store_iterations_every: int | None = None,
-        autograd: bool = True,
+        # store_iterations: bool | None = None,
+        # store_iterations_every: int | None = None,
+        # autograd: bool = True,
     ):
         if reset:
             self.reset_recon()
