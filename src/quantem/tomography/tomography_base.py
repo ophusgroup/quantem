@@ -151,9 +151,8 @@ class TomographyBase(AutoSerialize):
     def volume_obj(self, volume_obj: Dataset3d | NDArray):
         """Set the reconstruction volume dataset."""
         if isinstance(volume_obj, ObjectModelType):
-            raise NotImplementedError("ObjectModelType is not supported for volume_obj.")
-
-        if not isinstance(volume_obj, Dataset3d):
+            self._volume_obj = volume_obj
+        elif not isinstance(volume_obj, Dataset3d):
             volume_obj = Dataset3d.from_array(
                 array=volume_obj,
                 name=self._tilt_series.name,
@@ -162,8 +161,8 @@ class TomographyBase(AutoSerialize):
                 units=self._tilt_series.units,
                 signal_units=self._tilt_series.signal_units,
             )
-
-        self._volume_obj = volume_obj
+        else:
+            raise ValueError("volume_obj must be a Dataset3d or ObjectModelType")
 
     @property
     def device(self) -> str:

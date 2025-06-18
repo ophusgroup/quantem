@@ -1,3 +1,5 @@
+from typing import Literal
+
 import torch
 
 # from torch_radon.radon import ParallelBeam as Radon
@@ -7,7 +9,7 @@ from quantem.core.datastructures.dataset3d import Dataset3d
 from quantem.tomography.tomography_base import TomographyBase
 from quantem.tomography.tomography_conv import TomographyConv
 from quantem.tomography.tomography_ml import TomographyML
-from quantem.tomography.utils import gaussian_kernel_1d
+from quantem.tomography.utils import differentiable_shift_2d, gaussian_kernel_1d, rot_ZXZ
 
 
 class Tomography(TomographyConv, TomographyML, TomographyBase):
@@ -36,6 +38,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         reset: bool = True,
         smoothing_sigma: float = None,
         shrinkage: float = None,
+        filter_name: str = "hamming",
+        circle: bool = False,
     ):
         num_slices, num_angles, num_rows = self.tilt_series.array.shape
 
@@ -86,6 +90,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                     enforce_positivity=enforce_positivity,
                     shrinkage=shrinkage,
                     gaussian_kernel=gaussian_kernel,
+                    filter_name=filter_name,
+                    circle=circle,
                 )
             else:
                 volume, proj_forward, loss = self._sirt_run_epoch(
@@ -97,6 +103,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                     enforce_positivity=enforce_positivity,
                     shrinkage=shrinkage,
                     gaussian_kernel=gaussian_kernel,
+                    filter_name=filter_name,
+                    circle=circle,
                 )
 
             pbar.set_description(f"SIRT Reconstruction | Loss: {loss.item():.4f}")
@@ -112,14 +120,95 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             signal_units=self.tilt_series.signal_units,
         )
 
-    def voxel_wise_recon(
+    def ad_recon(
         self,
+        num_iter: int = 0,
+        reset: bool = False,
+        optimizer_params: dict | None = None,
+        scheduler_params: dict | None = None,
+        hard_constraints: dict = {},
+        soft_constraints: dict = {},
+        batch_size: int | None = None,
+        store_iterations: bool | None = None,
+        store_iterations_every: int | None = None,
+        device: Literal["cpu", "gpu"] | None = None,
+        autograd: bool = True,
     ):
-        if not isinstance(self.volume_obj):
-            raise NotImplementedError()
-        raise NotImplementedError(
-            "Voxel-wise reconstruction is not implemented yet. Please use the SIRT method for now."
+        # # Check if self.volume_obj is a ObjectModelType
+        # if not isinstance(self.volume_obj, ObjectModelType):
+        #     raise TypeError("volume_obj must be a ObjectModelType")
+        tilt_series_torch = torch.tensor(
+            self.tilt_series.array,
+            device=self.device,
+            dtype=torch.float32,
         )
+
+        tilt_angles_torch = torch.tensor(
+            self.tilt_series.tilt_angles,
+            device=self.device,
+            dtype=torch.float32,
+        )
+
+        self.volume_obj.to(self.device)
+        self.tilt_series.shifts = (
+            self.tilt_series.shifts.detach().to(self.device).requires_grad_(True)
+        )
+        self.tilt_series.z1_angles = (
+            self.tilt_series.z1_angles.detach().to(self.device).requires_grad_(True)
+        )
+        self.tilt_series.z3_angles = (
+            self.tilt_series.z3_angles.detach().to(self.device).requires_grad_(True)
+        )
+
+        if optimizer_params is not None:
+            self.optimizer_params = optimizer_params
+            self.set_optimizers()
+
+        if scheduler_params is not None:
+            self.scheduler_params = scheduler_params
+            self.set_schedulers(self.scheduler_params, num_iter=num_iter)
+
+        self.volume_obj.hard_constraints = hard_constraints
+        self.volume_obj.soft_constraints = soft_constraints
+
+        pbar = tqdm(range(num_iter), desc="AD Reconstruction")
+
+        for a0 in pbar:
+            loss = 0.0
+
+            pred_volume = self.volume_obj.forward()
+
+            for i in range(len(tilt_series_torch)):
+                forward_projection = self.projection_operator(
+                    vol=pred_volume,
+                    z1=self.tilt_series.z1_angles[i],
+                    x=tilt_angles_torch[i],
+                    z3=self.tilt_series.z3_angles[i],
+                    shift_x=self.tilt_series.shifts[i, 0],
+                    shift_y=self.tilt_series.shifts[i, 1],
+                    device=self.device,
+                )
+
+                loss += torch.nn.functional.mse_loss(forward_projection, tilt_series_torch[i])
+            loss /= len(tilt_series_torch)
+
+            loss += self.volume_obj.soft_loss
+            loss.backward()
+
+            for opt in self.optimizers.values():
+                opt.step()
+                opt.zero_grad()
+
+            if self.schedulers is not None:
+                for sch in self.schedulers.values():
+                    if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                        sch.step(loss)
+                    elif sch is not None:
+                        sch.step()
+
+            pbar.set_description(f"AD Reconstruction | Loss: {loss:.4f}")
+
+        return self
 
     def recon_ML(
         self,
@@ -127,3 +216,39 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         raise NotImplementedError(
             "ML-based reconstruction is not implemented yet. Please use the SIRT method for now."
         )
+
+    """
+    Torch forward operators for the AD reconstruction
+    """
+
+    def projection_operator(
+        self,
+        vol,
+        z1,
+        x,
+        z3,
+        shift_x,
+        shift_y,
+        device,
+    ):
+        projection = (
+            rot_ZXZ(
+                mags=vol.unsqueeze(0),  # Add batch dimension
+                z1=z1,
+                x=x,
+                z3=z3,
+                device=device,
+                mode="bilinear",
+            )
+            .squeeze()
+            .sum(axis=0)
+        )
+
+        shifted_projection = differentiable_shift_2d(
+            image=projection,
+            shift_x=shift_x,
+            shift_y=shift_y,
+            sampling_rate=1.0,  # Assuming 1 pixel = 1 physical unit
+        )
+
+        return shifted_projection

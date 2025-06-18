@@ -129,7 +129,7 @@ def iradon_torch(
         raise ValueError("theta does not match number of projections")
 
     if output_size is None:
-        output_size = N if circle else int(torch.floor(torch.sqrt(N**2 / 2.0)))
+        output_size = N if circle else int(torch.floor(torch.sqrt(torch.tensor(N) ** 2 / 2.0)))
 
     device = sinogram.device if device is None else device
     sinogram = sinogram.to(dtype=torch.float32, device=device)

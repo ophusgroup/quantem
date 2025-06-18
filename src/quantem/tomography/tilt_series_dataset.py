@@ -1,6 +1,7 @@
 from typing import Any, List, Self
 
 import numpy as np
+import torch
 from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset3d import Dataset2d, Dataset3d
@@ -33,7 +34,6 @@ class TiltSeries(Dataset3d):
             signal_units=signal_units,
             _token=_token,
         )
-
         self._tilt_angles = tilt_angles
         self._z1_angles = z1_angles
         self._z3_angles = z3_angles
@@ -60,14 +60,31 @@ class TiltSeries(Dataset3d):
 
         # array = np.transpose(array, axes=(2, 0, 1))
 
+        if z1_angles is not None:
+            validated_z1_angles = ensure_valid_array(z1_angles, ndim=1)
+        else:
+            validated_z1_angles = torch.zeros(len(validated_tilt_angles))
+
+        if z3_angles is not None:
+            validated_z3_angles = ensure_valid_array(z3_angles, ndim=1)
+        else:
+            validated_z3_angles = torch.zeros(len(validated_tilt_angles))
+
+        if shifts is not None:
+            validated_shifts = ensure_valid_array(shifts, ndim=2)
+        else:
+            validated_shifts = torch.zeros((len(validated_tilt_angles), 2))
+
+        array = torch.from_numpy(array)
+
         return cls(
             array=array,
             tilt_angles=validated_tilt_angles
             if validated_tilt_angles is not None
             else ["duck" for _ in range(array.shape[0])],
-            z1_angles=z1_angles,
-            z3_angles=z3_angles,
-            shifts=shifts,
+            z1_angles=validated_z1_angles,
+            z3_angles=validated_z3_angles,
+            shifts=validated_shifts,
             name=name if name is not None else "Tilt Series Dataset",
             origin=origin if origin is not None else np.zeros(3),
             sampling=sampling if sampling is not None else np.ones(3),

@@ -4,6 +4,7 @@ from typing import Any
 import torch
 
 from quantem.core.io.serialize import AutoSerialize
+from quantem.tomography.utils import get_TV_loss
 
 
 class ObjectBase(AutoSerialize):
@@ -22,7 +23,8 @@ class ObjectBase(AutoSerialize):
         self._obj = torch.zeros(self._shape, device=device, dtype=torch.float32) + offset_obj
 
         self._device = device
-        self._constraints = {}
+        self._hard_constraints = {}
+        self._soft_constraints = {}
 
     @property
     def shape(self) -> tuple[int, int, int]:
@@ -62,47 +64,95 @@ class ObjectBase(AutoSerialize):
     def name(self) -> str:
         pass
 
+    @abstractmethod
+    def params(self) -> torch.Tensor:
+        pass
+
 
 class ObjectConstraints(ObjectBase):
-    DEFAULT_CONSTRAINTS = {
+    DEFAULT_HARD_CONSTRAINTS = {
         "fourier_filter": False,
         "positivity": False,
         "shrinkage": False,
         "circular_mask": False,
     }
 
-    @property
-    def constraints(self) -> dict[str, Any]:
-        return self._constraints
+    DEFAULT_SOFT_CONSTRAINTS = {
+        "tv_vol": 0,
+    }
 
-    @constraints.setter
-    def constraints(self, constraints: dict[str, Any]):
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        for key, value in constraints.items():
+    @property
+    def hard_constraints(self) -> dict[str, Any]:
+        return self._hard_constraints
+
+    @hard_constraints.setter
+    def hard_constraints(self, hard_constraints: dict[str, Any]):
+        gkeys = self.DEFAULT_HARD_CONSTRAINTS.keys()
+        for key, value in hard_constraints.items():
             if key not in gkeys:  # This might be redundant since add_constraint is checking.
                 raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
-            self._constraints[key] = value
+            self._hard_constraints[key] = value
 
-    def add_constraint(self, constraint: str, value: Any):
+    @property
+    def soft_constraints(self) -> dict[str, Any]:
+        return self._soft_constraints
+
+    @soft_constraints.setter
+    def soft_constraints(self, soft_constraints: dict[str, Any]):
+        gkeys = self.DEFAULT_SOFT_CONSTRAINTS.keys()
+        for key, value in soft_constraints.items():
+            if key not in gkeys:
+                raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
+            self._soft_constraints[key] = value
+
+    def add_hard_constraint(self, constraint: str, value: Any):
         """Add constraints to the object model."""
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
+        gkeys = self.DEFAULT_HARD_CONSTRAINTS.keys()
         if constraint not in gkeys:
             raise KeyError(
                 f"Invalid object constraint key '{constraint}', allowed keys are {gkeys}"
             )
-        self._constraints[constraint] = value
+        self._hard_constraints[constraint] = value
 
-    def apply_constraints(
+    def add_soft_constraint(self, constraint: str, value: Any):
+        """Add constraints to the object model."""
+        gkeys = self.DEFAULT_SOFT_CONSTRAINTS.keys()
+        if constraint not in gkeys:
+            raise KeyError(
+                f"Invalid object constraint key '{constraint}', allowed keys are {gkeys}"
+            )
+        self._soft_constraints[constraint] = value
+
+    def apply_hard_constraints(
         self,
         obj: torch.Tensor,
     ) -> torch.Tensor:
         """
         Apply constraints to the object model.
         """
-        if self.constraints["positivity"]:
-            obj2 = torch.clamp(obj, min=0.0, max=None)
 
+        if self.hard_constraints["positivity"]:
+            obj2 = torch.clamp(obj, min=0.0, max=None)
+        else:
+            obj2 = obj
         return obj2
+
+    def apply_soft_constraints(
+        self,
+        obj: torch.Tensor,
+    ) -> torch.Tensor:
+        """
+        'Applies' soft constraints to the object model. This will return additional loss terms.
+        """
+        soft_loss = 0.0
+        if self.soft_constraints["tv_vol"] > 0:
+            tv_loss = get_TV_loss(
+                obj.unsqueeze(0).unsqueeze(0), factor=self.soft_constraints["tv_vol"]
+            )
+
+            soft_loss += tv_loss
+
+        return soft_loss
 
 
 class ObjectVoxelwise(ObjectConstraints):
@@ -119,11 +169,12 @@ class ObjectVoxelwise(ObjectConstraints):
             volume_shape=volume_shape,
             device=device,
         )
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
+        self.hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
+        self.soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
 
     @property
     def obj(self):
-        return self.apply_constraints(self._obj)
+        return self.apply_hard_constraints(self._obj)
 
     def forward(self):
         return self.obj
@@ -140,6 +191,14 @@ class ObjectVoxelwise(ObjectConstraints):
     @property
     def name(self) -> str:
         return "ObjectVoxelwise"
+
+    @property
+    def params(self) -> torch.Tensor:
+        return self._obj
+
+    @property
+    def soft_loss(self) -> torch.Tensor:
+        return self.apply_soft_constraints(self._obj)
 
 
 ObjectModelType = ObjectVoxelwise  # | ObjectDIP | ObjectImplicit (ObjectFFN?)

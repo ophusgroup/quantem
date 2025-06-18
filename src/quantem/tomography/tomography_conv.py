@@ -30,6 +30,8 @@ class TomographyConv(TomographyBase):
         enforce_positivity: bool,
         shrinkage: float,
         gaussian_kernel: float,
+        filter_name: str,
+        circle: bool,
     ):
         loss = 0
 
@@ -69,12 +71,16 @@ class TomographyConv(TomographyBase):
             error = sinogram_true - sinogram_est
 
             correction = iradon_torch(
-                error, theta=angles, device=self.device, filter_name="hamming"
+                error, theta=angles, device=self.device, filter_name=filter_name, circle=circle
             )
 
             # I'm pretty sure this implementation of normalization is wrong
             normalization = iradon_torch(
-                torch.ones_like(error), theta=angles, device=self.device, filter_name=None
+                torch.ones_like(error),
+                theta=angles,
+                device=self.device,
+                filter_name=None,
+                circle=circle,
             )
             normalization[normalization == 0] = 1e-6
 

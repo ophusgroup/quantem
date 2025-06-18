@@ -72,13 +72,15 @@ class TomographyML(TomographyBase):
         """Reset all optimizers and set them according to the optimizer_params."""
         for key, _ in self._optimizer_params.items():
             if key == "volume":
-                self._add_optimizer(key, self.obj_model.params, self._optimizer_params[key])
-            elif key == "probe":
-                self._add_optimizer(key, self.probe_model.params, self._optimizer_params[key])
-            elif key == "descan":
-                self._add_optimizer(key, self.dset.descan_shifts, self._optimizer_params[key])
-            elif key == "scan_positions":
-                self._add_optimizer(key, self.dset.scan_positions_px, self._optimizer_params[key])
+                self._add_optimizer(key, self.volume_obj.params, self._optimizer_params[key])
+            elif key == "shifts":
+                self._add_optimizer(key, self.tilt_series.shifts, self._optimizer_params[key])
+            elif key == "z1":
+                self._add_optimizer(key, self.tilt_series.z1_angles, self._optimizer_params[key])
+            elif key == "x":
+                self._add_optimizer(key, self.tilt_series.tilt_angles, self._optimizer_params[key])
+            elif key == "z3":
+                self._add_optimizer(key, self.tilt_series.z3_angles, self._optimizer_params[key])
             else:
                 raise ValueError(
                     f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
@@ -96,6 +98,7 @@ class TomographyML(TomographyBase):
         opt_params: dict,
     ) -> None:
         """Can be used to add an optimizer without resetting the other optimizers."""
+
         if key not in self.OPTIMIZABLE_VALS:
             raise ValueError(
                 f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
