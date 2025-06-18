@@ -2,8 +2,6 @@ import numpy as np
 import torch
 
 # from torch_radon.radon import ParallelBeam as Radon
-from tqdm.auto import tqdm
-
 from quantem.tomography.radon.radon import iradon_torch, radon_torch
 from quantem.tomography.tomography_base import TomographyBase
 from quantem.tomography.utils import gaussian_filter_2d_stack, torch_phase_cross_correlation
@@ -55,37 +53,61 @@ class TomographyConv(TomographyBase):
 
         # Forward projection
 
-        for z in tqdm(range(self.volume_obj.obj.shape[0])):
-            slice_estimate = self.volume_obj.obj[z]
-            sinogram_est = radon_torch(slice_estimate, theta=angles, device=self.device)
+        sinogram_est = radon_torch(self.volume_obj.obj, theta=angles, device=self.device)
+        proj_forward = sinogram_est.permute(1, 2, 0)
+        error = (tilt_series - proj_forward).permute(2, 0, 1)
 
-            sinogram_true = tilt_series[:, :, z]
+        correction = iradon_torch(
+            error, theta=angles, device=self.device, filter_name=filter_name, circle=circle
+        )
 
-            error = sinogram_true - sinogram_est
+        normalization = iradon_torch(
+            torch.ones_like(error),
+            theta=angles,
+            device=self.device,
+            filter_name=None,
+            circle=circle,
+        )
 
-            correction = iradon_torch(
-                error, theta=angles, device=self.device, filter_name=filter_name, circle=circle
-            )
+        normalization[normalization == 0] = 1e-6
 
-            # I'm pretty sure this implementation of normalization is wrong
-            normalization = iradon_torch(
-                torch.ones_like(error),
-                theta=angles,
-                device=self.device,
-                filter_name=None,
-                circle=circle,
-            )
-            normalization[normalization == 0] = 1e-6
+        correction /= normalization
 
-            correction /= normalization
+        self.volume_obj._obj += correction
 
-            self.volume_obj._obj[z] += correction
+        loss = torch.mean(torch.abs(error))
 
-            proj_forward[:, :, z] = sinogram_est
+        # for z in tqdm(range(self.volume_obj.obj.shape[0]), desc="SIRT Reconstruction"):
+        #     slice_estimate = self.volume_obj.obj[z]
+        #     sinogram_est = radon_torch(slice_estimate, theta=angles, device=self.device)
 
-            loss += torch.mean(torch.abs(error))
+        #     sinogram_true = tilt_series[:, :, z]
 
-        loss /= self.volume_obj._obj.shape[0]
+        #     error = sinogram_true - sinogram_est
+
+        #     correction = iradon_torch(
+        #         error, theta=angles, device=self.device, filter_name=filter_name, circle=circle
+        #     )
+
+        #     # I'm pretty sure this implementation of normalization is wrong
+        #     normalization = iradon_torch(
+        #         torch.ones_like(error),
+        #         theta=angles,
+        #         device=self.device,
+        #         filter_name=None,
+        #         circle=circle,
+        #     )
+        #     normalization[normalization == 0] = 1e-6
+
+        #     correction /= normalization
+
+        #     self.volume_obj._obj[z] += correction
+
+        #     proj_forward[:, :, z] = sinogram_est
+
+        #     loss += torch.mean(torch.abs(error))
+
+        # loss /= self.volume_obj._obj.shape[0]
 
         if gaussian_kernel is not None:
             self.volume_obj.obj = gaussian_filter_2d_stack(self.volume_obj.obj, gaussian_kernel)
