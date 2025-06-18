@@ -9,7 +9,7 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.imaging_utils import bilinear_kde_torch
 from quantem.core.utils.scattering_utils import electron_wavelength_angstrom
 from quantem.core.utils.utils import SimpleTorchBatcher
-from quantem.core.utils.validators import ensure_valid_tensor
+from quantem.core.utils.validators import ensure_valid_aberration_coefs, ensure_valid_tensor
 from quantem.diffractive_imaging.aberration_surfaces import chi_taylor_expansion
 from quantem.diffractive_imaging.origin_models import CenterOfMassOriginModel
 
@@ -49,7 +49,7 @@ class WPOAPtychography(AutoSerialize):
         self.wavelength = electron_wavelength_angstrom(energy)
 
         self.rotation_angle = rotation_angle
-        self.coefs = aberration_coefs
+        self.aberration_coefs = aberration_coefs
 
     @classmethod
     def from_virtual_bfs(
@@ -264,14 +264,16 @@ class WPOAPtychography(AutoSerialize):
         self._rotation_angle = torch.nn.Parameter(torch.as_tensor(float(value), dtype=torch.float))
 
     @property
-    def coefs(self) -> dict:
-        return self._coefs
+    def aberration_coefs(self) -> dict:
+        return self._aberration_coefs
 
-    @coefs.setter
-    def coefs(self, value: dict):
-        self._coefs = torch.nn.ParameterDict(
-            {k: torch.as_tensor(v, dtype=torch.float) for k, v in value.items()}
-        )
+    @aberration_coefs.setter
+    def aberration_coefs(self, value: dict):
+        value = ensure_valid_aberration_coefs(value)
+        # self._aberration_coefs = torch.nn.ParameterDict(
+        #     {k: torch.as_tensor(v, dtype=torch.float) for k, v in value.items()}
+        # )
+        self._aberration_coefs = value
 
     def preprocess(
         self,
@@ -288,8 +290,7 @@ class WPOAPtychography(AutoSerialize):
         )
 
         self._k_probe = self.semiangle_cutoff * 1e-3 / self.wavelength
-
-        self.corrected_stack = None
+        self._corrected_stack = None
 
         return self
 
@@ -318,31 +319,37 @@ class WPOAPtychography(AutoSerialize):
 
     def _parallax_correction_quadratic(
         self,
-        coefs=None,
+        aberration_coefs=None,
         upsampling_factor=None,
         rotation_angle=None,
         max_batch_size=None,
         flip_phase=True,
     ):
         """ """
-        if coefs is None:
-            coefs = self.coefs
-        coefs = {key: coefs[key] for key in ("C10", "C12", "phi12") if key in coefs}
+        if aberration_coefs is None:
+            aberration_coefs = self.aberration_coefs
+        else:
+            aberration_coefs = ensure_valid_aberration_coefs(aberration_coefs)
+        aberration_coefs = {
+            key: aberration_coefs[key] for key in ("C10", "C12", "phi12") if key in aberration_coefs
+        }
 
         if rotation_angle is None:
             rotation_angle = self.rotation_angle
+        else:
+            rotation_angle = float(rotation_angle)
 
         if upsampling_factor is None:
             upsampling_factor = 1
         upsampling_factor = math.ceil(upsampling_factor)
 
-        if coefs:
+        if aberration_coefs:
             _, dx, dy = chi_taylor_expansion(
                 self._kxa,
                 self._kya,
                 self.wavelength,
                 rotation_angle,
-                coefs,
+                aberration_coefs,
                 include_gradient=True,
                 include_hessian=False,
             )
@@ -359,7 +366,7 @@ class WPOAPtychography(AutoSerialize):
                     qya,
                     self.wavelength,
                     0,  # note fixed coordinate system
-                    coefs,
+                    aberration_coefs,
                     include_gradient=False,
                     include_hessian=False,
                 )
@@ -389,30 +396,34 @@ class WPOAPtychography(AutoSerialize):
 
     def _parallax_correction_higher_order(
         self,
-        coefs=None,
+        aberration_coefs=None,
         upsampling_factor=None,
         rotation_angle=None,
         max_batch_size=None,
         flip_phase=True,
     ):
         """ """
-        if coefs is None:
-            coefs = self.coefs
+        if aberration_coefs is None:
+            aberration_coefs = self.aberration_coefs
+        else:
+            aberration_coefs = ensure_valid_aberration_coefs(aberration_coefs)
 
         if rotation_angle is None:
             rotation_angle = self.rotation_angle
+        else:
+            rotation_angle = float(rotation_angle)
 
         if upsampling_factor is None:
             upsampling_factor = 1
         upsampling_factor = math.ceil(upsampling_factor)
 
-        if coefs:
+        if aberration_coefs:
             _, dx, dy, hxx, hxy, hyy = chi_taylor_expansion(
                 self._kxa,
                 self._kya,
                 self.wavelength,
                 rotation_angle,
-                coefs,
+                aberration_coefs,
                 include_gradient=True,
                 include_hessian=True,
             )
@@ -436,7 +447,7 @@ class WPOAPtychography(AutoSerialize):
                 qya,
                 self.wavelength,
                 0,  # note fixed coordinate system
-                coefs,
+                aberration_coefs,
                 include_gradient=False,
                 include_hessian=False,
             )
@@ -469,7 +480,7 @@ class WPOAPtychography(AutoSerialize):
 
     def parallax_correction(
         self,
-        coefs=None,
+        aberration_coefs=None,
         upsampling_factor=None,
         rotation_angle=None,
         quadratic_approximation=True,
@@ -479,11 +490,11 @@ class WPOAPtychography(AutoSerialize):
         """ """
         if quadratic_approximation:
             self._parallax_correction_quadratic(
-                coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
+                aberration_coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
             )
         else:
             self._parallax_correction_higher_order(
-                coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
+                aberration_coefs, upsampling_factor, rotation_angle, max_batch_size, flip_phase
             )
         return self
 
@@ -495,7 +506,7 @@ class WPOAPtychography(AutoSerialize):
         q_probe,
         reciprocal_sampling,
         rotation_angle,
-        coefs,
+        aberration_coefs,
         normalize=False,
     ):
         """soft aperture + chi"""
@@ -515,7 +526,7 @@ class WPOAPtychography(AutoSerialize):
             qya,
             wavelength,
             rotation_angle,
-            coefs,
+            aberration_coefs,
             include_gradient=False,
             include_hessian=False,
         )
@@ -530,7 +541,7 @@ class WPOAPtychography(AutoSerialize):
         q_probe,
         reciprocal_sampling,
         rotation_angle,
-        coefs,
+        aberration_coefs,
         normalize=False,
     ):
         """ """
@@ -544,7 +555,7 @@ class WPOAPtychography(AutoSerialize):
             q_probe,
             reciprocal_sampling,
             rotation_angle,
-            coefs,
+            aberration_coefs,
             normalize=normalize,
         )
 
@@ -555,7 +566,7 @@ class WPOAPtychography(AutoSerialize):
             q_probe,
             reciprocal_sampling,
             rotation_angle,
-            coefs,
+            aberration_coefs,
             normalize=normalize,
         )
 
@@ -565,15 +576,19 @@ class WPOAPtychography(AutoSerialize):
 
     def single_sideband_correction(
         self,
-        coefs=None,
+        aberration_coefs=None,
         upsampling_factor=None,
         rotation_angle=None,
     ):
-        if coefs is None:
-            coefs = self.coefs
+        if aberration_coefs is None:
+            aberration_coefs = self.aberration_coefs
+        else:
+            aberration_coefs = ensure_valid_aberration_coefs(aberration_coefs)
 
         if rotation_angle is None:
             rotation_angle = self.rotation_angle
+        else:
+            rotation_angle = float(rotation_angle)
 
         if upsampling_factor is None:
             upsampling_factor = 1
@@ -586,7 +601,7 @@ class WPOAPtychography(AutoSerialize):
             self._k_probe,
             self.reciprocal_sampling[0],
             rotation_angle,
-            coefs,
+            aberration_coefs,
             normalize=False,
         )
 
@@ -609,7 +624,7 @@ class WPOAPtychography(AutoSerialize):
                 self._k_probe,
                 self.reciprocal_sampling[0],
                 rotation_angle,
-                coefs,
+                aberration_coefs,
                 normalize=False,
             )
 
@@ -633,3 +648,64 @@ class WPOAPtychography(AutoSerialize):
         if self.corrected_stack is None:
             return None
         return ((self.corrected_stack - self.mean_aligned_bf) ** 2.0).mean()
+
+    @property
+    def corrected_stack(self) -> torch.Tensor:
+        return self._corrected_stack
+
+    @corrected_stack.setter
+    def corrected_stack(self, value: torch.Tensor):
+        self._corrected_stack = ensure_valid_tensor(value, dtype=torch.float)
+
+    def optical_sectioning(
+        self,
+        depth_slices,
+        aberration_coefs=None,
+        upsampling_factor=None,
+        rotation_angle=None,
+        use_parallax_correction=True,
+        quadratic_approximation=True,
+        max_batch_size=None,
+        flip_phase=True,
+    ):
+        """ """
+
+        if self._corrected_stack is not None:
+            corrected_stack = self._corrected_stack.detach().clone()
+        else:
+            corrected_stack = None
+
+        if aberration_coefs is None:
+            aberration_coefs = self.aberration_coefs
+        else:
+            aberration_coefs = ensure_valid_aberration_coefs(aberration_coefs)
+
+        depth_slices = ensure_valid_tensor(depth_slices, dtype=torch.float)
+
+        if "C10" not in aberration_coefs:
+            aberration_coefs["C10"] = 0.0
+
+        n_slices = depth_slices.shape[0]
+        qxa, qya = self._return_upsampled_qgrid(upsampling_factor)
+        mean_images = torch.empty((n_slices,) + qxa.shape)
+        for n, dz in enumerate(depth_slices):
+            coefs = aberration_coefs.copy()
+            coefs["C10"] = coefs["C10"] + dz
+
+            if use_parallax_correction:
+                self.parallax_correction(
+                    coefs,
+                    upsampling_factor,
+                    rotation_angle,
+                    quadratic_approximation,
+                    max_batch_size,
+                    flip_phase,
+                )
+            else:
+                self.single_sideband_correction(coefs, upsampling_factor, rotation_angle)
+            mean_images[n] = self.mean_aligned_bf
+
+        if corrected_stack is not None:
+            self.corrected_stack = corrected_stack
+
+        return mean_images

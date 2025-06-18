@@ -36,10 +36,11 @@ dependencies = [
   "tqdm",
   "zarr>3",
   "cmasher>=1.9.2",
-  "rosettasciio>=0.8.0",
+  "rosettasciio>=0.9.0",
   "h5py>=3.13.0",
   "torch>=2.7.0",
   "optuna>=4.3.0",
+  "hdf5plugin>=5.1.0",
 ]
 
 [tool.hatch.build.targets.sdist]

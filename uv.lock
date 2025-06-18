@@ -732,6 +732,22 @@ wheels = [
 ]
 
 [[package]]
+name = "hdf5plugin"
+version = "5.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "h5py" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/cf/77/136d49eff653001caf08fbb43cf90b9985f2126f257dd89fc4a768f1ac9f/hdf5plugin-5.1.0.tar.gz", hash = "sha256:cf78f1426b5868128b9ec6c498b70d6734e1dc8007a8ed1e7282954ab421b3fa", size = 65674335, upload-time = "2025-03-31T09:12:25.469Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/f2/c2/2ea8edb2b69b3aee3ba7021744f9b6ad93cd89b4bbaae4e4aac41fb75318/hdf5plugin-5.1.0-py3-none-macosx_10_13_universal2.whl", hash = "sha256:6f88bdc3ebf1d7393557d6c70811552f76f8fdd275988a7d2c904633f1a21a1d", size = 13335707, upload-time = "2025-03-31T09:12:05.785Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/66/9abd90121e29ecee137a7d31c92aea33736278a72a6d1f61009c8cc7dcc9/hdf5plugin-5.1.0-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:0151f844e5f7de0e26cc2de275a339f6936c825fee915cbd54318e22a913c00a", size = 43842855, upload-time = "2025-03-31T09:12:09.243Z" },
+    { url = "https://files.pythonhosted.org/packages/f6/7b/5f0c587d0c0fa6e42468eb5196927be7f91d91ee781a7a654d4204fe7716/hdf5plugin-5.1.0-py3-none-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:b613e16d376d3b37fd2d76893e356c402100bd68a02abbe960a98e8257ca8758", size = 46010074, upload-time = "2025-03-31T09:12:14.364Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/db/8d85bd3f5b9ee894518f9d9ed1019fd8b7014340beca512dfb76d5632ec9/hdf5plugin-5.1.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:6da81b0b168f271b0cf995a12c28cf01b381587fed21f25fd91b2c90d5108425", size = 45876035, upload-time = "2025-03-31T09:12:18.479Z" },
+    { url = "https://files.pythonhosted.org/packages/43/fb/7f85e84f35792e9ee20c557bf5fe2ac180cca73beae411a1d91898fcc4b5/hdf5plugin-5.1.0-py3-none-win_amd64.whl", hash = "sha256:6be3409554bde676db0f1ab46a27e87ea73d7974f359f354a738c812618261d1", size = 3359510, upload-time = "2025-03-31T09:12:21.988Z" },
+]
+
+[[package]]
 name = "httpcore"
 version = "1.0.8"
 source = { registry = "https://pypi.org/simple" }
@@ -2070,6 +2086,7 @@ dependencies = [
     { name = "colorspacious" },
     { name = "dill" },
     { name = "h5py" },
+    { name = "hdf5plugin" },
     { name = "matplotlib" },
     { name = "numpy" },
     { name = "optuna" },
@@ -2099,10 +2116,11 @@ requires-dist = [
     { name = "colorspacious" },
     { name = "dill" },
     { name = "h5py", specifier = ">=3.13.0" },
+    { name = "hdf5plugin", specifier = ">=5.1.0" },
     { name = "matplotlib" },
     { name = "numpy", specifier = ">2" },
     { name = "optuna", specifier = ">=4.3.0" },
-    { name = "rosettasciio", specifier = ">=0.8.0" },
+    { name = "rosettasciio", specifier = ">=0.9.0" },
     { name = "scipy" },
     { name = "torch", specifier = ">=2.7.0" },
     { name = "tqdm" },
@@ -2172,7 +2190,7 @@ wheels = [
 
 [[package]]
 name = "rosettasciio"
-version = "0.8.0"
+version = "0.9.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "dask", extra = ["array"] },
@@ -2182,29 +2200,29 @@ dependencies = [
     { name = "python-dateutil" },
     { name = "pyyaml" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/14/59/eb3da496a510b7eaacf70b65413121acd4d467f08ac09a5125cd4a10693a/rosettasciio-0.8.0.tar.gz", hash = "sha256:65f861519364e38f0c84459d089b89d00c1b137256b0149a00df7ec672369f2a", size = 1154056, upload-time = "2025-03-28T09:31:22.183Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/73/90/5cbeed12e292d03a3debbf550f73a64317e40075de6740d08647ffc77bce/rosettasciio-0.9.0.tar.gz", hash = "sha256:51291757879e3afe36c812e958f2ce978f2c419794b469d4dca09ccfd8e189b9", size = 1168626, upload-time = "2025-05-29T19:07:27.239Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/92/b8/ce9d10fcc2ecb16d7b827e5baa29248cabf92b0ca077b64262007d9a5e57/rosettasciio-0.8.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:59e68327d6cde22bf1e8805eedbca74b28f9bd267690e2c0082ad161a8969449", size = 762782, upload-time = "2025-03-28T09:30:43.31Z" },
-    { url = "https://files.pythonhosted.org/packages/76/56/b911332647bd15c7689e2939f7ee493cc718a45f837b11dfd778fadcfd98/rosettasciio-0.8.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:e5b9fa358b29730bb4754f366bab9f6f7a18e27a79d6bdb63ac4e4dc1ab16325", size = 756256, upload-time = "2025-03-28T09:30:44.62Z" },
-    { url = "https://files.pythonhosted.org/packages/74/15/273271dd31cc6062a133325701c6fd4ce2d1ae7fe286f12c55ee29422e0b/rosettasciio-0.8.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:b6bd25eea2339d9687c017ba96bd49b1d3236d6ccbea1e57732b36dd595f5494", size = 1198907, upload-time = "2025-03-28T09:30:45.858Z" },
-    { url = "https://files.pythonhosted.org/packages/5d/f9/7c72314594f352725337574b898aa1ca307b9848b334968e985d14035e5e/rosettasciio-0.8.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1fdc64183999bf33eae526d53712cd16436e9d128d6b188b3e2a398b6a387e67", size = 1204143, upload-time = "2025-03-28T09:30:47.567Z" },
-    { url = "https://files.pythonhosted.org/packages/f9/34/59fa0505bc60784798d84c892874e0992a40b96b02587755f96d982753e6/rosettasciio-0.8.0-cp311-cp311-win_amd64.whl", hash = "sha256:20855154aab22286de618384cc0d4a9e795ff709aef903692f46a196c45bdac1", size = 753155, upload-time = "2025-03-28T09:30:48.966Z" },
-    { url = "https://files.pythonhosted.org/packages/00/3b/651b168f02e22be1c57a3378417b072eb2e4ae7f7c52f1db2218a6824dd3/rosettasciio-0.8.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:cf27401f05f2609e11f4bf4fe5051026835a615b8808efc19ccf7a1b5a2d4765", size = 764087, upload-time = "2025-03-28T09:30:50.197Z" },
-    { url = "https://files.pythonhosted.org/packages/de/6b/1971a189c0baf7cd68ea751f1f3fa2e2bb96ceb25c52b2667d6cb7a28db4/rosettasciio-0.8.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:2004563b2c44e0831c67a9bd57017f1d00326c55172a18c250b8a45a116f9c1f", size = 757080, upload-time = "2025-03-28T09:30:51.725Z" },
-    { url = "https://files.pythonhosted.org/packages/1b/11/7160da8ebce4595f3d1161d8a4cfe8ab2474053f0acd47365122c5dcb2b8/rosettasciio-0.8.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fccf157b84e30af7f5e4fed51ab576a37ade869e6f92b7834c4925b787c7b2ff", size = 1197350, upload-time = "2025-03-28T09:30:53.225Z" },
-    { url = "https://files.pythonhosted.org/packages/7d/ce/2027572b0b8f0f2d77af9156b65dac77510215f351fb2afab7819b402fa9/rosettasciio-0.8.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:5ce4c0cfbc34544ff18c26320f9de504ec8f53d1ca4fe9c4394371ea0f20a99c", size = 1201888, upload-time = "2025-03-28T09:30:54.634Z" },
-    { url = "https://files.pythonhosted.org/packages/a4/b2/b905263c0fafc0a527889958d12f535dcb2be45ec01c6dd96eb59d4df650/rosettasciio-0.8.0-cp312-cp312-win_amd64.whl", hash = "sha256:87e3445fd2223912da6e2563596cd706e8b4ba0735b27adb709990b7c4c9d209", size = 753508, upload-time = "2025-03-28T09:30:56.332Z" },
-    { url = "https://files.pythonhosted.org/packages/35/41/f7a7d714b7da0871022438e0d47c84dca10ef894b73dc4d2717d377d6008/rosettasciio-0.8.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:381c74a85f88bca16841c966a1393a0e40a18bd07288efd5e4b55d5ce59a4568", size = 762977, upload-time = "2025-03-28T09:30:57.672Z" },
-    { url = "https://files.pythonhosted.org/packages/8f/35/11782e9fe0399ee9d480af62d9225b020ecbfbbcfc1e4d97ed7586c81a0a/rosettasciio-0.8.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:421646fdf6a5ff9eca35f11f4e89965a4d3dcf74fc6081a1214d694ef113e1c7", size = 756187, upload-time = "2025-03-28T09:30:59.295Z" },
-    { url = "https://files.pythonhosted.org/packages/72/7b/67c263ae40ab537f595a85a7bc53a9899a065dccdeb6a9632214fb08cd10/rosettasciio-0.8.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:dc3bfc7f53ededf27a1bc82257d42d1aaa1bd226d5feca70a5532144ca0b5af1", size = 1190511, upload-time = "2025-03-28T09:31:01.189Z" },
-    { url = "https://files.pythonhosted.org/packages/a3/c4/6899e794ab259014a724f932dde68cbbd2ecc38c1f72021c1076b5755830/rosettasciio-0.8.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:8c44f7f1bf2f32b319bb46c1a532a66447f277ca09a237ab81c7fb1317d7f094", size = 1199030, upload-time = "2025-03-28T09:31:02.701Z" },
-    { url = "https://files.pythonhosted.org/packages/6d/e5/602323ff19071f7dd101fa47523c10f7993590bfc36692d483c59741fd68/rosettasciio-0.8.0-cp313-cp313-win_amd64.whl", hash = "sha256:73abfbeef810f7a9f74892a6be24e305a237abf43d91868a52805d987dccf70d", size = 753178, upload-time = "2025-03-28T09:31:04.355Z" },
-    { url = "https://files.pythonhosted.org/packages/9b/c4/52abc66653646e2635625f20a897c232f9ea1c97ac4e539b85b7fb2a1ad1/rosettasciio-0.8.0-cp313-cp313t-macosx_10_13_x86_64.whl", hash = "sha256:737e0b68a81896a3d9dce6c93042372ec575cde60364d94a288f6c4876283181", size = 767578, upload-time = "2025-03-28T09:31:05.695Z" },
-    { url = "https://files.pythonhosted.org/packages/18/d3/8e76f032158ec4c8bfd06b05127456b44e8377e2b8a7623c2b412548d7ae/rosettasciio-0.8.0-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:e1e96c0e5c0ad8cb7536b4098d1b94647a57dafe5c3e5e6cdad32030eb7b4946", size = 763349, upload-time = "2025-03-28T09:31:07.797Z" },
-    { url = "https://files.pythonhosted.org/packages/79/61/08c32c7e093a7d124129635659dfbcd0e3d6ad21fe1314b3f4aab88ee86c/rosettasciio-0.8.0-cp313-cp313t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fed8bf5919d67a56db52f7432df3980a822e1a17a0626ebb7963811db14fddf5", size = 1212785, upload-time = "2025-03-28T09:31:09.472Z" },
-    { url = "https://files.pythonhosted.org/packages/06/c2/432c5b2c42473f6803c73943e15db4167608e377e7a80a2c7a6d23cc180d/rosettasciio-0.8.0-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:305c86ae7b3fa2cb8f88a16f4cb5fd1d7485ea1b8f7680ca11c845dc3c7beefe", size = 1197330, upload-time = "2025-03-28T09:31:10.792Z" },
-    { url = "https://files.pythonhosted.org/packages/d5/aa/35f693822da32c7339b542eeffc6eba29d56360987ceddaf91f38103c93f/rosettasciio-0.8.0-cp313-cp313t-win_amd64.whl", hash = "sha256:1d87b600c28d63613159dbbbd112d4fd49da8284d8f3ad8b1788dba8059fde36", size = 763756, upload-time = "2025-03-28T09:31:12.112Z" },
-    { url = "https://files.pythonhosted.org/packages/56/b3/f54f36ac2625b6635c7410464510c81816eb9f5fd540f43fe2761e7489f9/rosettasciio-0.8.0-py3-none-any.whl", hash = "sha256:26c0b2dac7725d03eb77a1f7e774ad88346c279e54ce471767d955dc9853f8ec", size = 520462, upload-time = "2025-03-28T09:31:20.928Z" },
+    { url = "https://files.pythonhosted.org/packages/66/8a/062795ae214378416fe8b17308702cd9f283f9173fe4ba0a50cb80515fc1/rosettasciio-0.9.0-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:7e4cd206b4adc8bc8aa3ad5ec56e54a60ce91cab7987dd546201954ee989208f", size = 774799, upload-time = "2025-05-29T19:06:41.586Z" },
+    { url = "https://files.pythonhosted.org/packages/fe/94/995c3f9ea8f4f589be564a16bab8a0b52fdea1a3564d196fbfff577a0b3e/rosettasciio-0.9.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:f80abf2a805c8695d86c5d3eaf49c1e8e3f103a57181ac2950de3979209ca66e", size = 768867, upload-time = "2025-05-29T19:06:43.072Z" },
+    { url = "https://files.pythonhosted.org/packages/33/3a/c8f4875cbd46351faf1ba894940730324ba04d1bd878305413901bb1017c/rosettasciio-0.9.0-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:debe4b5b52981d2c9c395f410d9a0ce058a095c795c8613bf6e3a024075dfbfa", size = 1204813, upload-time = "2025-05-29T19:06:45.452Z" },
+    { url = "https://files.pythonhosted.org/packages/ec/dd/57433ebf71b7ce245d461b0bb05b68bd8ed8bdc29de971af0e95e44d9336/rosettasciio-0.9.0-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:17fbbfa578bed9e70e5ae9a8d42580da886336962cdba9954d547d238214319f", size = 1208786, upload-time = "2025-05-29T19:06:47.815Z" },
+    { url = "https://files.pythonhosted.org/packages/5d/ff/fd9c0887d61d93cc93d4e60adb11bf78a5868c88a1125b8bef6a521b5fa1/rosettasciio-0.9.0-cp311-cp311-win_amd64.whl", hash = "sha256:545bfe7f6fbba41082003741b2a27745bb92d40a849c4486e882ae0a7b17b62b", size = 764675, upload-time = "2025-05-29T19:06:49.351Z" },
+    { url = "https://files.pythonhosted.org/packages/af/d6/cea63c0f7476c3332d379d89f0f983e8a8f5ca124ebe922319794c2af163/rosettasciio-0.9.0-cp312-cp312-macosx_10_13_x86_64.whl", hash = "sha256:fff12cd34c6e758aaf1d2def7c99f0f0d7855819071f4ae4c8ec60dfda0b74e4", size = 775753, upload-time = "2025-05-29T19:06:50.813Z" },
+    { url = "https://files.pythonhosted.org/packages/00/32/1b74b88eed41c5d4605982f8dba5e89ef5a7b0d0b448e8d13f3607e303d3/rosettasciio-0.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:27cc62a84afe2168aef3b58d11bcd1c7e40de2876cfc4ea06d9da17fafedb445", size = 768959, upload-time = "2025-05-29T19:06:52.229Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/3f/ea451f777a67a1f225c9acac8346ddc03c88702ddfb09109e4273959094b/rosettasciio-0.9.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:01728ca0135d6180c29e8f9274c4033e6e8cde453431d7c908f75a9787ecee0a", size = 1197635, upload-time = "2025-05-29T19:06:53.718Z" },
+    { url = "https://files.pythonhosted.org/packages/ba/a4/765761297d4747283aad859895099bfe68160eb5dadf5f75650865c7102b/rosettasciio-0.9.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ecab2af41d00d07659f3c942d8c88e324ef55e6d14579115381f3ffe7c99cacd", size = 1204320, upload-time = "2025-05-29T19:06:55.216Z" },
+    { url = "https://files.pythonhosted.org/packages/32/b6/1d14c3f6d20b83a9daba3d610666383164197522784b79ee8ffc4029cb23/rosettasciio-0.9.0-cp312-cp312-win_amd64.whl", hash = "sha256:6e6b41217cb01119c79ff573f42d6a20cb2f9fb22a5d752f4393afeddae879a1", size = 764911, upload-time = "2025-05-29T19:06:56.646Z" },
+    { url = "https://files.pythonhosted.org/packages/1a/9f/8b29294acfc09cdbf1bfee7df813d815e8a7104daab8b6aa23803a8fcb3a/rosettasciio-0.9.0-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:062ce11089c96c25bfcb0feb0e61438e1d4da352ac335aa015996ce8fb10435f", size = 774829, upload-time = "2025-05-29T19:06:59.712Z" },
+    { url = "https://files.pythonhosted.org/packages/f2/b9/73a721986a49de5a828d1081f2f86893cb3adf38c44f134f75b2d48af770/rosettasciio-0.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:096617467881cd40aed9c71e458f717e4374387604a90b8287146918ed6d57c4", size = 768183, upload-time = "2025-05-29T19:07:01.129Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/2d/222e02ca9e0affcd4b6d4aa6b98190027a87162833edb9b538e5a2f3c404/rosettasciio-0.9.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:7a61ca6f597c6ff76a5b36b12ab8c4e9e92cd7f930ccaa94dea22f731f31c463", size = 1190940, upload-time = "2025-05-29T19:07:02.596Z" },
+    { url = "https://files.pythonhosted.org/packages/8f/71/4495b40910b8cd4a517396b7592c9a357273da0b2c232406a29276ab207c/rosettasciio-0.9.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:162a31de0a9bebdab5765cdcc2d77832d84b43b41615238a90e1ed98694b09fd", size = 1199559, upload-time = "2025-05-29T19:07:04.127Z" },
+    { url = "https://files.pythonhosted.org/packages/54/87/3f26554db9b58ea220632fe01a8ea24d1b316cb487a56e52cb3942df9737/rosettasciio-0.9.0-cp313-cp313-win_amd64.whl", hash = "sha256:e82084e6b1da9358274c5fb22d442751c155248f975fe510c068504d6a302f01", size = 764710, upload-time = "2025-05-29T19:07:05.812Z" },
+    { url = "https://files.pythonhosted.org/packages/29/2b/b93e7cbf4485f7bd884e718785f339b97ddc0dfebea1ed4e5331d36c1170/rosettasciio-0.9.0-cp313-cp313t-macosx_10_13_x86_64.whl", hash = "sha256:3a640fa2cdffe40e3d64d82b8ad4750397a42f0cb1b92ef8476138687c084851", size = 779401, upload-time = "2025-05-29T19:07:07.637Z" },
+    { url = "https://files.pythonhosted.org/packages/4a/32/750d72c3f53cf4f6087488d2c5b33ed658f2428d09c2634ed3971341f49d/rosettasciio-0.9.0-cp313-cp313t-macosx_11_0_arm64.whl", hash = "sha256:a70ee37d6ee07fc15e41bbcf8c482141a8af49a2ac4a08143034a6cc7cff870d", size = 775000, upload-time = "2025-05-29T19:07:09.055Z" },
+    { url = "https://files.pythonhosted.org/packages/d1/2e/1ed0d937d7e7f91362fbe8ac7c959fdbbb71937cb8faf4d4a472d4ca28d0/rosettasciio-0.9.0-cp313-cp313t-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:062f3b119cbaa07b7cca440735b7940a54ad9efa95da5abb75998f2df6b5c80d", size = 1213799, upload-time = "2025-05-29T19:07:10.779Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/f0/9a3f6a5f58c2ab6b8c0dd27e4715ccf84a35f3d0b9a62a01d138152696d8/rosettasciio-0.9.0-cp313-cp313t-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:68e1bb70f48f518768ef20c1f94d4515b7b49aaa24bb3404f4853f2082337f3d", size = 1195877, upload-time = "2025-05-29T19:07:13.492Z" },
+    { url = "https://files.pythonhosted.org/packages/33/d3/7297ad3c2f09d634e2ce7a096e6d172c19818c5ec3fdc97e8ebc2e132e8e/rosettasciio-0.9.0-cp313-cp313t-win_amd64.whl", hash = "sha256:e214a70e03dc52915f6ee7e0bc0e504b1910fa669ebd83cfb3c29acbdc872734", size = 774951, upload-time = "2025-05-29T19:07:14.951Z" },
+    { url = "https://files.pythonhosted.org/packages/85/4e/3ad65812cee80577f4f6a329f26f233ddafde52f9acd08a25ba1b7302018/rosettasciio-0.9.0-py3-none-any.whl", hash = "sha256:f53011c7417e205e5af126015e7021d1408c9a4421825dba68ed70edbdff4052", size = 532130, upload-time = "2025-05-29T19:07:25.301Z" },
 ]
 
 [[package]]

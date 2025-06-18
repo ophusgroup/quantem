@@ -333,3 +333,50 @@ def ensure_valid_tensor(
         raise TypeError(f"Input could not be converted to a torch tensor: {e}")
 
     return tensor
+
+
+aberration_aliases = {
+    "defocus": "C10",
+    "Cs": "C30",
+    "C5": "C50",
+    "astigmatism": "C12",
+    "astigmatism_angle": "phi12",
+    "astigmatism3": "C32",
+    "astigmatism3_angle": "phi32",
+    "astigmatism5": "C52",
+    "astigmatism5_angle": "phi52",
+    "coma": "C21",
+    "coma_angle": "phi21",
+    "coma4": "C41",
+    "coma4_angle": "phi41",
+    "trefoil": "C23",
+    "trefoil_angle": "phi23",
+    "trefoil4": "C43",
+    "trefoil4_angle": "phi43",
+    "quadrafoil": "C34",
+    "quadrafoil_angle": "phi34",
+    "quadrafoil5": "C54",
+    "quadrafoil5_angle": "phi54",
+    "pentafoil": "C45",
+    "pentafoil_angle": "phi45",
+    "hexafoil": "C56",
+    "hexafoil_angle": "phi56",
+}
+
+
+aberration_symbols = {value: key for key, value in aberration_aliases.items()}
+
+
+def ensure_valid_aberration_coefs(aberration_coefs: dict) -> dict:
+    """ """
+    coefs = {}
+    for key, value in aberration_coefs.items():
+        if key in aberration_symbols:
+            coefs[key] = float(value)
+        elif key in aberration_aliases:
+            if key == "defocus":
+                value = -float(value)
+            coefs[aberration_aliases[key]] = float(value)
+        else:
+            raise ValueError("{} not a recognized aberration parameter".format(key))
+    return coefs
