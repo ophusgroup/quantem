@@ -269,11 +269,11 @@ class DriftCorrection(AutoSerialize):
         self.images_warped = Dataset3d.from_shape(self.shape)
         self.weights_warped = Dataset3d.from_shape(self.shape)
         for ind in range(self.shape[0]):
-            self.images_warped.array[ind], self.weights_warped.array[ind] = (
-                self.interpolator[ind].warp_image(
-                    self.images[ind].array,
-                    self.knots[ind],
-                )
+            self.images_warped.array[ind], self.weights_warped.array[ind] = self.interpolator[
+                ind
+            ].warp_image(
+                self.images[ind].array,
+                self.knots[ind],
             )
 
         # Error tracking
@@ -282,13 +282,9 @@ class DriftCorrection(AutoSerialize):
         # Plots
         kwargs.pop("title", None)
         if show_merged:
-
-            self.plot_merged_images(
-                show_knots=show_knots, title="Merged: initial", **kwargs
-            )
-
             self.plot_merged_images(show_knots=show_knots, title="Merged: initial", **kwargs)
 
+            self.plot_merged_images(show_knots=show_knots, title="Merged: initial", **kwargs)
 
         if show_images:
             self.plot_transformed_images(
@@ -352,23 +348,19 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for ind in range(self.shape[0]):
-            self.images_warped.array[ind], self.weights_warped.array[ind] = (
-                self.interpolator[ind].warp_image(
-                    self.images[ind].array,
-                    self.knots[ind],
-                )
+            self.images_warped.array[ind], self.weights_warped.array[ind] = self.interpolator[
+                ind
+            ].warp_image(
+                self.images[ind].array,
+                self.knots[ind],
             )
 
         # Plots
         kwargs.pop("title", None)
         if show_merged:
-
-            self.plot_merged_images(
-                show_knots=show_knots, title="Merged: translation", **kwargs
-            )
-
             self.plot_merged_images(show_knots=show_knots, title="Merged: translation", **kwargs)
 
+            self.plot_merged_images(show_knots=show_knots, title="Merged: translation", **kwargs)
 
         if show_images:
             self.plot_transformed_images(
@@ -460,11 +452,11 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for ind in range(self.shape[0]):
-            self.images_warped.array[a0], self.weights_warped.array[ind] = (
-                self.interpolator[ind].warp_image(
-                    self.images[ind].array,
-                    self.knots[ind],
-                )
+            self.images_warped.array[a0], self.weights_warped.array[ind] = self.interpolator[
+                ind
+            ].warp_image(
+                self.images[ind].array,
+                self.knots[ind],
             )
 
         # Translation alignment
@@ -527,11 +519,11 @@ class DriftCorrection(AutoSerialize):
 
         # Regenerate images
         for ind in range(self.shape[0]):
-            self.images_warped.array[ind], self.weights_warped.array[ind] = (
-                self.interpolator[ind].warp_image(
-                    self.images[ind].array,
-                    self.knots[ind],
-                )
+            self.images_warped.array[ind], self.weights_warped.array[ind] = self.interpolator[
+                ind
+            ].warp_image(
+                self.images[ind].array,
+                self.knots[ind],
             )
 
         # Translation alignment
@@ -701,8 +693,7 @@ class DriftCorrection(AutoSerialize):
                 if regularization_update_step_size is not None:
                     knots_updated = (
                         self.knots[ind]
-                        + (knots_updated - self.knots[ind])
-                        * regularization_update_step_size
+                        + (knots_updated - self.knots[ind]) * regularization_update_step_size
                     )
 
                 # Update knots with optimized values
@@ -710,11 +701,11 @@ class DriftCorrection(AutoSerialize):
 
             # Update images
             for ind in range(self.shape[0]):
-                self.images_warped.array[ind], self.weights_warped.array[ind] = (
-                    self.interpolator[ind].warp_image(
-                        self.images[ind].array,
-                        self.knots[ind],
-                    )
+                self.images_warped.array[ind], self.weights_warped.array[ind] = self.interpolator[
+                    ind
+                ].warp_image(
+                    self.images[ind].array,
+                    self.knots[ind],
                 )
 
             # Translation alignment
@@ -876,8 +867,7 @@ class DriftCorrection(AutoSerialize):
         # Estimate current error
         images_mean = np.mean(self.images_warped.array, axis=0)
         sig_diff = np.mean(
-            mask[None, :, :]
-            * np.abs(self.images_warped.array - images_mean[None, :, :]),
+            mask[None, :, :] * np.abs(self.images_warped.array - images_mean[None, :, :]),
             axis=(1, 2),
         ) / np.sum(mask)
 
