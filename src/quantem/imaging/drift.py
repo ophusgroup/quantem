@@ -236,9 +236,7 @@ class DriftCorrection(AutoSerialize):
             shape = self.images[a0].shape
 
             v_slow = np.linspace(-(shape[0] - 1) / 2, (shape[0] - 1) / 2, shape[0])
-            u_fast = np.linspace(
-                -(shape[1] - 1) / 2, (shape[1] - 1) / 2, self.number_knots
-            )
+            u_fast = np.linspace(-(shape[1] - 1) / 2, (shape[1] - 1) / 2, self.number_knots)
 
             xa = (
                 (self.shape[1] - 1) / 2
@@ -284,9 +282,14 @@ class DriftCorrection(AutoSerialize):
         # Plots
         kwargs.pop("title", None)
         if show_merged:
+
             self.plot_merged_images(
                 show_knots=show_knots, title="Merged: initial", **kwargs
             )
+
+            self.plot_merged_images(show_knots=show_knots, title="Merged: initial", **kwargs)
+
+
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
@@ -312,9 +315,7 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            print(
-                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
-            )
+            print("\033[91mNo knots found — running .preprocess() with default settings.\033[0m")
             self.preprocess()
 
         # init
@@ -361,9 +362,14 @@ class DriftCorrection(AutoSerialize):
         # Plots
         kwargs.pop("title", None)
         if show_merged:
+
             self.plot_merged_images(
                 show_knots=show_knots, title="Merged: translation", **kwargs
             )
+
+            self.plot_merged_images(show_knots=show_knots, title="Merged: translation", **kwargs)
+
+
         if show_images:
             self.plot_transformed_images(
                 show_knots=show_knots,
@@ -391,9 +397,7 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            print(
-                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
-            )
+            print("\033[91mNo knots found — running .preprocess() with default settings.\033[0m")
             self.preprocess()
 
         if num_tests % 2 == 0:
@@ -517,10 +521,7 @@ class DriftCorrection(AutoSerialize):
             # update all knots
             ind = np.argmin(cost)
             for a0 in range(self.shape[0]):
-                u = (
-                    np.arange(self.knots[a0].shape[1])
-                    - (self.knots[a0].shape[1] - 1) / 2
-                )
+                u = np.arange(self.knots[a0].shape[1]) - (self.knots[a0].shape[1] - 1) / 2
                 self.knots[a0][0] += dxy[ind, 0] * u[:, None]
                 self.knots[a0][1] += dxy[ind, 1] * u[:, None]
 
@@ -583,9 +584,7 @@ class DriftCorrection(AutoSerialize):
         """
 
         if not hasattr(self, "knots"):
-            print(
-                "\033[91mNo knots found — running .preprocess() with default settings.\033[0m"
-            )
+            print("\033[91mNo knots found — running .preprocess() with default settings.\033[0m")
             self.preprocess()
 
         for iterations in tqdm(
@@ -593,9 +592,7 @@ class DriftCorrection(AutoSerialize):
             desc="Solving nonrigid drift",
         ):
             for ind in range(self.shape[0]):
-                image_ref = np.delete(self.images_warped.array, ind, axis=0).mean(
-                    axis=0
-                )
+                image_ref = np.delete(self.images_warped.array, ind, axis=0).mean(axis=0)
 
                 knots_init = self.knots[ind]
                 shape_knots = knots_init.shape
@@ -631,9 +628,7 @@ class DriftCorrection(AutoSerialize):
                             if max_optimize_iterations is not None
                             else {}
                         )
-                        result = minimize(
-                            cost_function, x0, method="L-BFGS-B", options=options
-                        )
+                        result = minimize(cost_function, x0, method="L-BFGS-B", options=options)
                         knots_updated[:, row_ind, :] = result.x.reshape((2, -1))
 
                 else:
@@ -664,9 +659,7 @@ class DriftCorrection(AutoSerialize):
                         if max_optimize_iterations is not None
                         else {}
                     )
-                    result = minimize(
-                        cost_function, x0, method="L-BFGS-B", options=options
-                    )
+                    result = minimize(cost_function, x0, method="L-BFGS-B", options=options)
                     knots_updated = result.x.reshape(shape_knots)
 
                 # apply max shift regularization if needed
@@ -676,15 +669,11 @@ class DriftCorrection(AutoSerialize):
                     sub = knots_dist > regularization_max_image_shift_px
                     knots_updated[0][sub] = (
                         self.knots[ind][0][sub]
-                        + knots_shift[0][sub]
-                        * regularization_max_image_shift_px
-                        / knots_dist[sub]
+                        + knots_shift[0][sub] * regularization_max_image_shift_px / knots_dist[sub]
                     )
                     knots_updated[1][sub] = (
                         self.knots[ind][1][sub]
-                        + knots_shift[1][sub]
-                        * regularization_max_image_shift_px
-                        / knots_dist[sub]
+                        + knots_shift[1][sub] * regularization_max_image_shift_px / knots_dist[sub]
                     )
 
                 # apply smoothness regularization if needed
@@ -862,9 +851,7 @@ class DriftCorrection(AutoSerialize):
             image_corr_fft = np.fft.fft2(np.mean(stack_corr, axis=0))
 
         if output_original_shape:
-            image_corr_fft = (
-                fourier_cropping(image_corr_fft, self.shape[-2:]) / upsample_factor**2
-            )
+            image_corr_fft = fourier_cropping(image_corr_fft, self.shape[-2:]) / upsample_factor**2
 
         image_corr = Dataset2d.from_array(
             np.real(np.fft.ifft2(image_corr_fft)),
@@ -1025,19 +1012,11 @@ class DriftInterpolator:
         basis = np.linspace(0, 1, num_knots)
 
         if num_knots == 1:
-            xa = knots_row[0] + self.u[None, :] * self.scan_fast[0] * (
-                self.input_shape[0] - 1
-            )
-            ya = knots_row[1] + self.u[None, :] * self.scan_fast[1] * (
-                self.input_shape[1] - 1
-            )
+            xa = knots_row[0] + self.u[None, :] * self.scan_fast[0] * (self.input_shape[0] - 1)
+            ya = knots_row[1] + self.u[None, :] * self.scan_fast[1] * (self.input_shape[1] - 1)
         elif num_knots == 2:
-            xa = interp1d(basis, knots_row[0], kind="linear", assume_sorted=True)(
-                self.u
-            )
-            ya = interp1d(basis, knots_row[1], kind="linear", assume_sorted=True)(
-                self.u
-            )
+            xa = interp1d(basis, knots_row[0], kind="linear", assume_sorted=True)(self.u)
+            ya = interp1d(basis, knots_row[1], kind="linear", assume_sorted=True)(self.u)
         else:
             kind = "quadratic" if num_knots == 3 else "cubic"
             xa = interp1d(
@@ -1103,9 +1082,7 @@ class DriftInterpolator:
             xa=xa * upsample_factor,  # rows
             ya=ya * upsample_factor,  # cols
             values=image,
-            output_shape=np.round(np.array(output_shape) * upsample_factor).astype(
-                "int"
-            ),
+            output_shape=np.round(np.array(output_shape) * upsample_factor).astype("int"),
             kde_sigma=kde_sigma * upsample_factor,
             pad_value=pad_value,
             return_pix_count=True,
