@@ -90,9 +90,6 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         scheduler_params: dict | None = None,
         hard_constraints: dict | None = None,
         soft_constraints: dict | None = None,
-        logging: bool = False,
-        log_images_every: int = 10,
-        logger_cmap: str = "turbo",
         # store_iterations: bool | None = None,
         # store_iterations_every: int | None = None,
         # autograd: bool = True,
@@ -171,41 +168,25 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
             pbar.set_description(f"AD Reconstruction | Loss: {total_loss:.4f}")
 
-            # if self.logger is not None:
+            if self.logger is not None:
+                self.logger.log_scalar("loss/total", total_loss.item(), a0)
+                self.logger.log_scalar("loss/tilt_series", tilt_series_loss.item(), a0)
+                self.logger.log_scalar(
+                    "loss/soft constraints", self.volume_obj.soft_loss.item(), a0
+                )
 
-            # if self.logger is not None:
-            #     self.logger.add_scalar("loss/total", total_loss.item(), self.epochs)
-            #     self.logger.add_scalar("loss/tilt_series", tilt_series_loss.item(), self.epochs)
-            #     self.logger.add_scalar(
-            #         "loss/soft constraints", self.volume_obj.soft_loss.item(), self.epochs
-            #     )
+                if a0 % self.logger.log_images_every == 0:
+                    self.logger.projection_images(
+                        volume_obj=self.volume_obj,
+                        epoch=a0,
+                    )
+                    self.logger.tilt_angles_figure(dataset=self.dataset, step=a0)
 
-            #     if self.epochs % log_images_every == 0:
-            #         sum_0 = self.volume_obj.obj.sum(axis=0)
-            #         sum_1 = self.volume_obj.obj.sum(axis=1)
-            #         sum_2 = self.volume_obj.obj.sum(axis=2)
-            #         self.logger.add_image(
-            #             "projections/Y-X Projection",
-            #             self.apply_colormap(sum_0, logger_cmap),
-            #             self.epochs,
-            #         )
-            #         self.logger.add_image(
-            #             "projections/Z-X Projection",
-            #             self.apply_colormap(sum_1, logger_cmap),
-            #             self.epochs,
-            #         )
-            #         self.logger.add_image(
-            #             "projections/Z-Y Projection",
-            #             self.apply_colormap(sum_2, logger_cmap),
-            #             self.epochs,
-            #         )
-
-            #         z1_fig, x_fig, z3_fig = self.fig_tilt_angles()
-            #         self.logger.add_figure("tilt_angles/z1", z1_fig, self.epochs)
-            #         self.logger.add_figure("tilt_angles/x", x_fig, self.epochs)
-            #         self.logger.add_figure("tilt_angles/z3", z3_fig, self.epochs)
+            self.logger.flush()
 
         self.ad_recon_vol = self.volume_obj.forward()
+
+        return self
 
     def reset_recon(self) -> None:
         if isinstance(self.volume_obj, ObjectVoxelwise):

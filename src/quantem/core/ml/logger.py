@@ -33,10 +33,10 @@ class LoggerBase(AutoSerialize):
         self.writer = SummaryWriter(str(self.log_dir))
 
     def log_scalar(self, tag: str, value: float, step: int):
-        self.writer.add_scalar(tag=tag, value=value, step=step)
+        self.writer.add_scalar(tag=tag, scalar_value=value, global_step=step)
 
     def log_image(self, tag: str, image: NDArray | Tensor, step: int, cmap: str = "turbo"):
-        cmap_image = self.apply_colormap(image, cmap=cmap)
+        cmap_image = self.apply_colormap(image, cmap_name=cmap)
         self.writer.add_image(tag, cmap_image, step)
 
     def log_figure(self, tag: str, fig: Figure, step: int):
@@ -94,6 +94,14 @@ class LoggerBase(AutoSerialize):
     @property
     def log_images_every(self):
         return self._log_images_every
+
+    @log_images_every.setter
+    def log_images_every(self, value: int):
+        if not isinstance(value, int):
+            raise TypeError("Log images every must be an integer")
+        if value < 1:
+            raise ValueError("Log images every must be at least 1")
+        self._log_images_every = value
 
     # --- Helper Functions ---
 

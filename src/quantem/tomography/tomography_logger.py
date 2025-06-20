@@ -6,12 +6,14 @@ from quantem.tomography.tomography_dataset import TomographyDataset
 
 
 class TomoLogger(LoggerBase):
-    def __init__(self):
-        super.__init__(self)
+    def __init__(self, log_dir: str, run_prefix: str, run_suffix: str = None):
+        super().__init__(log_dir, run_prefix, run_suffix)
+
+    # def log(self, tomo: Tomography):
 
     # --- Tomography focused logging methods ---
-    @staticmethod
-    def tilt_angles_figure(dataset: TomographyDataset):
+
+    def tilt_angles_figure(self, dataset: TomographyDataset, step: int):
         figs = []
         for angle_array, title in zip(
             [dataset.z1_angles, dataset.tilt_angles, dataset.z3_angles],
@@ -23,8 +25,23 @@ class TomoLogger(LoggerBase):
             ax.set_xlabel("Index")
             ax.set_ylabel("Angle")
             figs.append(fig)
+            plt.close(fig)
 
-        return figs
+        self.log_figure(
+            tag="tilt_angles/z1",
+            fig=figs[0],
+            step=step,
+        )
+        self.log_figure(
+            tag="tilt_angles/x",
+            fig=figs[1],
+            step=step,
+        )
+        self.log_figure(
+            tag="tilt_angles/z3",
+            fig=figs[2],
+            step=step,
+        )
 
     def projection_images(
         self, volume_obj: ObjectModelType, epoch: int, logger_cmap: str = "turbo"
