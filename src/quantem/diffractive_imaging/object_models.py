@@ -209,7 +209,9 @@ class ObjectBase(AutoSerialize):
         propagated_array: np.ndarray
             Fourier-convolved array
         """
-        propagated = torch.fft.ifft2(torch.fft.fft2(array) * propagator_array)
+        propagated = torch.fft.ifft2(
+            torch.fft.fft2(array, norm="ortho") * propagator_array, norm="ortho"
+        )
         return propagated
 
     def _get_obj_patches(self, obj_array, patch_indices):
@@ -601,6 +603,10 @@ class ObjectDIP(ObjectConstraints, ObjectBase):
     def obj(self):
         obj = self.model(self._model_input)[0]
         return self.apply_constraints(obj, mask=self.mask)
+
+    @property
+    def _obj(self):
+        return self.model(self._model_input)[0]
 
     def forward(self, patch_indices: torch.Tensor):
         """Get patch indices of the object"""

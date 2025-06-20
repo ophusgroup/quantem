@@ -320,6 +320,11 @@ def add_cbar_to_ax(
 
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax, ticks=ticks, format=formatter)
+    # set tick positions, fixes bug of gap between image and bbox
+    for label in cb.ax.get_yticklabels():
+        label.set_verticalalignment("center")
+        label.set_horizontalalignment("left")
+
     return cb
 
 
@@ -397,8 +402,12 @@ def turbo_black(num_colors: int = 256, fade_len: Optional[int] = None) -> colors
 
 
 _turbo_black = turbo_black()
-mpl.colormaps.register(_turbo_black, name="turbo_black")
-mpl.colormaps.register(_turbo_black.reversed(), name="turbo_black_r")
+try:
+    mpl.colormaps.register(_turbo_black, name="turbo_black")
+    mpl.colormaps.register(_turbo_black.reversed(), name="turbo_black_r")
+except ValueError:
+    # If the colormap is already registered, we can ignore the error.
+    pass
 
 
 def bilinear_histogram_2d(

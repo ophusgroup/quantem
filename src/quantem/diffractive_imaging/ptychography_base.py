@@ -140,7 +140,7 @@ class PtychographyBase(AutoSerialize):
         probe_model: ProbeModelType | type | None = None,
         obj_padding_px: tuple[int, int] = (0, 0),
         com_fit_function: Literal[
-            "none", "plane", "parabola", "bezier_two", "constant"
+            "none", "plane", "parabola", "constant", "no_shift"
         ] = "constant",
         force_com_rotation: float | None = None,
         force_com_transpose: bool | None = None,
@@ -214,7 +214,10 @@ class PtychographyBase(AutoSerialize):
 
         kr, kc = tuple(torch.fft.fftfreq(n, d) for n, d in zip(self.roi_shape, self.sampling))
         k2 = (kr[:, None] ** 2 + kc[None] ** 2).to(torch.complex64)  # broadcasting to match shape
-        wavelength = electron_wavelength_angstrom(self.probe_model.probe_params["energy"])
+        probe_energy = self.probe_model.probe_params["energy"]
+        if probe_energy is None:
+            raise ValueError("probe_model energy must be set to compute propagators.")
+        wavelength = electron_wavelength_angstrom(probe_energy)
         propagators = torch.empty(
             (self.num_slices - 1, kr.shape[0], kc.shape[0]), dtype=torch.complex64
         )
@@ -830,6 +833,7 @@ class PtychographyBase(AutoSerialize):
 
         tf = AffineTransform(angle=angle)
         rotated_points = tf(positions, origin=positions.mean(0))
+        rotated_points += 1e-9  # avoid pixel perfect errors
 
         min_x, min_y = np.floor(np.amin(rotated_points, axis=0) - padding).astype("int")
         min_x = min_x if min_x > 0 else 0
@@ -963,40 +967,22 @@ class PtychographyBase(AutoSerialize):
             else:
                 targets = self.dset.centered_amplitudes[batch_indices]
             preds = torch.sqrt(pred_intensities + 1e-9)  # add eps to avoid diverging gradients
+            norm = self.dset.mean_diffraction_amplitude
         else:
             if use_unshifted:
                 targets = self.dset.intensities[batch_indices]
             else:
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
+            norm = self.dset.mean_diffraction_intensity
         if loss_type == "l1":
             error = arr.sum(arr.abs(preds - targets))
         elif loss_type == "l2":
             error = arr.sum(arr.abs(preds - targets) ** 2)
         else:
             raise ValueError(f"Unknown loss type {loss_type}, should be 'l1' or 'l2'")
-        loss = error / self.dset.mean_diffraction_intensity / targets.shape[0]
+        loss = error / norm
         return loss, targets
-
-    # def error_estimate(
-    #     self,
-    #     overlap: torch.Tensor,
-    #     true_amplitudes: torch.Tensor,
-    # ) -> torch.Tensor:
-    #     farfield_amplitudes = self.estimate_amplitudes(overlap)
-    #     raw_error = arr.sum(arr.abs(farfield_amplitudes - true_amplitudes) ** 2)
-    #     ave_error = raw_error / farfield_amplitudes.shape[0]  # normalize by # patterns
-    #     return ave_error
-
-    def error_estimate_intensities(
-        self,
-        overlap: torch.Tensor,
-        true_intensities: torch.Tensor,
-    ) -> torch.Tensor:
-        farfield_intensities = self.estimate_intensities(overlap)
-        raw_error = arr.sum(arr.abs(farfield_intensities - true_intensities) ** 2)
-        ave_error = raw_error / farfield_intensities.shape[0]  # normalize by # patterns
-        return ave_error
 
     def overlap_projection(self, obj_patches, input_probe):
         """Multiplies `input_probes` with roi-shaped patches from `obj_array`.
@@ -1019,7 +1005,7 @@ class PtychographyBase(AutoSerialize):
         # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
         eps = 1e-9  # this is to avoid diverging gradients at sqrt(0)
-        overlap_fft = torch.fft.fft2(overlap_array)
+        overlap_fft = torch.fft.fft2(overlap_array, norm="ortho")
         amps = torch.sqrt(torch.sum(torch.abs(overlap_fft + eps) ** 2, dim=0))
         if not corner_centered:  # default is shifted amplitudes matching exp data
             return torch.fft.fftshift(amps, dim=(-2, -1))
@@ -1030,7 +1016,7 @@ class PtychographyBase(AutoSerialize):
         """Returns the estimated fourier amplitudes from real-valued `overlap_array`."""
         # overlap shape: (nprobes, batch_size, roi_shape[0], roi_shape[1])
         # incoherent sum of all probe components
-        overlap_fft = torch.fft.fft2(overlap_array)
+        overlap_fft = torch.fft.fft2(overlap_array, norm="ortho")
         return torch.sum(torch.abs(overlap_fft) ** 2, dim=0)
 
     def _propagate_array(
