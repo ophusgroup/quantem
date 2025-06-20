@@ -10,9 +10,8 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.visualization.visualization import show_2d
 from quantem.imaging.drift import cross_correlation_shift
 from quantem.tomography.object_models import ObjectModelType, ObjectVoxelwise
-
-# from quantem.tomography.tilt_series_dataset import TomographyDataset
 from quantem.tomography.tomography_dataset import TomographyDataset
+from quantem.tomography.tomography_logger import TomoLogger
 
 
 class TomographyBase(AutoSerialize):
@@ -35,6 +34,7 @@ class TomographyBase(AutoSerialize):
         volume_obj: ObjectModelType,  # ObjectDIP?
         device: str = "cuda",
         # ABF/HAADF property
+        logger: TomoLogger | None = None,
         _token: object | None = None,
     ):
         """Initialize a Tomography object.
@@ -60,6 +60,8 @@ class TomographyBase(AutoSerialize):
 
         self._hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
         self._soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
+
+        self._logger = logger
 
     @classmethod
     def from_tilt_series(
@@ -212,6 +214,17 @@ class TomographyBase(AutoSerialize):
     def epochs(self) -> int:
         """Number of epochs used during reconstruction."""
         return len(self.loss)
+
+    @property
+    def logger(self) -> TomoLogger:
+        return self._logger
+
+    @logger.setter
+    def logger(self, logger: TomoLogger):
+        if not isinstance(logger, TomoLogger):
+            raise TypeError("Logger must be a TomoLogger")
+
+        self._logger = logger
 
     # --- Constraints ---
 

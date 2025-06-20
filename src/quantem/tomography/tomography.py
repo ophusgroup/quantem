@@ -1,10 +1,4 @@
-import datetime
-from pathlib import Path
-
-import matplotlib.pyplot as plt
-import numpy as np
 import torch
-from torch.utils.tensorboard import SummaryWriter
 
 # from torch_radon.radon import ParallelBeam as Radon
 from tqdm.auto import tqdm
@@ -30,9 +24,6 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         _token,
     ):
         super().__init__(dataset, volume_obj, device, _token)
-
-        self._log_dir = None
-        self._logger = None
 
     # --- Reconstruction Method ---
 
@@ -106,11 +97,6 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         # store_iterations_every: int | None = None,
         # autograd: bool = True,
     ):
-        if logging and self.logger is None:
-            print("Initializing logger")
-
-            self.init_logger()
-
         if reset:
             self.reset_recon()
 
@@ -185,6 +171,8 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
             pbar.set_description(f"AD Reconstruction | Loss: {total_loss:.4f}")
 
+            # if self.logger is not None:
+
             if self.logger is not None:
                 self.logger.add_scalar("loss/total", total_loss.item(), self.epochs)
                 self.logger.add_scalar("loss/tilt_series", tilt_series_loss.item(), self.epochs)
@@ -257,78 +245,3 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         )
 
         return shifted_projection
-
-    # --- Tensorboard Logging ---
-
-    @property
-    def log_dir(self) -> str:
-        return self._log_dir
-
-    @log_dir.setter
-    def log_dir(self, log_dir: str):
-        if not Path(log_dir).exists():
-            raise FileNotFoundError(f"log_dir {log_dir} does not exist, make the directory first")
-
-        self._log_dir = log_dir
-
-    def make_logdir(self, log_dir: str):
-        curr_run = f"{log_dir}/tomo_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        if not Path(log_dir).exists():
-            Path(curr_run).mkdir(parents=True, exist_ok=True)
-
-        self._log_dir = Path(curr_run)
-
-    @property
-    def logger(self) -> SummaryWriter:
-        return self._logger
-
-    def init_logger(self):
-        if self.log_dir is None:
-            raise ValueError("log_dir is not set")
-
-        if self._logger is not None:
-            raise RuntimeError("Logger already initialized")
-
-        self._logger = SummaryWriter(self.log_dir)
-
-    def close_logger(self):
-        self._logger.flush()
-        self._logger.close()
-        self._logger = None
-
-    def fig_tilt_angles(self):
-        fig_z1, ax = plt.subplots(figsize=(5, 5))
-        ax.plot(self.dataset.z1_angles.detach().cpu().numpy())
-        ax.set_title("Z1 Angles")
-        ax.set_xlabel("Index")
-        ax.set_ylabel("Angle")
-
-        fig_x, ax = plt.subplots(figsize=(5, 5))
-        ax.plot(self.dataset.tilt_angles.detach().cpu().numpy())
-        ax.set_title("Tilt/X Angles")
-        ax.set_xlabel("Index")
-        ax.set_ylabel("Angle")
-
-        fig_z3, ax = plt.subplots(figsize=(5, 5))
-        ax.plot(self.dataset.z3_angles.detach().cpu().numpy())
-        ax.set_title("Z3 Angles")
-        ax.set_xlabel("Index")
-        ax.set_ylabel("Angle")
-
-        return fig_z1, fig_x, fig_z3
-
-    def apply_colormap(self, tensor_2d, cmap_name="turbo"):
-        """
-        Apply Turbo colormap to a 2D PyTorch tensor. Output: [3, H, W] NumPy float32 in [0,1].
-        """
-        if isinstance(tensor_2d, torch.Tensor):
-            tensor_2d = tensor_2d.detach().cpu().numpy()
-
-        tensor_2d = tensor_2d.astype(np.float32)
-        tensor_2d = (tensor_2d - np.min(tensor_2d)) / (np.ptp(tensor_2d) + 1e-8)
-
-        cmap = plt.get_cmap(cmap_name)
-        colored = cmap(tensor_2d)[..., :3]  # Shape: [H, W, 3]
-        colored = colored.transpose(2, 0, 1)  # → [3, H, W]
-
-        return colored.astype(np.float32)

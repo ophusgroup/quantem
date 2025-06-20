@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Any
+from typing import Any, Union
 
 import torch
 
@@ -242,4 +242,4 @@ class ObjectVoxelwise(ObjectConstraints):
         return self.apply_soft_constraints(self._obj)
 
 
-ObjectModelType = ObjectVoxelwise  # | ObjectDIP | ObjectImplicit (ObjectFFN?)
+ObjectModelType = Union[ObjectVoxelwise]  # | ObjectDIP | ObjectImplicit (ObjectFFN?)
