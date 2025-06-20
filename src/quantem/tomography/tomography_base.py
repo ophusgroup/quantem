@@ -375,6 +375,8 @@ class TomographyBase(AutoSerialize):
         fft: bool = False,
     ):
         volume_obj_np = self.volume_obj.obj.detach().cpu().numpy()
+
+        volume_obj_np = np.transpose(volume_obj_np, (1, 2, 0))
         if loss:
             fig, ax = plt.subplots(ncols=4, figsize=(25, 8))
             ax[3].semilogy(
