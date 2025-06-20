@@ -47,10 +47,10 @@ class TomographyBase(AutoSerialize):
             A descriptive name for the dataset
         """
 
-        if _token is not self._token:
-            raise RuntimeError(
-                "This class is not meant to be instantiated directly. Use the from_data method."
-            )
+        # if _token is not self._token:
+        #     raise RuntimeError(
+        #         "This class is not meant to be instantiated directly. Use the from_data method."
+        #     )
 
         self._device = device
         self._dataset = dataset
