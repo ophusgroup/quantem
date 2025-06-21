@@ -43,7 +43,6 @@ dependencies = [
   "rosettasciio>=0.8.0",
   "h5py>=3.13.0",
   "torch>=2.7.0",
-  "cupy-cuda12x>=13.4.1",
   "scikit-image>=0.25.2",
   "torchvision>=0.22.1",
   "tensorboard>=2.19.0",
