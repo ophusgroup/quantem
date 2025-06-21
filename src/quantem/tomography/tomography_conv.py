@@ -54,8 +54,10 @@ class TomographyConv(TomographyBase):
         # Forward projection
 
         sinogram_est = radon_torch(self.volume_obj.obj, theta=angles, device=self.device)
-        proj_forward = sinogram_est.permute(1, 2, 0)
-        error = (tilt_series - proj_forward).permute(2, 0, 1)
+        # proj_forward = sinogram_est.permute(1, 2, 0)
+        # error = (tilt_series - proj_forward).permute(2, 0, 1)
+        proj_forward = sinogram_est
+        error = tilt_series - proj_forward
 
         correction = iradon_torch(
             error, theta=angles, device=self.device, filter_name=filter_name, circle=circle

@@ -40,6 +40,10 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         circle: bool = True,
     ):
         num_angles, num_rows, num_cols = self.dataset.tilt_series.shape
+        sirt_tilt_series = self.dataset.tilt_series.clone()
+        sirt_tilt_series = sirt_tilt_series.permute(2, 0, 1)
+
+        print(sirt_tilt_series.shape)
 
         hard_constraints = {
             "positivity": enforce_positivity,
@@ -67,7 +71,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
 
         for iter in pbar:
             proj_forward, loss = self._sirt_run_epoch(
-                tilt_series=self.dataset.tilt_series,
+                tilt_series=sirt_tilt_series,
                 proj_forward=proj_forward,
                 angles=self.dataset.tilt_angles,
                 inline_alignment=iter > 0 and inline_alignment,
