@@ -43,8 +43,6 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         sirt_tilt_series = self.dataset.tilt_series.clone()
         sirt_tilt_series = sirt_tilt_series.permute(2, 0, 1)
 
-        print(sirt_tilt_series.shape)
-
         hard_constraints = {
             "positivity": enforce_positivity,
             "shrinkage": shrinkage,
