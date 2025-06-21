@@ -401,7 +401,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         return gradient
 
 
-class ObjectDIP(ObjectConstraints, ObjectBase):
+class ObjectDIP(ObjectConstraints):
     """
     DIP/model based object model.
     """
