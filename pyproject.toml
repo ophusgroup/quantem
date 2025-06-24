@@ -44,6 +44,7 @@ dependencies = [
   "h5py>=3.13.0",
   "torch>=2.7.0",
   "cupy-cuda12x>=13.4.1",
+  "torchmetrics>=1.7.3",
 ]
 
 [tool.hatch.build.targets.sdist]

@@ -87,7 +87,7 @@ def _show_2d_array(
         angle = None
 
     norm_config = _resolve_normalization(norm, **kwargs)
-    scalebar_config = _resolve_scalebar(scalebar)
+    scalebar_config = _resolve_scalebar(scalebar, **kwargs)
 
     norm_obj = CustomNormalization(
         interval_type=norm_config.interval_type,
@@ -530,5 +530,8 @@ def show_2d(
         axs = axs[0]
     elif axs.shape[1] == 1:
         axs = axs[:, 0]
+
+    if kwargs.get("force_show", False):
+        plt.show()
 
     return fig, axs
