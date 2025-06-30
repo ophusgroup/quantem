@@ -169,6 +169,7 @@ class GS2D(GSBase):
                 sigmas=sigmas,
                 intensities=intensities,
                 grids=(self.grid_y, self.grid_x),
+                isotropic_splats=self.cfg.isotropic_splats,
                 **kwargs,
             )
         else:

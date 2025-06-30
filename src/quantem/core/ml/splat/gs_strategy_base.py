@@ -225,7 +225,9 @@ class StrategyBase:
         merges: list,
     ):
         with torch.no_grad():
-            scaled_sigmas = self.cfg.activation_sigma(params["sigmas"])
+            sigmas = self.cfg.activation_sigma(params["sigmas"])
+            intensities = self.cfg.activation_intensity(params["intensities"])
+            positions = params["positions"]
             combined_inds = [[kp] + mg for kp, mg in zip(keeps, merges)]
 
             # make a param_fn, has cases for positions, sigmas, intensities like split()
@@ -234,58 +236,42 @@ class StrategyBase:
             # then run remove, with the mask being merges, this will also take care of updating the state dict
             def param_fn(name: str, p: Tensor) -> Tensor:
                 if name == "positions":
+                    # Weighted mean by intensity
                     weighted_pos = [
-                        torch.sum(p[inds] * scaled_sigmas[inds][:, None], dim=0)
-                        / torch.sum(scaled_sigmas[inds])
+                        torch.sum(p[inds] * intensities[inds][:, None], dim=0)
+                        / torch.sum(intensities[inds])
                         for inds in combined_inds
                     ]
                     p[keeps] = torch.stack(weighted_pos)
-                    pass
                 elif name == "sigmas":
-                    # keeping sigmas the same
-                    # print("starting mod sig: ", self.cfg.activation_sigma(p[keeps]))
-                    # sum_sigmas = [torch.sum(self.cfg.activation_sigma(p[inds])) for inds in combined_inds]
-                    # p[keeps] = self.cfg.activation_sigma_inverse_torch(torch.tensor(sum_sigmas, device=p.device))
-                    # print("end mod sig: ", self.cfg.activation_sigma(p[keeps]))
-                    pass
+                    # Weighted mean for sigma_y and sigma_x, keep sigma_z=0
+                    weighted_sigmas = []
+                    for inds in combined_inds:
+                        sigma = torch.sum(
+                            sigmas[inds] * intensities[inds][:, None], dim=0
+                        ) / torch.sum(intensities[inds])
+                        weighted_sigmas.append(sigma)
+                    weighted_sigmas = torch.stack(weighted_sigmas)
+                    # Inverse activation for storage
+                    p[keeps] = self.cfg.activation_sigma_inverse_torch(weighted_sigmas)
                 elif name == "intensities":
-                    # print("starting mod int: ", self.cfg.activation_intensity(p[keeps]))
-                    # sum_intensities = p[keeps] + torch.tensor(
-                    #     [torch.sum(self.cfg.activation_intensity(p[inds]))/2 for inds in merges],
-                    #     device=p.device
-                    # )
-                    # p[keeps] = self.cfg.activation_intensity_inverse_torch(sum_intensities)
-
-                    sum_intensities = [
-                        torch.sum(self.cfg.activation_intensity(p[inds])) for inds in combined_inds
-                    ]
+                    sum_intensities = [torch.sum(intensities[inds]) for inds in combined_inds]
                     p[keeps] = self.cfg.activation_intensity_inverse_torch(
                         torch.tensor(sum_intensities, device=p.device)
                     )
-                    pass
                 else:
-                    pass
-
+                    raise ValueError(f"Unexpected parameter name in merge: {name}")
                 return p
 
             def optimizer_fn(key: str, v: Tensor) -> Tensor:
                 # effectively just keeping the original values for the kept GS, as rest deleted
-                # v[np.concatenate(combined_inds)] = 0
-
-                # vsums = [v[ind].sum(0) for ind in combined_inds]
-                # vsums = torch.stack(vsums)
-                # v[keeps] = vsums
-
-                # v = torch.zeros_like(v)
-                # print("new new optimizer function v shape: ", v.shape)
                 return v
 
-            # update the parameters and the state in the optimizers
             self._update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
             # run remove
             rm_mask = torch.zeros(
-                len(scaled_sigmas), device=scaled_sigmas.device, dtype=torch.bool
+                len(params["positions"]), device=positions.device, dtype=torch.bool
             )
             rm_mask[np.concatenate(merges)] = 1
             self.remove(params=params, optimizers=optimizers, state=state, mask=rm_mask)

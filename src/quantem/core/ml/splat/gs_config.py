@@ -25,6 +25,9 @@ class Config:
     # extent of recon volume [z,y,x] in A
     volume_size: tuple[float, float, float]
 
+    # isotropic or non-isotropic splats
+    isotropic_splats: bool = True
+
     # Random crop size for training (unused maybe unecessary)
     patch_size: int | None = None
     # A global scaler that applies to the scene size related parameters

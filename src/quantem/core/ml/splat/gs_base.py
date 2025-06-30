@@ -122,7 +122,7 @@ class GSBase:
         if self.cfg.init_type == "random":
             positions = torch.tensor(self.cfg.volume_size) * (
                 torch.rand((self.cfg.init_num_pts, 3))
-            )
+            )  # TODO use self.rng
         elif self.cfg.init_type == "grid":
             yy, xx = np.mgrid[
                 0 : self.cfg.volume_size[-2] : self.cfg.init_grid_sampling,
@@ -135,22 +135,28 @@ class GSBase:
                 dtype=torch.float64,
             )
         else:
-            raise NotImplementedError(
-                f"Allowed init_type are 'random' and 'grid', got {self.cfg.init_type}"
-            )
-
-        if self.cfg.model_type == "2dgs":
-            positions[:, 0] = 0
+            raise ValueError(f"Unknown init_type: {self.cfg.init_type}")
 
         N = positions.shape[0]
-        sigmas = torch.ones(N, dtype=torch.float64) * self.cfg.activation_sigma_inverse(
+        sigmas = torch.ones((N, 3), dtype=torch.float64) * self.cfg.activation_sigma_inverse(
             self.cfg.init_sigma
         )
+        # # --- SIGMA INIT ---
+        # val = self.cfg.activation_sigma_inverse(self.cfg.init_sigma)
+        # sigmas = torch.full((N, 3), fill_value=val, dtype=torch.float64)
+        # # For 2D splatting, set sigma_z = 0 (no depth spread), only y and x are active
+        # sigmas[:, 0] = 0.0  # sigma_z (depth)
+        # sigmas[:, 1] = val  # sigma_y (rows)
+        # sigmas[:, 2] = val  # sigma_x (columns)
+        # if self.cfg.isotropic_splats:
+        #     # Enforce sigma_y = sigma_x and sigma_z = 0 for all splats (already set above)
+        #     pass
+        # # else: allow optimization to change them independently
+
         intensities = torch.ones(N, dtype=torch.float64) * self.cfg.activation_intensity_inverse(
             self.cfg.init_intensity_scaled
         )
         params = [
-            # name, value, lr
             ("positions", torch.nn.Parameter(positions), self.cfg.lr_base),
             ("sigmas", torch.nn.Parameter(sigmas), self.cfg.lr_base / 10),
             ("intensities", torch.nn.Parameter(intensities), self.cfg.lr_base / 10),

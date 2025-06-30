@@ -339,18 +339,29 @@ class DefaultStrategy(StrategyBase):
             scaled_intensities = (
                 self.cfg.activation_intensity(params["intensities"])
                 * ((2 * torch.pi) ** 0.5)
-                * self.cfg.activation_sigma(params["sigmas"])
-            )
+                * self.cfg.activation_sigma(params["sigmas"][:, 0])
+            )  # TODO -- fix scaled intensities for anisotropic splats, this is only for 2D
             prune_intensity = scaled_intensities.flatten() < (
                 self.cfg.prune_intensity_fac * self.cfg.init_intensity
             )
-            prune_big = (
-                self.cfg.activation_sigma(params["sigmas"].flatten()) > self.cfg.prune_sigma_big_A
-            )
-            prune_small = (
-                self.cfg.activation_sigma(params["sigmas"].flatten())
-                < self.cfg.prune_sigma_small_A
-            )
+            if self.cfg.isotropic_splats:
+                prune_big = (
+                    self.cfg.activation_sigma(params["sigmas"][:, 0].flatten())
+                    > self.cfg.prune_sigma_big_A
+                )
+                prune_small = (
+                    self.cfg.activation_sigma(params["sigmas"][:, 0].flatten())
+                    < self.cfg.prune_sigma_small_A
+                )
+            else:
+                if self.cfg.model_type == "2dgs":
+                    sigmas_mean = (
+                        self.cfg.activation_sigma(params["sigmas"]).mean(dim=-1).flatten()
+                    )
+                    prune_big = sigmas_mean > self.cfg.prune_sigma_big_A
+                    prune_small = sigmas_mean < self.cfg.prune_sigma_small_A
+                else:
+                    raise NotImplementedError
             prune_x = (
                 params["positions"][:, 2] > self.cfg.volume_size[2] + self.cfg.prune_pad_A
             ) | (params["positions"][:, 2] < -self.cfg.prune_pad_A)
@@ -361,7 +372,19 @@ class DefaultStrategy(StrategyBase):
                 raise NotImplementedError
                 # prune_z =
             # else:
-
+            print(
+                "shapes: ",
+                "intensity: ",
+                prune_intensity.shape,
+                "big: ",
+                prune_big.shape,
+                "small: ",
+                prune_small.shape,
+                "x: ",
+                prune_x.shape,
+                "y: ",
+                prune_y.shape,
+            )
             is_prune = prune_intensity | prune_big | prune_small | prune_x | prune_y
             n_prune = int(is_prune.sum().item())
             print(
@@ -382,25 +405,23 @@ class DefaultStrategy(StrategyBase):
         step: int,
     ):
         # identify which indices need to be merged based on cutoff distance
-        # not sure how to deal with strings of atoms.. could do a clustering?
         # start with most intense, gather all close, go to next (excepting ones already gathered)
-
         # for each group of indices, sum intensity, position becomes mean weighted by intensity
         # sigma is weighted sum. i.e. sigma of intensity max + sigma1 * intensity1/intensity_max + sigma2*...
-
         with torch.no_grad():
             pos = params["positions"].data.cpu().detach().numpy()
-            sigmas = self.cfg.activation_sigma(params["sigmas"].flatten()).cpu().detach().numpy()
-            sigmas_ranked = np.argsort(sigmas)[::-1]
+            # Use sigma_y and sigma_x for merge distance
+            sigmas = self.cfg.activation_sigma(params["sigmas"]).cpu().detach().numpy()
+            # Use mean sigma for merge ranking
+            eff_sigmas = sigmas.mean(axis=-1)
+            sigmas_ranked = eff_sigmas.argsort()[::-1]
 
             tree1 = KDTree(pos)
-            tree2 = KDTree(pos)
-            neighbor_indices = tree1.query_ball_tree(tree2, r=self.cfg.xy_merge_A)
+            neighbor_indices = tree1.query_ball_tree(tree1, r=self.cfg.xy_merge_A)
 
-            seen = []  # indices that have been accounted for, cannot be merged twice
-            keeps = []  # indices updated with merged splats and kept, shape (N_merge_events)
-            new_merges = []  # indices merged and deleted, ragged shape (N_merge_events, n_merge-1)
-            # iterate through each splat in order of sigma, and gather those that should be merged
+            seen = []
+            keeps = []
+            new_merges = []
             for ind in sigmas_ranked:
                 if ind in seen:
                     continue
@@ -408,8 +429,8 @@ class DefaultStrategy(StrategyBase):
                     seen.append(ind)
                 closes = np.array(neighbor_indices[ind])
                 check_seen = ~np.isin(closes, np.array(seen))
-                sigma_keep = sigmas[ind]
-                sigmas_merg = sigmas[neighbor_indices[ind]]
+                sigma_keep = eff_sigmas[ind]
+                sigmas_merg = eff_sigmas[closes]
                 check_sigmas = (sigma_keep * self.cfg.xy_merge_sigma_fac) >= sigmas_merg
                 news = closes[check_seen & check_sigmas]
                 if any(news):
