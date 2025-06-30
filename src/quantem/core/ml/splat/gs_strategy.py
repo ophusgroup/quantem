@@ -105,7 +105,7 @@ class DefaultStrategy(StrategyBase):
         # - grad2d: running accum of the norm of the image plane gradients for each GS.
         # - count: running accum of how many time each GS is visible.
         # - sigmas: the sigmas of the GSs (normalized by the image resolution).
-        state = {"grad2d": None, "count": None, "scene_scale": self.cfg.global_scale}
+        state = {"grad2d": None, "count": None, "scene_scale": 1}
         if self.refine_scale2d_stop_iter > 0:
             state["sigmas"] = None
         return state
@@ -249,6 +249,7 @@ class DefaultStrategy(StrategyBase):
         else:
             # print("key for grad: ", self.key_for_gradient, " is none: ", info[self.key_for_gradient].grad is None)
             grads: torch.Tensor = info[self.key_for_gradient].grad.clone()
+
         grads[..., 0] *= info["width"] / 2.0 * info["n_images"]  # TODO figure out why this is?
         grads[..., 1] *= info["height"] / 2.0 * info["n_images"]  # Might be bad
 
@@ -350,12 +351,16 @@ class DefaultStrategy(StrategyBase):
                 self.cfg.activation_sigma(params["sigmas"].flatten())
                 < self.cfg.prune_sigma_small_A
             )
-            prune_x = (params["positions"][:, 2] > self.cfg.extent + self.cfg.prune_pad_A) | (
-                params["positions"][:, 2] < -self.cfg.prune_pad_A
-            )
-            prune_y = (params["positions"][:, 1] > self.cfg.extent + self.cfg.prune_pad_A) | (
-                params["positions"][:, 1] < -self.cfg.prune_pad_A
-            )
+            prune_x = (
+                params["positions"][:, 2] > self.cfg.volume_size[2] + self.cfg.prune_pad_A
+            ) | (params["positions"][:, 2] < -self.cfg.prune_pad_A)
+            prune_y = (
+                params["positions"][:, 1] > self.cfg.volume_size[1] + self.cfg.prune_pad_A
+            ) | (params["positions"][:, 1] < -self.cfg.prune_pad_A)
+            if self.cfg.model_type == "3dgs":
+                raise NotImplementedError
+                # prune_z =
+            # else:
 
             is_prune = prune_intensity | prune_big | prune_small | prune_x | prune_y
             n_prune = int(is_prune.sum().item())
@@ -447,16 +452,17 @@ class DefaultStrategy(StrategyBase):
                 return 0
 
             device = params["positions"].device
+            if self.cfg.model_type == "3dgs":
+                raise NotImplementedError("3DGS not implemented yet for adding new Gaussians")
             if self.cfg.add_gaussians_mode == "grid":
                 y, x = np.mgrid[
-                    0 : self.cfg.extent : self.cfg.add_gaussian_sampling,
-                    0 : self.cfg.extent : self.cfg.add_gaussian_sampling,
+                    0 : self.cfg.volume_size[1] : self.cfg.add_gaussian_sampling,
+                    0 : self.cfg.volume_size[2] : self.cfg.add_gaussian_sampling,
                 ]
                 y += y[1, 1] / 2
                 x += x[1, 1] / 2
                 positions = torch.tensor(
-                    self.cfg.global_scale
-                    * np.stack([np.zeros_like(y.ravel()), y.ravel(), x.ravel()]).T,
+                    np.stack([np.zeros_like(y.ravel()), y.ravel(), x.ravel()]).T,
                     dtype=torch.float64,
                     device=device,
                 )

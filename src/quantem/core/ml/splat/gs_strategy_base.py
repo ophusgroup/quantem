@@ -242,7 +242,7 @@ class StrategyBase:
                     p[keeps] = torch.stack(weighted_pos)
                     pass
                 elif name == "sigmas":
-                    # just keeping same, intensities sum
+                    # keeping sigmas the same
                     # print("starting mod sig: ", self.cfg.activation_sigma(p[keeps]))
                     # sum_sigmas = [torch.sum(self.cfg.activation_sigma(p[inds])) for inds in combined_inds]
                     # p[keeps] = self.cfg.activation_sigma_inverse_torch(torch.tensor(sum_sigmas, device=p.device))

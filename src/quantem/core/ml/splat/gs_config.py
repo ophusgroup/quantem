@@ -16,17 +16,20 @@ def inverse_softplus_torch(y: torch.Tensor) -> torch.Tensor:
     return torch.log(torch.exp(y) - 1)
 
 
+# TODO -- probably make this not a dataclass so we can have validators in setters/getters
 @dataclass
 class Config:
+    model_type: Literal["2dgs", "3dgs"]
+    # shape of the rasterized images [y,x]
+    raster_shape: tuple[int, int]
+    # extent of recon volume [z,y,x] in A
+    volume_size: tuple[float, float, float]
+
     # Random crop size for training (unused maybe unecessary)
     patch_size: int | None = None
     # A global scaler that applies to the scene size related parameters
     # currently not used but long term  might be useful for handling scaling issues
-    global_scale: float = 1.0
-    # sampling of the output rasterized array in A/pixel
-    sampling: float = 1.0  # TODO all sampling etc should be tuples
-    # shape of the rasterized images used to get a loss
-    raster_shape: int = 128  # TODO all sampling etc should be tuples
+    # global_scale: float = 1.0
     # device -- maybe unecessary since we have config
     device: str = config.get_device()
 
@@ -35,8 +38,7 @@ class Config:
 
     # Number of training steps # TODO rename to iter to be consistent
     max_steps: int = 30_000
-    # print every X
-    print_every: int = 0
+    print_every: int = 0  # <= 0 means no printing
 
     # Activation/normalization function for enforcing sigma > 0
     activation_sigma: Callable = torch.nn.functional.softplus
@@ -44,7 +46,7 @@ class Config:
     activation_intensity: Callable = torch.nn.functional.softplus
 
     # Initialization strategy
-    init_type: str = "grid2d"  # TODO just grid no 2d/3d
+    init_type: Literal["grid", "random"] = "grid"
     # Initial number of GSs
     init_num_pts: int = 1_000
     # alternatively, grid spacing (A)
@@ -77,8 +79,8 @@ class Config:
     # mode for adding new gaussians, "grid", "random", "density"
     add_gaussians_mode: Literal["grid", "random", "density"] = "grid"
     add_gaussian_sampling: float = 1.0  # A
-    add_start_iter: int = 1000
-    add_stop_iter: int = 5000
+    add_start_iter: int = -1
+    add_stop_iter: int = -1
 
     # merging of splats that are too close
     xy_merge_A: float = 0.5  # cutoff distance
@@ -88,7 +90,7 @@ class Config:
     # Start refining GSs after this iteration
     refine_start_iter: int = 500
     # Stop refining GSs after this iteration
-    refine_stop_iter: int = 1_500  # 15_000
+    refine_stop_iter: int = int(9e9)  # 15_000
     # Reset intensities every this steps
     reset_every: int = 3000
     # Refine GSs every this steps
@@ -97,15 +99,15 @@ class Config:
     # Use absolute gradient for pruning. This typically requires larger --grow_grad2d, e.g., 0.0008 or 0.0006
     absgrad: bool = False
 
-    # Model for splatting.
-    model_type: Literal["2dgs", "3dgs"] = "2dgs"  # TODO remove
-
     lr_base: float = 0.1
 
     @property
-    def extent(self) -> float:
-        """extent of the rasterized output shape in A"""
-        return self.raster_shape * self.sampling
+    def raster_sampling(self) -> tuple[float, float]:
+        """sampling in yx of the rasterized image"""
+        return (
+            self.volume_size[-2] / self.raster_shape[-2],
+            self.volume_size[-1] / self.raster_shape[-1],
+        )
 
     def activation_sigma_inverse(self, val: float) -> float:
         act_name = self.activation_sigma.__name__

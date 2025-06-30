@@ -70,12 +70,29 @@ class GS2D(GSBase):
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
             )
+            if (
+                step == 1
+                or (
+                    ((step + 1) % cfg.refine_every) == 0
+                    and cfg.refine_stop_iter > (step + 1) >= cfg.refine_start_iter
+                )
+                or (
+                    (step % cfg.refine_every) == 0
+                    and cfg.refine_stop_iter > step >= cfg.refine_start_iter
+                )
+                or ((step % cfg.reset_every) == 0 and ((step - 1) % cfg.reset_every) == 0)
+            ):
+                r = torch.squeeze(renders).cpu().detach().numpy()
+                show_2d(r, title=f"iter {step} render", force_show=True, cbar=True, norm="minmax")
+                # print(f"Intensities iter {step}: \n", self.cfg.activation_intensity(self.splats["intensities"]))
+                # print(f"Scaled intensities iter {step}:\n", self.cfg.activation_intensity(self.splats["intensities"]) * np.sqrt(2*np.pi) * self.cfg.activation_sigma(self.splats["sigmas"]))
+                # print(f"Sigmas iter {step}: \n", self.cfg.activation_sigma(self.splats["sigmas"]))
 
             # TODO rewrite this, the cfg info is already in the strategy
             # this should be "item to take gradient of" and just be positions
             info = {
-                "height": self.cfg.raster_shape,  # [0],
-                "width": self.cfg.raster_shape,  # [1],
+                "height": self.cfg.raster_shape[0],
+                "width": self.cfg.raster_shape[1],
                 "positions2d": self.splats["positions"],
                 "n_images": 1,
                 "mask": torch.ones_like(self.splats["sigmas"], dtype=torch.float64),
@@ -114,15 +131,6 @@ class GS2D(GSBase):
                 info=info,
             )
 
-            # optimize
-            for optimizer in self.optimizers.values():
-                optimizer.step()
-                optimizer.zero_grad(set_to_none=True)
-            for scheduler in schedulers:
-                scheduler.step()
-
-            losses.append(loss.item())
-
             # print and/or checkpoint
             if cfg.print_every > 0:
                 if (step + 1) % cfg.print_every == 0 or step == 0 or step == max_steps - 1:
@@ -132,20 +140,14 @@ class GS2D(GSBase):
                         f"Step: {step} | num_GS: {len(self.splats['positions'])} | mem {mem:.2f} GB | ellapsed time (h:m:s) {d}"
                     )
 
-            if (
-                step == 1
-                or (
-                    ((step + 1) % cfg.refine_every) == 0
-                    and cfg.refine_stop_iter > (step + 1) >= cfg.refine_start_iter
-                )
-                or (
-                    (step % cfg.refine_every) == 0
-                    and cfg.refine_stop_iter > step >= cfg.refine_start_iter
-                )
-                or ((step % cfg.reset_every) == 0 and ((step - 1) % cfg.reset_every) == 0)
-            ):
-                r = torch.squeeze(renders).cpu().detach().numpy()
-                show_2d(r, title=f"iter {step} render", force_show=True)
+            # optimize
+            for optimizer in self.optimizers.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            for scheduler in schedulers:
+                scheduler.step()
+
+            losses.append(loss.item())
 
         return torch.squeeze(renders).cpu().detach().numpy(), np.array(losses)
 

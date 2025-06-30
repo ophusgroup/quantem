@@ -76,13 +76,13 @@ class GSBase:
         # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(self.device)
 
         # Precompute the 2D grid for the target image
-        xx, yy = torch.meshgrid(
-            torch.arange(cfg.raster_shape, device=self.device) * self.cfg.sampling,
-            torch.arange(cfg.raster_shape, device=self.device) * self.cfg.sampling,
-            indexing="xy",
+        yy, xx = torch.meshgrid(
+            torch.arange(cfg.raster_shape[0], device=self.device) * cfg.raster_sampling[0],
+            torch.arange(cfg.raster_shape[1], device=self.device) * cfg.raster_sampling[1],
+            indexing="ij",
         )
-        self.grid_x = xx.type(torch.float64)
         self.grid_y = yy.type(torch.float64)
+        self.grid_x = xx.type(torch.float64)
 
     @property
     def rng(self) -> np.random.Generator:
@@ -120,28 +120,29 @@ class GSBase:
         self,
     ) -> tuple[torch.nn.ParameterDict, dict[str, Optimizer]]:
         if self.cfg.init_type == "random":
-            positions = (
-                self.cfg.extent * self.cfg.global_scale * (torch.rand((self.cfg.init_num_pts, 3)))
+            positions = torch.tensor(self.cfg.volume_size) * (
+                torch.rand((self.cfg.init_num_pts, 3))
             )
-        elif self.cfg.init_type == "grid2d":
-            y, x = np.mgrid[
-                0 : self.cfg.extent : self.cfg.init_grid_sampling,
-                0 : self.cfg.extent : self.cfg.init_grid_sampling,
+        elif self.cfg.init_type == "grid":
+            yy, xx = np.mgrid[
+                0 : self.cfg.volume_size[-2] : self.cfg.init_grid_sampling,
+                0 : self.cfg.volume_size[-1] : self.cfg.init_grid_sampling,
             ]
-            y += y[1, 1] / 2
-            x += x[1, 1] / 2
+            yy += yy[1, 1] / 2
+            xx += xx[1, 1] / 2
             positions = torch.tensor(
-                self.cfg.global_scale
-                * np.stack([np.zeros_like(y.ravel()), y.ravel(), x.ravel()]).T,
+                np.stack([np.zeros_like(yy.ravel()), yy.ravel(), xx.ravel()]).T,
                 dtype=torch.float64,
             )
+        else:
+            raise NotImplementedError(
+                f"Allowed init_type are 'random' and 'grid', got {self.cfg.init_type}"
+            )
+
+        if self.cfg.model_type == "2dgs":
             positions[:, 0] = 0
 
-        else:
-            raise NotImplementedError("Please specify a correct init_type: random")
-
         N = positions.shape[0]
-        # # Initialize the GS size to be half the average dist of the 3 nearest neighbors
         sigmas = torch.ones(N, dtype=torch.float64) * self.cfg.activation_sigma_inverse(
             self.cfg.init_sigma
         )
@@ -150,7 +151,7 @@ class GSBase:
         )
         params = [
             # name, value, lr
-            ("positions", torch.nn.Parameter(positions), self.cfg.lr_base * self.cfg.global_scale),
+            ("positions", torch.nn.Parameter(positions), self.cfg.lr_base),
             ("sigmas", torch.nn.Parameter(sigmas), self.cfg.lr_base / 10),
             ("intensities", torch.nn.Parameter(intensities), self.cfg.lr_base / 10),
         ]
@@ -168,60 +169,60 @@ class GSBase:
             )
             for name, _, lr in params
         }
-        return splats, optimizers  # type:ignore
+        return splats, optimizers  # type:ignore ## an instance of Adam is an Optimizer... idk.
 
-    def _add_new_gaussians_grid(
-        self, grid_spacing: float
-    ) -> tuple[torch.nn.ParameterDict, dict[str, Optimizer]]:
-        y, x = np.mgrid[0 : self.cfg.extent : grid_spacing, 0 : self.cfg.extent : grid_spacing]
-        y += y[1, 1] / 2
-        x += x[1, 1] / 2
-        positions = torch.tensor(
-            self.cfg.global_scale * np.stack([np.zeros_like(y.ravel()), y.ravel(), x.ravel()]).T,
-            dtype=torch.float64,
-        )
-        positions[:, 0] = 0
+    # def _add_new_gaussians_grid(
+    #     self, grid_spacing: float
+    # ) -> tuple[torch.nn.ParameterDict, dict[str, Optimizer]]:
+    #     y, x = np.mgrid[0 : self.cfg.extent : grid_spacing, 0 : self.cfg.extent : grid_spacing]
+    #     y += y[1, 1] / 2
+    #     x += x[1, 1] / 2
+    #     positions = torch.tensor(
+    #         self.cfg.global_scale * np.stack([np.zeros_like(y.ravel()), y.ravel(), x.ravel()]).T,
+    #         dtype=torch.float64,
+    #     )
+    #     positions[:, 0] = 0
 
-        N = positions.shape[0]
-        # # Initialize the GS size to be half the average dist of the 3 nearest neighbors
-        sigmas = torch.ones(N, dtype=torch.float64) * self.cfg.activation_sigma_inverse(
-            self.cfg.init_sigma
-        )
-        intensities = torch.ones(N, dtype=torch.float64) * self.cfg.activation_intensity_inverse(
-            self.cfg.init_intensity_scaled
-        )
-        params = [
-            # name, value, lr
-            (
-                "positions",
-                torch.nn.Parameter(torch.cat([self.splats.positions.cpu().detach(), positions])),
-                self.cfg.lr_base * self.cfg.global_scale,
-            ),  # type:ignore #FIXME
-            (
-                "sigmas",
-                torch.nn.Parameter(torch.cat([self.splats.sigmas.cpu().detach(), sigmas])),
-                self.cfg.lr_base / 10,
-            ),  # type:ignore #FIXME
-            (
-                "intensities",
-                torch.nn.Parameter(
-                    torch.cat([self.splats.intensities.cpu().detach(), intensities])
-                ),
-                self.cfg.lr_base / 10,
-            ),  # type:ignore #FIXME
-        ]
+    #     N = positions.shape[0]
+    #     # # Initialize the GS size to be half the average dist of the 3 nearest neighbors
+    #     sigmas = torch.ones(N, dtype=torch.float64) * self.cfg.activation_sigma_inverse(
+    #         self.cfg.init_sigma
+    #     )
+    #     intensities = torch.ones(N, dtype=torch.float64) * self.cfg.activation_intensity_inverse(
+    #         self.cfg.init_intensity_scaled
+    #     )
+    #     params = [
+    #         # name, value, lr
+    #         (
+    #             "positions",
+    #             torch.nn.Parameter(torch.cat([self.splats.positions.cpu().detach(), positions])),
+    #             self.cfg.lr_base * self.cfg.global_scale,
+    #         ),  # type:ignore #FIXME
+    #         (
+    #             "sigmas",
+    #             torch.nn.Parameter(torch.cat([self.splats.sigmas.cpu().detach(), sigmas])),
+    #             self.cfg.lr_base / 10,
+    #         ),  # type:ignore #FIXME
+    #         (
+    #             "intensities",
+    #             torch.nn.Parameter(
+    #                 torch.cat([self.splats.intensities.cpu().detach(), intensities])
+    #             ),
+    #             self.cfg.lr_base / 10,
+    #         ),  # type:ignore #FIXME
+    #     ]
 
-        splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(self.cfg.device)
-        # Scale learning rate based on batch size, reference:
-        # https://www.cs.princeton.edu/~smalladi/blog/2024/01/22/SDEs-ScalingRules/
-        # Note that this would not make the training exactly equivalent, see
-        # https://arxiv.org/pdf/2402.18824v1
-        optimizers = {
-            name: Adam(
-                [{"params": splats[name], "lr": lr * math.sqrt(self.cfg.batch_size)}],
-                eps=1e-15 / math.sqrt(self.cfg.batch_size),
-                betas=(1 - self.cfg.batch_size * (1 - 0.9), 1 - self.cfg.batch_size * (1 - 0.999)),
-            )
-            for name, _, lr in params
-        }
-        return splats, optimizers  # type:ignore
+    #     splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(self.cfg.device)
+    #     # Scale learning rate based on batch size, reference:
+    #     # https://www.cs.princeton.edu/~smalladi/blog/2024/01/22/SDEs-ScalingRules/
+    #     # Note that this would not make the training exactly equivalent, see
+    #     # https://arxiv.org/pdf/2402.18824v1
+    #     optimizers = {
+    #         name: Adam(
+    #             [{"params": splats[name], "lr": lr * math.sqrt(self.cfg.batch_size)}],
+    #             eps=1e-15 / math.sqrt(self.cfg.batch_size),
+    #             betas=(1 - self.cfg.batch_size * (1 - 0.9), 1 - self.cfg.batch_size * (1 - 0.999)),
+    #         )
+    #         for name, _, lr in params
+    #     }
+    #     return splats, optimizers  # type:ignore
