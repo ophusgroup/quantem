@@ -211,18 +211,16 @@ class DefaultStrategy(StrategyBase):
 
         # TODO - implement reset intensities?
         if step % self.cfg.reset_every == 0:
-            # self.reset_intensities(
-            #     params=params,
-            #     optimizers=optimizers,
-            #     state=state,
-            #     # value=self.prune_intensities * 2.0,
-            #     value=self.cfg.init_intensity,
-            # )
+            self.reset_intensities(
+                params=params,
+                optimizers=optimizers,
+                state=state,
+                value=self.cfg.init_intensity,
+            )
             self.reset_sigmas(
                 params=params,
                 optimizers=optimizers,
                 state=state,
-                # value=self.prune_intensities * 2.0,
                 value=self.cfg.init_sigma,
             )
 
@@ -336,30 +334,23 @@ class DefaultStrategy(StrategyBase):
         # print("pre pruning state: ", state["count"].shape, state)
         with torch.no_grad():
             # TODO make strategy a inheritor of base GS so these functions are from cfg
+            mean_sigmas = self.cfg.activation_sigma(params["sigmas"].mean(dim=-1))
             scaled_intensities = (
                 self.cfg.activation_intensity(params["intensities"])
                 * ((2 * torch.pi) ** 0.5)
-                * self.cfg.activation_sigma(params["sigmas"][:, 0])
+                * mean_sigmas
             )  # TODO -- fix scaled intensities for anisotropic splats, this is only for 2D
             prune_intensity = scaled_intensities.flatten() < (
                 self.cfg.prune_intensity_fac * self.cfg.init_intensity
             )
             if self.cfg.isotropic_splats:
-                prune_big = (
-                    self.cfg.activation_sigma(params["sigmas"][:, 0].flatten())
-                    > self.cfg.prune_sigma_big_A
-                )
-                prune_small = (
-                    self.cfg.activation_sigma(params["sigmas"][:, 0].flatten())
-                    < self.cfg.prune_sigma_small_A
-                )
+                prune_big = mean_sigmas.flatten() > self.cfg.prune_sigma_big_A
+                prune_small = mean_sigmas.flatten() < self.cfg.prune_sigma_small_A
             else:
                 if self.cfg.model_type == "2dgs":
-                    sigmas_mean = (
-                        self.cfg.activation_sigma(params["sigmas"]).mean(dim=-1).flatten()
-                    )
-                    prune_big = sigmas_mean > self.cfg.prune_sigma_big_A
-                    prune_small = sigmas_mean < self.cfg.prune_sigma_small_A
+                    sigmas = self.cfg.activation_sigma(params["sigmas"])
+                    prune_big = torch.any(sigmas > self.cfg.prune_sigma_big_A, dim=-1)
+                    prune_small = torch.any(sigmas < self.cfg.prune_sigma_small_A, dim=-1)
                 else:
                     raise NotImplementedError
             prune_x = (
@@ -372,19 +363,6 @@ class DefaultStrategy(StrategyBase):
                 raise NotImplementedError
                 # prune_z =
             # else:
-            print(
-                "shapes: ",
-                "intensity: ",
-                prune_intensity.shape,
-                "big: ",
-                prune_big.shape,
-                "small: ",
-                prune_small.shape,
-                "x: ",
-                prune_x.shape,
-                "y: ",
-                prune_y.shape,
-            )
             is_prune = prune_intensity | prune_big | prune_small | prune_x | prune_y
             n_prune = int(is_prune.sum().item())
             print(

@@ -1,3 +1,4 @@
+from abc import abstractmethod
 from collections.abc import Callable
 
 import numpy as np
@@ -54,19 +55,13 @@ class StrategyBase:
                 f"but got {len(optimizer.param_groups)}"
             )
 
-    def step_pre_backward(
-        self,
-        *args,
-        **kwargs,
-    ):
+    @abstractmethod
+    def step_pre_backward(self, *args, **kwargs):
         """Callback function to be executed before the `loss.backward()` call."""
         pass
 
-    def step_post_backward(
-        self,
-        *args,
-        **kwargs,
-    ):
+    @abstractmethod
+    def step_post_backward(self, *args, **kwargs):
         """Callback function to be executed after the `loss.backward()` call."""
         pass
 
@@ -117,7 +112,6 @@ class StrategyBase:
                     optimizer.param_groups[i]["params"] = [new_param]
                     optimizer.state[new_param] = param_state
 
-    # @torch.no_grad()
     def _duplicate(
         self,
         params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
@@ -131,6 +125,7 @@ class StrategyBase:
             params: A dictionary of parameters.
             optimizers: A dictionary of optimizers, each corresponding to a parameter.
             mask: A boolean mask to duplicate the Gaussians.
+            state: A dictionary keeping track of the gradient and number of steps for each gaussian
         """
         with torch.no_grad():
             device = mask.device
@@ -149,7 +144,6 @@ class StrategyBase:
                 if isinstance(v, torch.Tensor):
                     state[k] = torch.cat((v, v[sel]))
 
-    # @torch.no_grad()
     def _split(
         self,
         params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
