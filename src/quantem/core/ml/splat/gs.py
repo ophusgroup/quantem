@@ -16,7 +16,11 @@ from quantem.core.utils.validators import validate_tensor
 from quantem.core.visualization import show_2d
 
 from .gs_config import Config
-from .gs_rendering import rasterization_2dgs  # , rasterization_2dgs_inria_wrapper
+from .gs_rendering import (  # , rasterization_2dgs_inria_wrapper
+    quaternion_to_2d_angle,
+    random_quaternion,
+    rasterization_2dgs,
+)
 
 # from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from .gs_strategy import DefaultStrategy
@@ -129,11 +133,31 @@ class GS:
         intensities = torch.ones(N, dtype=torch.float64) * self.cfg.activation_intensity_inverse(
             self.cfg.init_intensity_scaled
         )
+
         params = [
             ("positions", torch.nn.Parameter(positions), self.cfg.lr_base),
             ("sigmas", torch.nn.Parameter(sigmas), self.cfg.lr_base / 10),
             ("intensities", torch.nn.Parameter(intensities), self.cfg.lr_base / 10),
         ]
+
+        # Add quaternions for rotation when using anisotropic splats
+        if not self.cfg.isotropic_splats:
+            if self.cfg.random_quaternion_init and hasattr(self, "_rng_torch"):
+                # Random quaternions blended with identity for stability
+                quaternions = F.normalize(
+                    0.9 * torch.tensor([1, 0, 0, 0], device=self.device, dtype=torch.float64)
+                    + 0.1
+                    * random_quaternion((N,), device=self.device, generator=self._rng_torch).to(
+                        torch.float64
+                    ),
+                    dim=-1,
+                )
+            else:
+                # Identity quaternions [w=1, x=0, y=0, z=0]
+                quaternions = torch.zeros((N, 4), dtype=torch.float64, device=self.device)
+                quaternions[:, 0] = 1.0
+
+            params.append(("quaternions", torch.nn.Parameter(quaternions), self.cfg.lr_base / 10))
 
         splats = torch.nn.ParameterDict({n: v for n, v, _ in params}).to(self.cfg.device)
         # Scale learning rate based on batch size, reference:
@@ -162,6 +186,11 @@ class GS:
         intensities = self.cfg.activation_intensity(self.splats["intensities"])  # [N,]
         positions = self.splats["positions"]  # don't normalize here, take care of in strategy
 
+        # Get quaternions if available for non-isotropic splats
+        quaternions = None
+        if not self.cfg.isotropic_splats and "quaternions" in self.splats:
+            quaternions = self.splats["quaternions"]
+
         if self.model_type == "2dgs":
             rendered_ims = rasterization_2dgs(
                 positions=positions,
@@ -169,6 +198,7 @@ class GS:
                 intensities=intensities,
                 grids=(self.grid_y, self.grid_x),
                 isotropic_splats=self.cfg.isotropic_splats,
+                quaternions=quaternions,
                 **kwargs,
             )
         else:
@@ -187,7 +217,7 @@ class GS:
         # positions has a learning rate schedule, end at 0.1 of the initial value
         schedulers = [
             torch.optim.lr_scheduler.ExponentialLR(
-                self.optimizers["positions"], gamma=0.1 ** (1.0 / max_steps)
+                self.optimizers["positions"], gamma=1 ** (1.0 / max_steps)
             ),
             torch.optim.lr_scheduler.ExponentialLR(
                 self.optimizers["sigmas"], gamma=1 ** (1.0 / max_steps)
@@ -196,6 +226,14 @@ class GS:
                 self.optimizers["intensities"], gamma=1 ** (1.0 / max_steps)
             ),
         ]
+
+        # Add scheduler for quaternions if they exist
+        if "quaternions" in self.optimizers:
+            schedulers.append(
+                torch.optim.lr_scheduler.ExponentialLR(
+                    self.optimizers["quaternions"], gamma=0.1 ** (1.0 / max_steps)
+                )
+            )
         # append other schedulers if wanted
 
         trainloader = DataLoader(
@@ -277,7 +315,7 @@ class GS:
             # loss += other loss terms
 
             loss.backward()
-            desc = f"loss={loss.item():.3e} "
+            desc = f"loss={loss.item():.3e}"
             pbar.set_description(desc)
 
             self.strategy.step_post_backward(
@@ -337,6 +375,7 @@ class GS:
 
         y = pos[:, 1]
         x = pos[:, 2]
+
         if self.cfg.isotropic_splats:
             radius = np.mean(sig, axis=1) * rescale_sigma
             patches = [Circle((xi, yi), ri) for xi, yi, ri in zip(x, y, radius)]
@@ -344,10 +383,25 @@ class GS:
             # Non-isotropic splats: use sigmas for each axis, plot as ellipses
             sig_y = sig[:, 1] * rescale_sigma
             sig_x = sig[:, 2] * rescale_sigma
-            patches = [  # TODO add rotation
-                Ellipse((xi, yi), width=2 * sx, height=2 * sy)
-                for xi, yi, sy, sx in zip(x, y, sig_y, sig_x)
-            ]
+
+            # Handle rotation via quaternions if available
+            if "quaternions" in self.splats:
+                # Extract rotation angles in degrees using PyTorch
+                angles_deg = (
+                    -1 * quaternion_to_2d_angle(self.splats["quaternions"]) * 180.0 / np.pi
+                )
+                angles_deg_np = angles_deg.detach().cpu().numpy()
+
+                patches = [
+                    Ellipse((xi, yi), width=2 * sx, height=2 * sy, angle=angle_deg)
+                    for xi, yi, sy, sx, angle_deg in zip(x, y, sig_y, sig_x, angles_deg_np)
+                ]
+            else:
+                # No rotation, just use standard ellipses
+                patches = [
+                    Ellipse((xi, yi), width=2 * sx, height=2 * sy)
+                    for xi, yi, sy, sx in zip(x, y, sig_y, sig_x)
+                ]
 
         collection = PatchCollection(
             patches,
@@ -364,6 +418,11 @@ class GS:
         ax.invert_yaxis()
         ax.autoscale_view()
         ax.set_xlabel("x (A)")
+        ax.set_ylabel("y (A)")
+        sm = plt.cm.ScalarMappable(cmap=cmap)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label="Intensity")
+        plt.show()
         ax.set_ylabel("y (A)")
         sm = plt.cm.ScalarMappable(cmap=cmap)
         sm.set_array([])

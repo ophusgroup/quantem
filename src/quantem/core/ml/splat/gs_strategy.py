@@ -206,7 +206,6 @@ class DefaultStrategy(StrategyBase):
 
             # Step 4: Add new Gaussians if needed and within specified iteration range
             n_add = self._add_gaussians(params, optimizers, state, step)
-            self._add_iters.append(step)
 
             if self.verbose and n_add > 0:
                 print(
@@ -482,6 +481,7 @@ class DefaultStrategy(StrategyBase):
         with torch.no_grad():
             if not (self.cfg.add_start_iter <= step <= self.cfg.add_stop_iter):
                 return 0
+            self._add_iters.append(step)
 
             device = params["positions"].device
             if self.cfg.model_type == "3dgs":
@@ -501,6 +501,7 @@ class DefaultStrategy(StrategyBase):
                 positions[:, 0] = 0
 
                 N = positions.shape[0]
+                print("N in adding: ", N)
                 # # Initialize the GS size to be half the average dist of the 3 nearest neighbors
                 sigmas = torch.ones(
                     N, dtype=torch.float64, device=device

@@ -263,6 +263,15 @@ class StrategyBase:
                     p[keeps] = torch.stack(weighted_pos)
 
                 elif name == "sigmas":
+                    print(
+                        "sigmas stuff",
+                        "keeps",
+                        keeps,
+                        "merges",
+                        merges,
+                        "combined_inds",
+                        combined_inds,
+                    )
                     weighted_sigmas = []
                     for inds in combined_inds:
                         total_intensity = torch.sum(intensities[inds])
@@ -280,6 +289,18 @@ class StrategyBase:
                     p[keeps] = self.cfg.activation_intensity_inverse_torch(
                         torch.tensor(sum_intensities, device=device)
                     )
+
+                elif name == "quaternions":
+                    # For quaternions, we can average the orientations of the merged Gaussians
+                    # by converting to rotation matrices, averaging, and converting back
+                    merged_quats = []
+                    for inds in combined_inds:
+                        if len(inds) == 1:
+                            merged_quats.append(p[inds[0]])
+                        else:
+                            avg_quat = torch.mean(p[inds], dim=0)
+                            merged_quats.append(avg_quat / torch.norm(avg_quat))
+                    p[keeps] = torch.stack(merged_quats)
 
                 else:
                     raise ValueError(f"Unexpected parameter name in merge: {name}")

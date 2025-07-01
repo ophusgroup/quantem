@@ -27,6 +27,8 @@ class Config:
 
     # isotropic or non-isotropic splats
     isotropic_splats: bool = True
+    # add random initialization for quaternions when using anisotropic splats
+    random_quaternion_init: bool = False
 
     # Random crop size for training (unused maybe unecessary)
     patch_size: int | None = None
@@ -87,8 +89,8 @@ class Config:
 
     # merging of splats that are too close
     xy_merge_A: float = 0.5  # cutoff distance
-    #
-    xy_merge_sigma_fac: float = 0.5  # in order to merge, the max sigma * fac > other sigmas
+    # in order to merge, the max sigma * fac > other sigmas
+    xy_merge_sigma_fac: float = 0.5
 
     # Start refining GSs after this iteration
     refine_start_iter: int = 500
@@ -98,6 +100,8 @@ class Config:
     pause_refine_after_reset: int = 0
     # Reset intensities every this steps
     reset_every: int = 3000
+    # don't reset after this iteration
+    reset_stop_iter: int = 10_000
     # Refine GSs every this steps
     refine_every: int = 500  # 100
 
