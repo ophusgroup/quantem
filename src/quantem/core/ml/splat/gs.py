@@ -1,9 +1,12 @@
 import math
 from datetime import datetime, timedelta
 
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn.functional as F
+from matplotlib.collections import PatchCollection
+from matplotlib.patches import Circle, Ellipse
 from torch.optim import Adam, Optimizer
 from torch.utils.data import DataLoader
 from torchmetrics.image import StructuralSimilarityIndexMeasure  # PeakSignalNoiseRatio
@@ -58,17 +61,11 @@ class GS:
         print("Model initialized. Number of GS:", len(self.splats["positions"]))
         self.model_type = cfg.model_type
 
-        if self.model_type == "2dgs":
-            key_for_gradient = "positions2d"
-        else:
-            raise NotImplementedError(f"bad model_type {self.model_type}")
-
         # Densification Strategy
         self.strategy = DefaultStrategy(
             cfg=cfg,
             verbose=True,
-            mode="2d",
-            key_for_gradient=key_for_gradient,
+            key_for_gradient="positions",
         )
         self.strategy.check_sanity(self.splats, self.optimizers)
         self.strategy_state = self.strategy.initialize_state()
@@ -252,8 +249,9 @@ class GS:
             info = {
                 "height": self.cfg.raster_shape[0],
                 "width": self.cfg.raster_shape[1],
-                "positions2d": self.splats["positions"],
-                "n_images": 1,
+                "positions": self.splats["positions"],
+                "sigmas": self.splats["sigmas"],
+                "n_images": len(self.trainset),
                 "mask": torch.ones_like(self.splats["sigmas"], dtype=torch.float64),
             }
             # info["positions2d"] = self.splats["positions"] # works but moving the
@@ -309,3 +307,65 @@ class GS:
             losses.append(loss.item())
 
         return torch.squeeze(renders).cpu().detach().numpy(), np.array(losses)
+
+    def plot_gaussians(
+        self,
+        rescale_sigma: float = 1,
+        cmap: str = "viridis",
+        alpha: float = 0.8,
+    ):
+        """
+        Plot 2D Gaussian splats as circles with radius ~ sigma and color ~ intensity.
+
+        Args:
+            positions: (N, 3) tensor, only y and x used for 2D plotting.
+            sigmas: (N, 3) tensor, only y and x used for 2D plotting.
+            intensities: (N,) tensor, mapped to color.
+            ax: matplotlib axis to plot on.
+            rescale_sigma: float, multiply sigma by this for visualization.
+            cmap: matplotlib colormap name.
+            alpha: float, transparency for overlap.
+        """
+        if self.model_type != "2dgs":
+            raise NotImplementedError
+
+        fig, ax = plt.subplots(figsize=(8, 8))
+
+        pos = self.splats["positions"].detach().cpu().numpy()
+        sig = self.cfg.activation_sigma(self.splats["sigmas"]).detach().cpu().numpy()
+        inten = self.cfg.activation_intensity(self.splats["intensities"]).detach().cpu().numpy()
+
+        y = pos[:, 1]
+        x = pos[:, 2]
+        if self.cfg.isotropic_splats:
+            radius = np.mean(sig, axis=1) * rescale_sigma
+            patches = [Circle((xi, yi), ri) for xi, yi, ri in zip(x, y, radius)]
+        else:
+            # Non-isotropic splats: use sigmas for each axis, plot as ellipses
+            sig_y = sig[:, 1] * rescale_sigma
+            sig_x = sig[:, 2] * rescale_sigma
+            patches = [  # TODO add rotation
+                Ellipse((xi, yi), width=2 * sx, height=2 * sy)
+                for xi, yi, sy, sx in zip(x, y, sig_y, sig_x)
+            ]
+
+        collection = PatchCollection(
+            patches,
+            cmap=plt.cm.get_cmap(cmap),
+            alpha=alpha,
+            linewidth=0,
+        )
+        collection.set_array(inten)
+        ax.add_collection(collection)
+
+        ax.set_aspect("equal")
+        ax.set_ylim(0, self.cfg.raster_shape[0] * self.cfg.raster_sampling[0])
+        ax.set_xlim(0, self.cfg.raster_shape[1] * self.cfg.raster_sampling[1])
+        ax.invert_yaxis()
+        ax.autoscale_view()
+        ax.set_xlabel("x (A)")
+        ax.set_ylabel("y (A)")
+        sm = plt.cm.ScalarMappable(cmap=cmap)
+        sm.set_array([])
+        plt.colorbar(sm, ax=ax, label="Intensity")
+        plt.show()

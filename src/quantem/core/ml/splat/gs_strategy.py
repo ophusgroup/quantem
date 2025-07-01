@@ -59,6 +59,7 @@ class DefaultStrategy(StrategyBase):
         key_for_gradient (str): Which variable uses for densification strategy.
           3DGS uses "positions2d" gradient and 2DGS uses a similar gradient which stores
           in variable "gradient_2dgs".
+          # TODO currently using sigmas as well
 
     Examples:
 
@@ -80,18 +81,21 @@ class DefaultStrategy(StrategyBase):
     def __init__(
         self,
         cfg: Config,
-        refine_scale2d_stop_iter: int = 0,
-        pause_refine_after_reset: int = 0,
         revised_intensity: bool = False,
         verbose: bool = False,
-        mode: Literal["2d", "3d"] = "2d",
-        key_for_gradient: Literal["positions2d", "positions3d"] = "positions2d",
+        key_for_gradient: Literal["positions"] = "positions",
     ):
+        """Initialize the default strategy for Gaussian Splatting.
+
+        Args:
+            cfg: Configuration object containing all parameters
+            revised_intensity: Whether to use revised intensity heuristic
+            verbose: Whether to print verbose information
+            mode: Either "2d" or "3d" depending on the model type
+            key_for_gradient: Which variable to use for densification strategy
+        """
         super().__init__(cfg, verbose)
-        self.refine_scale2d_stop_iter = refine_scale2d_stop_iter
-        self.pause_refine_after_reset = pause_refine_after_reset
         self.revised_intensity = revised_intensity
-        self.mode = mode
         self.key_for_gradient = key_for_gradient
 
     def initialize_state(self) -> dict[str, Any]:
@@ -99,15 +103,20 @@ class DefaultStrategy(StrategyBase):
 
         The returned state should be passed to the `step_pre_backward()` and
         `step_post_backward()` functions.
+
+        Returns:
+            dict: The state dictionary containing tracking information for Gaussians
         """
-        # Postpone the initialization of the state to the first step so that we can
-        # put them on the correct device.
-        # - grad2d: running accum of the norm of the image plane gradients for each GS.
-        # - count: running accum of how many time each GS is visible.
-        # - sigmas: the sigmas of the GSs (normalized by the image resolution).
-        state = {"grad2d": None, "count": None, "scene_scale": 1}
-        if self.refine_scale2d_stop_iter > 0:
-            state["sigmas"] = None
+        # Initialize empty state that will be populated during first step
+        state = {
+            # Running accumulation of the norm of image plane gradients for each GS
+            "grad2d": None,
+            # Running accumulation of the sigma gradients for each GS
+            "grad_sigma": None,
+            # Running count of how many times each GS is visible
+            "count": None,
+        }
+
         return state
 
     def check_sanity(
@@ -167,10 +176,12 @@ class DefaultStrategy(StrategyBase):
         if (
             step >= self.cfg.refine_start_iter
             and step % self.cfg.refine_every == 0
-            and step % self.cfg.reset_every >= self.pause_refine_after_reset
+            and step % self.cfg.reset_every >= self.cfg.pause_refine_after_reset
         ):
-            # grow GSs
-            # TODO
+            # Process the refinement pipeline: grow -> merge -> prune -> add new
+            self._refined_iters.append(step)
+
+            # Step 1: Grow Gaussians (duplicate small ones with high gradients, split large ones)
             n_dupli, n_split = self._grow_gs(params, optimizers, state, step)
             if self.verbose:
                 print(
@@ -178,25 +189,25 @@ class DefaultStrategy(StrategyBase):
                     f"Now have {len(params['positions'])} GSs."
                 )
 
-            # TODO split prune, or pass in options of what to prune
-            # prune big, boundaries
-            # merge XY
+            # Step 2: Merge nearby Gaussians to prevent overcrowding
             n_merge = self._merge_gs(params, optimizers, state, step)
             if self.verbose:
                 print(
                     f"Step {step} merge: {n_merge} events | "
                     f"Now have {len(params['positions'])} GSs."
                 )
-            # prune small, intensities
 
-            # prune GSs
+            # Step 3: Prune Gaussians that are no longer useful
             n_prune = self._prune_gs(params, optimizers, state, step)
             if self.verbose:
                 print(
                     f"Step {step} prune: {n_prune} GSs | Now have {len(params['positions'])} GSs."
                 )
 
+            # Step 4: Add new Gaussians if needed and within specified iteration range
             n_add = self._add_gaussians(params, optimizers, state, step)
+            self._add_iters.append(step)
+
             if self.verbose and n_add > 0:
                 print(
                     f"Step {step} adding new grid: {n_add} GSs | "
@@ -204,13 +215,13 @@ class DefaultStrategy(StrategyBase):
                 )
             # reset running stats
             state["grad2d"].zero_()
+            state["grad_sigma"].zero_()
             state["count"].zero_()
-            if self.refine_scale2d_stop_iter > 0:
-                state["sigmas"].zero_()
             torch.cuda.empty_cache()
 
         # TODO - implement reset intensities?
         if step % self.cfg.reset_every == 0:
+            print(f"Step {step} reset intensities and sigmas")
             self.reset_intensities(
                 params=params,
                 optimizers=optimizers,
@@ -230,47 +241,49 @@ class DefaultStrategy(StrategyBase):
         state: dict[str, Any],
         info: dict[str, Any],
     ):
-        # print("update state state is: ", state)
-        for key in [
-            "width",
-            "height",
-            "n_images",
-            "mask",
-            self.key_for_gradient,
-        ]:
+        """Update the tracking state for Gaussians based on current gradients.
+
+        Args:
+            params: Dictionary of Gaussian parameters
+            state: State dictionary to update
+            info: Information dictionary from the rendering process
+        """
+        # Verify all required keys are present
+        required_keys = ["width", "height", "n_images", "mask", self.key_for_gradient]
+        for key in required_keys:
             assert key in info, f"{key} is required but missing."
 
-        # normalize grads to [-1, 1] screen space
+        # Get and normalize gradients to screen space
         if self.cfg.absgrad:
-            raise NotImplementedError
-            # grads:torch.Tensor = info[self.key_for_gradient].absgrad.clone()
+            raise NotImplementedError("Absolute gradient mode not implemented yet")
         else:
-            # print("key for grad: ", self.key_for_gradient, " is none: ", info[self.key_for_gradient].grad is None)
             grads: torch.Tensor = info[self.key_for_gradient].grad.clone()
+            grads_sigmas = info["sigmas"].grad.clone()
 
-        grads[..., 0] *= info["width"] / 2.0 * info["n_images"]  # TODO figure out why this is?
-        grads[..., 1] *= info["height"] / 2.0 * info["n_images"]  # Might be bad
+        grads[..., 0] *= info["width"] / 2.0 * info["n_images"]
+        grads[..., 1] *= info["height"] / 2.0 * info["n_images"]
+        grads_sigmas *= np.sqrt(info["width"] ** 2 + info["height"] ** 2) / 2.0 * info["n_images"]
 
-        # initialize state on the first run
+        # Initialize state tensors if needed
         n_gaussian = len(list(params.values())[0])
 
         if state["grad2d"] is None:
             state["grad2d"] = torch.zeros(n_gaussian, device=grads.device, dtype=torch.float64)
+        if state["grad_sigma"] is None:
+            state["grad_sigma"] = torch.zeros(n_gaussian, device=grads.device, dtype=torch.float64)
         if state["count"] is None:
             state["count"] = torch.zeros(n_gaussian, device=grads.device, dtype=torch.float64)
-        if self.refine_scale2d_stop_iter > 0 and state["sigmas"] is None:
-            assert "sigmas" in info, "sigmas is required but missing."
-            state["sigmas"] = torch.zeros(n_gaussian, device=grads.device, dtype=torch.float64)
 
-        ### masking gradients
-        # # grads is [C, N, 2]
-        gs_ids = torch.where(info["mask"])[0]  # [1]  # [nnz]
-        grads = grads[gs_ids]  # [nnz, 2]
+        # Apply mask and accumulate gradients
+        gs_ids = torch.where(info["mask"])[0]
+        grads = grads[gs_ids]
+        grads_sigmas = grads_sigmas[gs_ids]
 
+        # Update the gradient and visibility count statistics
         state["grad2d"].index_add_(0, gs_ids, grads.norm(dim=-1))
+        state["grad_sigma"].index_add_(0, gs_ids, grads_sigmas.norm(dim=-1))
         state["count"].index_add_(0, gs_ids, torch.ones_like(gs_ids, dtype=torch.float64))
 
-    # @torch.no_grad()
     def _grow_gs(
         self,
         params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
@@ -278,44 +291,64 @@ class DefaultStrategy(StrategyBase):
         state: dict[str, Any],
         step: int,
     ) -> tuple[int, int]:
+        """Grow Gaussians by duplicating small ones and splitting large ones with high gradients.
+
+        Args:
+            params: Dictionary of parameters.
+            optimizers: Dictionary of optimizers.
+            state: Current strategy state.
+            step: Current optimization step.
+
+        Returns:
+            tuple: (number of duplicated Gaussians, number of split Gaussians)
+        """
         with torch.no_grad():
             count = state["count"]
             grads = state["grad2d"] / count.clamp_min(1)
+            grads_sigmas = state["grad_sigma"] / count.clamp_min(1)
             device = grads.device
 
-            # print('grads : ', grads.max(), grads.mean(), grads.min(), grads.std(), grads)
+            print("grads pos: ", grads.max(), grads.mean(), grads.min(), grads.std())
+            print(
+                "grads_sigmas : ",
+                grads_sigmas.max(),
+                grads_sigmas.mean(),
+                grads_sigmas.min(),
+                grads_sigmas.std(),
+            )
+            grads = (grads + grads_sigmas) / 2
+            print("grads ave: ", grads.max(), grads.mean(), grads.min(), grads.std())
+
             is_grad_high = grads > self.cfg.split_dup_grad2d
             is_small = (
                 self.cfg.activation_sigma(params["sigmas"]).max(dim=-1).values
-                <= self.cfg.grow_sigma3d * state["scene_scale"]
+                <= self.cfg.grow_sigma3d * self.cfg.global_scale
             )
             is_dupli = is_grad_high & is_small
             n_dupli = is_dupli.sum().item()
 
             is_large = ~is_small
             is_split = is_grad_high & is_large
-            # if step < self.refine_scale2d_stop_iter:
-            #     is_split |= state["sigmas"] > self.cfg.grow_sigma2d
             n_split = is_split.sum().item()
 
-            # first duplicate
+            # First duplicate the small Gaussians with high gradients
             if n_dupli > 0:
-                print(f"skipping duplicate of {n_dupli} gs")
-                # duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli)
+                self._duplicate(params=params, optimizers=optimizers, state=state, mask=is_dupli)
+                # New Gaussians added by duplication will not be split
+                is_split = torch.cat(
+                    [is_split, torch.zeros(n_dupli, dtype=torch.bool, device=device)]
+                )
 
-            # new GSs added by duplication will not be split
-            is_split = torch.cat([is_split, torch.zeros(n_dupli, dtype=torch.bool, device=device)])
-
-            # then split
+            # Then split the large Gaussians with high gradients
             if n_split > 0:
-                print(f"skipping splitting of {n_split} gs")
-                # split(
-                #     params=params,
-                #     optimizers=optimizers,
-                #     state=state,
-                #     mask=is_split,
-                #     revised_intensity=self.revised_intensity,
-                # )
+                self._split(
+                    params=params,
+                    optimizers=optimizers,
+                    state=state,
+                    mask=is_split,
+                    revised_intensity=self.revised_intensity,
+                )
+
             return n_dupli, n_split
 
     # @torch.no_grad()

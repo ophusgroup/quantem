@@ -66,7 +66,6 @@ class StrategyBase:
         pass
 
     # not using decorators cuz messes with autoreload
-    # @torch.no_grad()
     def _update_param_with_optimizer(
         self,
         param_fn: Callable[[str, Tensor], Tensor],
@@ -167,36 +166,53 @@ class StrategyBase:
             rest = torch.where(~mask)[0]
 
             sigmas = self.cfg.activation_sigma(params["sigmas"][sel])
-            # quats = F.normalize(params["quats"][sel], dim=-1)
-            # rotmats = normalized_quat_to_rotmat(quats)  # [N, 3, 3]
 
-            # print("splitting")
-            # samples = torch.einsum(
-            #     "nij,nj,bnj->bni",
-            #     rotmats,
-            #     sigmas,
-            #     torch.randn(2, len(sigmas), 3, device=device),
-            # )  # [2, N, 3]
-            samples = None
+            # Generate random offsets for splitting positions
+            # Create random offset directions for each Gaussian to split
+            num_to_split = len(sel)
+
+            # Generate random direction vectors
+            random_dirs = torch.randn(num_to_split, 3, device=device)
+            random_dirs = random_dirs / (torch.norm(random_dirs, dim=1, keepdim=True) + 1e-8)
+
+            # Scale the offset by sigma (use the x and y components of sigma)
+            offset_scale = 0.5 * torch.sqrt(sigmas[:, 1:].mean(dim=1, keepdim=True))
+
+            # Create two samples with offsets in opposite directions
+            offset = random_dirs * offset_scale.view(-1, 1)
+            samples = torch.stack([offset, -offset], dim=0)  # [2, N, 3]
 
             def param_fn(name: str, p: Tensor) -> Tensor:
                 repeats = [2] + [1] * (p.dim() - 1)
                 if name == "positions":
-                    print("pos split: ", p[sel].shape)
-                    # print(p[sel])
-                    p_split = (p[sel] + samples).reshape(-1, 3)  # [2N, 3] # type:ignore
+                    orig_pos = p[sel].unsqueeze(0).repeat(2, 1, 1)  # [2, N, 3]
+                    p_split = (orig_pos + samples).reshape(-1, 3)  # [2N, 3]
                 elif name == "sigmas":
-                    p_split = torch.log(sigmas / 1.6).repeat(2, 1)  # [2N, 3]
+                    # divide by about 1.6 as in original 3DGS paper
+                    reduced_sigmas = sigmas / 1.1
+                    p_split = self.cfg.activation_sigma_inverse_torch(reduced_sigmas).repeat(
+                        2, 1
+                    )  # [2N, 3]
                 elif name == "intensities" and revised_intensity:
+                    # Use revised intensity calculation from arXiv:2404.06109
                     new_intensities = 1.0 - torch.sqrt(1.0 - torch.sigmoid(p[sel]))
                     p_split = torch.logit(new_intensities).repeat(repeats)  # [2N]
+                elif name == "intensities":
+                    # Each split Gaussian gets half the intensity of the original
+                    actual_intensity = self.cfg.activation_intensity(p[sel])
+                    half_intensity = actual_intensity / 2.0
+                    p_split = self.cfg.activation_intensity_inverse_torch(half_intensity).repeat(
+                        repeats
+                    )
                 else:
                     p_split = p[sel].repeat(repeats)
+
                 p_new = torch.cat([p[rest], p_split])
                 p_new = torch.nn.Parameter(p_new, requires_grad=p.requires_grad)
                 return p_new
 
             def optimizer_fn(key: str, v: Tensor) -> Tensor:
+                # Initialize optimizer state for new split Gaussians to zeros
                 v_split = torch.zeros((2 * len(sel), *v.shape[1:]), device=device)
                 return torch.cat([v[rest], v_split])
 
@@ -209,7 +225,6 @@ class StrategyBase:
                     v_new = v[sel].repeat(repeats)
                     state[k] = torch.cat((v[rest], v_new))
 
-    # @torch.no_grad()
     def _merge(
         self,
         params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
@@ -218,61 +233,95 @@ class StrategyBase:
         keeps: list,
         merges: list,
     ):
+        """Inplace merge multiple Gaussian splats into ones.
+
+        Args:
+            params: A dictionary of parameters.
+            optimizers: A dictionary of optimizers, each corresponding to a parameter.
+            state: A dictionary of extra state variables.
+            keeps: A list of indices for Gaussians that will be kept and updated.
+            merges: A list of lists of indices for Gaussians that will be merged into
+                the corresponding kept Gaussians.
+        """
         with torch.no_grad():
+            device = params["positions"].device
             sigmas = self.cfg.activation_sigma(params["sigmas"])
             intensities = self.cfg.activation_intensity(params["intensities"])
-            positions = params["positions"]
             combined_inds = [[kp] + mg for kp, mg in zip(keeps, merges)]
 
-            # make a param_fn, has cases for positions, sigmas, intensities like split()
-            # masks are changes, merges (does not include changes), shouldn't need a rest
-            # run _update_param_with_optimizer, which will only affect changes but uses merges as well
-            # then run remove, with the mask being merges, this will also take care of updating the state dict
             def param_fn(name: str, p: Tensor) -> Tensor:
                 if name == "positions":
-                    # Weighted mean by intensity
-                    weighted_pos = [
-                        torch.sum(p[inds] * intensities[inds][:, None], dim=0)
-                        / torch.sum(intensities[inds])
-                        for inds in combined_inds
-                    ]
+                    # Weighted mean by intensity for positions
+                    weighted_pos = []
+                    for inds in combined_inds:
+                        total_intensity = torch.sum(intensities[inds])
+                        pos = (
+                            torch.sum(p[inds] * intensities[inds][:, None], dim=0)
+                            / total_intensity
+                        )
+                        weighted_pos.append(pos)
                     p[keeps] = torch.stack(weighted_pos)
+
                 elif name == "sigmas":
-                    # Weighted mean for sigma_y and sigma_x, keep sigma_z=0
                     weighted_sigmas = []
                     for inds in combined_inds:
-                        sigma = torch.sum(
-                            sigmas[inds] * intensities[inds][:, None], dim=0
-                        ) / torch.sum(intensities[inds])
+                        total_intensity = torch.sum(intensities[inds])
+                        sigma = (
+                            torch.sum(sigmas[inds] * intensities[inds][:, None], dim=0)
+                            / total_intensity
+                        )
                         weighted_sigmas.append(sigma)
                     weighted_sigmas = torch.stack(weighted_sigmas)
-                    # Inverse activation for storage
+                    # Convert back to parameter space using the tensor-based inverse function
                     p[keeps] = self.cfg.activation_sigma_inverse_torch(weighted_sigmas)
+
                 elif name == "intensities":
                     sum_intensities = [torch.sum(intensities[inds]) for inds in combined_inds]
                     p[keeps] = self.cfg.activation_intensity_inverse_torch(
-                        torch.tensor(sum_intensities, device=p.device)
+                        torch.tensor(sum_intensities, device=device)
                     )
+
                 else:
                     raise ValueError(f"Unexpected parameter name in merge: {name}")
                 return p
 
             def optimizer_fn(key: str, v: Tensor) -> Tensor:
-                # effectively just keeping the original values for the kept GS, as rest deleted
+                # Keep the optimizer state for the kept Gaussians
+                # For momentum-based optimizers, we should ideally merge the momentum states,
+                # but this simple approach works well in practice
                 return v
 
             self._update_param_with_optimizer(param_fn, optimizer_fn, params, optimizers)
 
-            # run remove
-            rm_mask = torch.zeros(
-                len(params["positions"]), device=positions.device, dtype=torch.bool
-            )
-            rm_mask[np.concatenate(merges)] = 1
+            # Update the extra state variables for the kept Gaussians
+            for k, v in state.items():
+                if isinstance(v, torch.Tensor):
+                    for i, (keep, merge_indices) in enumerate(zip(keeps, merges)):
+                        if v.shape[0] == len(params["positions"]):
+                            # For count-like state variables: sum them
+                            # For gradient-like state variables: average them weighted by count
+                            if k == "count":
+                                state[k][keep] = torch.sum(v[np.array([keep] + merge_indices)])
+                            elif k == "grad2d" and "count" in state:
+                                counts = state["count"][np.array([keep] + merge_indices)]
+                                total_count = torch.sum(counts)
+                                if total_count > 0:
+                                    state[k][keep] = (
+                                        torch.sum(v[np.array([keep] + merge_indices)] * counts)
+                                        / total_count
+                                    )
+                            else:
+                                state[k][keep] = torch.max(v[np.array([keep] + merge_indices)])
+
+            rm_mask = torch.zeros(len(params["positions"]), device=device, dtype=torch.bool)
+            flat_merges = np.concatenate(merges)
+            rm_mask[flat_merges] = True
+
+            # Remove the merged Gaussians
             self.remove(params=params, optimizers=optimizers, state=state, mask=rm_mask)
 
         return
 
-    # @torch.no_grad()
     def remove(
         self,
         params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
@@ -369,7 +418,6 @@ class StrategyBase:
                 param_fn, optimizer_fn, params, optimizers, names=["sigmas"]
             )
 
-    # @torch.no_grad()
     def _add(
         self,
         old_params: dict[str, torch.nn.Parameter] | torch.nn.ParameterDict,
@@ -377,12 +425,13 @@ class StrategyBase:
         optimizers: dict[str, Optimizer],
         state: dict[str, Tensor],
     ):
-        """Inplace duplicate the Gaussian with the given mask.
+        """Inplace add new Gaussians to the existing ones.
 
         Args:
-            params: A dictionary of parameters.
+            old_params: A dictionary of existing parameters.
+            new_params: A dictionary of new parameters to be added.
             optimizers: A dictionary of optimizers, each corresponding to a parameter.
-            mask: A boolean mask to duplicate the Gaussians.
+            state: A dictionary of extra state variables.
         """
         with torch.no_grad():
             device = old_params["positions"].device
@@ -397,6 +446,7 @@ class StrategyBase:
 
             self._update_param_with_optimizer(param_fn, optimizer_fn, old_params, optimizers)
 
+            # Update all state variables
             for k, v in state.items():
                 if isinstance(v, torch.Tensor):
                     repeats = [n_new] + [1] * (v.dim() - 1)

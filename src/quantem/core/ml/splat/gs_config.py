@@ -32,7 +32,7 @@ class Config:
     patch_size: int | None = None
     # A global scaler that applies to the scene size related parameters
     # currently not used but long term  might be useful for handling scaling issues
-    # global_scale: float = 1.0
+    global_scale: float = 1.0
     # device -- maybe unecessary since we have config
     device: str = config.get_device()
 
@@ -69,7 +69,7 @@ class Config:
     # GSs with intensity below this value * init_intensity will be pruned
     prune_intensity_fac: float = 0.5
     # GSs with image plane gradient above this value will be split or duplicated
-    split_dup_grad2d: float = 10  # 0.0002 # TODO - no 2d/3d
+    split_dup_grad2d: float = 1  # 0.0002 # TODO - no 2d/3d
     # GSs with sigma below this value (A) will be duplicated. Above will be split
     grow_sigma3d: float = 0.3  # TODO need to play with these values
     # GSs with sigma above this value will be pruned.
@@ -94,6 +94,8 @@ class Config:
     refine_start_iter: int = 500
     # Stop refining GSs after this iteration
     refine_stop_iter: int = int(9e9)  # 15_000
+    # Pause refining until this number of steps after reset
+    pause_refine_after_reset: int = 0
     # Reset intensities every this steps
     reset_every: int = 3000
     # Refine GSs every this steps
