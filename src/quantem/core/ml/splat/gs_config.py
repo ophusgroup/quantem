@@ -64,16 +64,16 @@ class Config:
     ssim_lambda: float = 0.0
 
     # Near plane clipping distance # this could be sample top surface
-    near_plane: float = 0.0  # A? check
+    near_plane: float = 0.0  # A? check TODO remove, redundant with volume_size
     # Far plane clipping distance # this could be sample exit surface
     far_plane: float = 200  # A? check
 
     # GSs with intensity below this value * init_intensity will be pruned
     prune_intensity_fac: float = 0.5
     # GSs with image plane gradient above this value will be split or duplicated
-    split_dup_grad2d: float = 1  # 0.0002 # TODO - no 2d/3d
+    split_dup_grad2d: float = 0.005  # 0.0002 # TODO - no 2d/3d
     # GSs with sigma below this value (A) will be duplicated. Above will be split
-    grow_sigma3d: float = 0.3  # TODO need to play with these values
+    grow_sigma3d: float = 0.2  # TODO need to play with these values
     # GSs with sigma above this value will be pruned.
     prune_sigma_big_A: float = 0.4
     # GSs with sigma below this value will be pruned.

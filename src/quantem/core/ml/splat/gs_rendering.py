@@ -83,3 +83,119 @@ def rasterization_2dgs(
     gaussians = amps[:, None, None] * torch.exp(-0.5 * exp_arg)
     image = gaussians.sum(dim=0)
     return image[None,]
+
+
+def rasterization_volume(
+    positions: torch.Tensor,
+    sigmas: torch.Tensor,
+    intensities: torch.Tensor,
+    volume_shape: tuple[int, int, int],  # (D, H, W)
+    volume_size: tuple[float, float, float],  # Physical size in each dimension
+    isotropic_splats: bool = True,
+    quaternions: torch.Tensor | None = None,
+    **kwargs,
+) -> torch.Tensor:
+    """
+    Rasterize 3D Gaussian splats to a volume.
+
+    Args:
+        positions: (N, 3) tensor of [z, y, x] positions
+        sigmas: (N, 3) tensor of [sigma_z, sigma_y, sigma_x]
+        intensities: (N,) tensor of intensities
+        volume_shape: (D, H, W) output volume dimensions
+        volume_size: (depth, height, width) physical size of volume
+        isotropic_splats: If True, use mean of sigmas for all dimensions
+        quaternions: (N, 4) tensor of [w, x, y, z] quaternions for rotation
+
+    Returns:
+        torch.Tensor: (D, H, W) rasterized volume
+    """
+    device = positions.device
+    dtype = positions.dtype
+    N = positions.shape[0]
+
+    # Create coordinate grids more efficiently
+    coords = [
+        torch.linspace(0, size, steps, device=device, dtype=dtype)
+        for size, steps in zip(volume_size, volume_shape)
+    ]
+    grid_z, grid_y, grid_x = torch.meshgrid(*coords, indexing="ij")
+
+    # Vectorized distance computation using broadcasting
+    pos_expanded = positions.view(N, 3, 1, 1, 1)  # (N, 3, 1, 1, 1)
+    grid_coords = torch.stack([grid_z, grid_y, grid_x], dim=0).unsqueeze(0)  # (1, 3, D, H, W)
+    diffs = grid_coords - pos_expanded  # (N, 3, D, H, W)
+
+    if isotropic_splats:
+        sigma_iso = sigmas.mean(dim=1)
+        sigma_sq = sigma_iso**2
+        norm_const = intensities * (2 * torch.pi) ** 1.5 * sigma_iso.pow(3)
+        dist_sq = (diffs**2).sum(dim=1)  # (N, D, H, W)
+        exp_arg = dist_sq / (sigma_sq.view(N, 1, 1, 1) + 1e-12)
+
+    else:
+        sigma_z, sigma_y, sigma_x = sigmas.unbind(1)
+        sigma_sq = sigmas**2
+        norm_const = intensities * (2 * torch.pi) ** 1.5 * (sigma_z * sigma_y * sigma_x)
+
+        if quaternions is not None:
+            R = quaternion_to_rotation_matrix_3d(quaternions)  # (N, 3, 3)
+            diffs_rot = torch.einsum("nij,njdhw->nidhw", R, diffs)  # (N, 3, D, H, W)
+
+            # Compute weighted distances
+            sigma_sq_expanded = sigma_sq.view(N, 3, 1, 1, 1)  # (N, 3, 1, 1, 1)
+            exp_arg = ((diffs_rot**2) / (sigma_sq_expanded + 1e-12)).sum(dim=1)  # (N, D, H, W)
+        else:
+            # Axis-aligned ellipsoids - more efficient computation
+            sigma_sq_expanded = sigma_sq.view(N, 3, 1, 1, 1)
+            exp_arg = ((diffs**2) / (sigma_sq_expanded + 1e-12)).sum(dim=1)  # (N, D, H, W)
+
+    # Compute Gaussians and sum efficiently
+    gaussians = norm_const.view(N, 1, 1, 1) * torch.exp(-0.5 * exp_arg)
+    volume = gaussians.sum(dim=0)
+
+    return volume  # (D, H, W)
+
+
+def quaternion_to_rotation_matrix_3d(quaternions: torch.Tensor) -> torch.Tensor:
+    """
+    Convert quaternions to 3D rotation matrices.
+
+    Args:
+        quaternions: (N, 4) tensor of [w, x, y, z] quaternions
+
+    Returns:
+        torch.Tensor: (N, 3, 3) rotation matrices
+    """
+    # Normalize quaternions
+    q = F.normalize(quaternions, dim=-1)
+    w, x, y, z = q.unbind(-1)
+
+    # Compute rotation matrix elements
+    # R = [[1-2(y²+z²), 2(xy-wz), 2(xz+wy)],
+    #      [2(xy+wz), 1-2(x²+z²), 2(yz-wx)],
+    #      [2(xz-wy), 2(yz+wx), 1-2(x²+y²)]]
+
+    R00 = 1 - 2 * (y**2 + z**2)
+    R01 = 2 * (x * y - w * z)
+    R02 = 2 * (x * z + w * y)
+
+    R10 = 2 * (x * y + w * z)
+    R11 = 1 - 2 * (x**2 + z**2)
+    R12 = 2 * (y * z - w * x)
+
+    R20 = 2 * (x * z - w * y)
+    R21 = 2 * (y * z + w * x)
+    R22 = 1 - 2 * (x**2 + y**2)
+
+    # Stack into rotation matrices - (N, 3, 3)
+    R = torch.stack(
+        [
+            torch.stack([R00, R01, R02], dim=-1),
+            torch.stack([R10, R11, R12], dim=-1),
+            torch.stack([R20, R21, R22], dim=-1),
+        ],
+        dim=-2,
+    )
+
+    return R

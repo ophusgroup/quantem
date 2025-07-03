@@ -8,60 +8,35 @@ import torch.nn.functional as F
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle, Ellipse
 from torch.optim import Adam, Optimizer
-from torch.utils.data import DataLoader
 from torchmetrics.image import StructuralSimilarityIndexMeasure  # PeakSignalNoiseRatio
 from tqdm.auto import tqdm
 
-from quantem.core.utils.validators import validate_tensor
 from quantem.core.visualization import show_2d
 
+from .datasets import SimpleImageDataset, SimpleVolumeDataset, TomoDataset
 from .gs_config import Config
 from .gs_rendering import (  # , rasterization_2dgs_inria_wrapper
     quaternion_to_2d_angle,
     random_quaternion,
     rasterization_2dgs,
+    rasterization_volume,
 )
 
 # from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from .gs_strategy import DefaultStrategy
 
 
-class SimpleDataset(torch.utils.data.Dataset):
-    """A simple dataset class for fitting a single image or series of images."""
-
-    def __init__(
-        self,
-        image: np.ndarray | torch.Tensor,
-    ):
-        self.images = validate_tensor(
-            image,
-            name="image",
-            dtype=torch.float64,
-            ndim=3,
-            expand_dims=True,
-        )
-
-    def __len__(self):
-        return len(self.images)
-
-    def __getitem__(self, index: int):
-        return self.images[index]
-
-
 class GS:
     """Base Gaussian splatting class inherited by 2D and 3D"""
 
-    def __init__(
-        self, cfg: Config, trainset: SimpleDataset, rng: int | np.random.Generator | None = None
-    ) -> None:
+    def __init__(self, cfg: Config, rng: int | np.random.Generator | None = None) -> None:
         self.cfg = cfg
         self.device = cfg.device
         self.rng = rng
-
-        self.trainset = trainset
+        self._losses = []
 
         # Model
-        self.splats, self.optimizers = self._initialize_splats_and_optimizers()
+        self.splats, self.optimizers, self.schedulers = self._initialize_splats_and_optimizers()
         print("Model initialized. Number of GS:", len(self.splats["positions"]))
         self.model_type = cfg.model_type
 
@@ -76,7 +51,8 @@ class GS:
 
         # Losses & Metrics.
         self.ssim = StructuralSimilarityIndexMeasure(data_range=1.0).to(self.device)
-        # self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)  # TODO note data range
+        # TODO reimplement (note data range)
+        # self.psnr = PeakSignalNoiseRatio(data_range=1.0).to(self.device)
         # self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True).to(self.device)
 
         # Precompute the 2D grid for the target image
@@ -104,24 +80,45 @@ class GS:
         seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get seed from the generator
         self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
 
+    @property
+    def losses(self) -> np.ndarray:
+        return np.array(self._losses)
+
     def _initialize_splats_and_optimizers(
         self,
-    ) -> tuple[torch.nn.ParameterDict, dict[str, Optimizer]]:
+    ) -> tuple[torch.nn.ParameterDict, dict[str, Optimizer], list]:
+        # TODO set up optimizers and schedulers passable like in ptycho
+        # currently not scaling the lrs for more consistent/faster testing
         if self.cfg.init_type == "random":
             positions = torch.tensor(self.cfg.volume_size) * (
-                torch.rand((self.cfg.init_num_pts, 3))
-            )  # TODO use self.rng
-        elif self.cfg.init_type == "grid":
-            yy, xx = np.mgrid[
-                0 : self.cfg.volume_size[-2] : self.cfg.init_grid_sampling,
-                0 : self.cfg.volume_size[-1] : self.cfg.init_grid_sampling,
-            ]
-            yy += yy[1, 1] / 2
-            xx += xx[1, 1] / 2
-            positions = torch.tensor(
-                np.stack([np.zeros_like(yy.ravel()), yy.ravel(), xx.ravel()]).T,
-                dtype=torch.float64,
+                torch.rand((self.cfg.init_num_pts, 3), generator=self._rng_torch)
             )
+        elif self.cfg.init_type == "grid":
+            if self.cfg.model_type == "2dgs":
+                yy, xx = np.mgrid[
+                    0 : self.cfg.volume_size[-2] : self.cfg.init_grid_sampling,
+                    0 : self.cfg.volume_size[-1] : self.cfg.init_grid_sampling,
+                ]
+                yy += yy[1, 1] / 2
+                xx += xx[1, 1] / 2
+                positions = torch.tensor(
+                    np.stack([np.zeros_like(yy.ravel()), yy.ravel(), xx.ravel()]).T,
+                    dtype=torch.float64,
+                )
+            elif self.cfg.model_type == "3dgs":
+                z, y, x = np.mgrid[
+                    0 : self.cfg.volume_size[0] : self.cfg.init_grid_sampling,
+                    0 : self.cfg.volume_size[1] : self.cfg.init_grid_sampling,
+                    0 : self.cfg.volume_size[2] : self.cfg.init_grid_sampling,
+                ]
+                z += z[1, 1, 1] / 2
+                y += y[1, 1, 1] / 2
+                x += x[1, 1, 1] / 2
+                positions = torch.tensor(
+                    np.stack([z.ravel(), y.ravel(), x.ravel()]).T, dtype=torch.float64
+                )
+            else:
+                raise ValueError(f"Unknown model type: {self.cfg.model_type}")
         else:
             raise ValueError(f"Unknown init_type: {self.cfg.init_type}")
 
@@ -142,7 +139,7 @@ class GS:
 
         # Add quaternions for rotation when using anisotropic splats
         if not self.cfg.isotropic_splats:
-            if self.cfg.random_quaternion_init and hasattr(self, "_rng_torch"):
+            if self.cfg.random_quaternion_init:
                 # Random quaternions blended with identity for stability
                 quaternions = F.normalize(
                     0.9 * torch.tensor([1, 0, 0, 0], device=self.device, dtype=torch.float64)
@@ -172,9 +169,30 @@ class GS:
             )
             for name, _, lr in params
         }
-        return splats, optimizers  # type:ignore ## an instance of Adam is an Optimizer... idk.
 
-    def rasterize_splats(
+        schedulers = []
+        # schedulers = [
+        # torch.optim.lr_scheduler.ExponentialLR(
+        #     self.optimizers["positions"], gamma=1 ** (1.0 / max_steps)
+        # ),
+        # torch.optim.lr_scheduler.ExponentialLR(
+        #     self.optimizers["sigmas"], gamma=1 ** (1.0 / max_steps)
+        # ),
+        # torch.optim.lr_scheduler.ExponentialLR(
+        #     self.optimizers["intensities"], gamma=1 ** (1.0 / max_steps)
+        # ),
+        # ]
+        # Add scheduler for quaternions if they exist
+        # if "quaternions" in self.optimizers:
+        #     schedulers.append(
+        #         torch.optim.lr_scheduler.ExponentialLR(
+        #             self.optimizers["quaternions"], gamma=0.1 ** (1.0 / max_steps)
+        #         )
+        #     )
+
+        return splats, optimizers, schedulers  # type:ignore ## an instance of Adam is an Optimizer... idk.
+
+    def rasterize_splats(  # rasterize and project the splats to 2D image(s)
         self,
         rescale_sigmas: float | None = None,
         **kwargs,
@@ -206,65 +224,92 @@ class GS:
 
         return rendered_ims
 
-    def train(self, max_steps: int | None = None) -> tuple[np.ndarray | torch.Tensor, np.ndarray]:
+    def rasterize_volume_splats(  # rasterize the splats to a 3D volume
+        self,
+        volume_shape: tuple[int, int, int] | None = None,
+        **kwargs,
+    ) -> torch.Tensor:
+        """
+        Rasterize the splats to a 3D volume.
+
+        Args:
+            volume_shape: (D, H, W) output volume dimensions. If None, inferred from config.
+            **kwargs: Additional arguments passed to rasterization_volume.
+
+        Returns:
+            torch.Tensor: (1, D, H, W) rasterized volume
+        """
+        # Apply activations to get actual parameter values
+        sigmas = self.cfg.activation_sigma(self.splats["sigmas"])  # [N, 3]
+        intensities = self.cfg.activation_intensity(self.splats["intensities"])  # [N,]
+        positions = self.splats["positions"]  # don't normalize here, take care of in strategy
+
+        # Get quaternions if available for non-isotropic splats
+        quaternions = None
+        if not self.cfg.isotropic_splats and "quaternions" in self.splats:
+            quaternions = self.splats["quaternions"]
+
+        # Determine volume shape - if not provided, create a cube based on raster_shape
+        if volume_shape is None:
+            min_sampling = min(self.cfg.raster_sampling)
+            z_shape = int(round(self.cfg.volume_size[0] / min_sampling))
+            volume_shape = (z_shape, self.cfg.raster_shape[0], self.cfg.raster_shape[1])
+
+        # Use volume size from config
+        volume_size = self.cfg.volume_size
+
+        # Call the volume rasterization function
+        rendered_volume = rasterization_volume(
+            positions=positions,
+            sigmas=sigmas,
+            intensities=intensities,
+            volume_shape=volume_shape,
+            volume_size=volume_size,
+            isotropic_splats=self.cfg.isotropic_splats,
+            quaternions=quaternions,
+            **kwargs,
+        )
+        return rendered_volume
+
+    def compute_loss(self, renders: torch.Tensor, images: torch.Tensor) -> torch.Tensor:
+        l2loss = F.mse_loss(renders, images)
+        if self.cfg.ssim_lambda > 0:
+            ssimloss = 1.0 - self.ssim(renders[None,], images[None,])
+            loss = l2loss * (1.0 - self.cfg.ssim_lambda) + ssimloss * self.cfg.ssim_lambda
+        else:
+            loss = l2loss
+        # add regularization, other loss terms here
+        return loss
+
+    def fit_image(  # Single 2D image fitting
+        self,
+        trainset: SimpleImageDataset,
+        max_steps: int | None = None,
+        reset: bool = False,
+    ) -> tuple[np.ndarray | torch.Tensor, np.ndarray]:
         cfg = self.cfg
+        if reset:
+            self._losses = []
+            self.splats, self.optimizers, self.schedulers = (
+                self._initialize_splats_and_optimizers()
+            )
         if max_steps is None:
             max_steps = cfg.max_steps
 
         init_step = 0
 
-        # TODO reset optimizer LRs to initial LR
-        # positions has a learning rate schedule, end at 0.1 of the initial value
-        schedulers = [
-            torch.optim.lr_scheduler.ExponentialLR(
-                self.optimizers["positions"], gamma=1 ** (1.0 / max_steps)
-            ),
-            torch.optim.lr_scheduler.ExponentialLR(
-                self.optimizers["sigmas"], gamma=1 ** (1.0 / max_steps)
-            ),
-            torch.optim.lr_scheduler.ExponentialLR(
-                self.optimizers["intensities"], gamma=1 ** (1.0 / max_steps)
-            ),
-        ]
-
-        # Add scheduler for quaternions if they exist
-        if "quaternions" in self.optimizers:
-            schedulers.append(
-                torch.optim.lr_scheduler.ExponentialLR(
-                    self.optimizers["quaternions"], gamma=0.1 ** (1.0 / max_steps)
-                )
-            )
-        # append other schedulers if wanted
-
-        trainloader = DataLoader(
-            self.trainset,
-            batch_size=cfg.batch_size,
-            shuffle=True,
-            num_workers=1,
-            persistent_workers=True,
-            pin_memory=True,
-        )
-        trainloader_iter = iter(trainloader)
-
+        image = trainset[0].to(self.device)
         renders = torch.ones(1)  # for typing
-        losses = []
         # Training loop.
         start_time = datetime.now()
         pbar = tqdm(range(init_step, max_steps))
         for step in pbar:
-            try:
-                image = next(trainloader_iter)
-            except StopIteration:
-                trainloader_iter = iter(trainloader)
-                image = next(trainloader_iter)
-            image = image.to(self.device)
-
             # forward
             renders = self.rasterize_splats(
                 near_plane=cfg.near_plane,
                 far_plane=cfg.far_plane,
             )
-            if (
+            if (  # lol at this -- temp of course, but want to see before/after the refinement
                 step == 1
                 or (
                     ((step + 1) % cfg.refine_every) == 0
@@ -282,18 +327,15 @@ class GS:
                 # print(f"Scaled intensities iter {step}:\n", self.cfg.activation_intensity(self.splats["intensities"]) * np.sqrt(2*np.pi) * self.cfg.activation_sigma(self.splats["sigmas"]))
                 # print(f"Sigmas iter {step}: \n", self.cfg.activation_sigma(self.splats["sigmas"]))
 
-            # TODO rewrite this, the cfg info is already in the strategy
-            # this should be "item to take gradient of" and just be positions
+            # the way info is done is a bit redundant, can be cleaned up later
             info = {
                 "height": self.cfg.raster_shape[0],
                 "width": self.cfg.raster_shape[1],
                 "positions": self.splats["positions"],
                 "sigmas": self.splats["sigmas"],
-                "n_images": len(self.trainset),
+                "n_images": 1,  # len(trainset),
                 "mask": torch.ones_like(self.splats["sigmas"], dtype=torch.float64),
             }
-            # info["positions2d"] = self.splats["positions"] # works but moving the
-            # info creation above doesnt
 
             self.strategy.step_pre_backward(
                 params=self.splats,
@@ -303,17 +345,7 @@ class GS:
                 info=info,
             )
 
-            ### loss
-            l2loss = F.mse_loss(renders[None,], image[None,])
-            # l2loss = F.mse_loss(renders[None,], image[None,])
-            if cfg.ssim_lambda > 0:
-                ssimloss = 1.0 - self.ssim(renders[None,], image[None,])
-                loss = l2loss * (1.0 - cfg.ssim_lambda) + ssimloss * cfg.ssim_lambda
-            else:
-                loss = l2loss
-
-            # loss += other loss terms
-
+            loss = self.compute_loss(renders[None,], image[None,])
             loss.backward()
             desc = f"loss={loss.item():.3e}"
             pbar.set_description(desc)
@@ -334,17 +366,161 @@ class GS:
                     print(
                         f"Step: {step} | num_GS: {len(self.splats['positions'])} | mem {mem:.2f} GB | ellapsed time (h:m:s) {d}"
                     )
+                # write a checkpointing function
 
             # optimize
             for optimizer in self.optimizers.values():
                 optimizer.step()
                 optimizer.zero_grad(set_to_none=True)
-            for scheduler in schedulers:
+            for scheduler in self.schedulers:
                 scheduler.step()
 
-            losses.append(loss.item())
+            self._losses.append(loss.item())
 
-        return torch.squeeze(renders).cpu().detach().numpy(), np.array(losses)
+        return torch.squeeze(renders).cpu().detach().numpy(), self.losses
+
+    def fit_volume(  # Single 3D volume fitting (rasterized, not projected)
+        self,
+        trainset: SimpleVolumeDataset,
+        max_steps: int | None = None,
+        reset: bool = False,
+    ) -> tuple[np.ndarray | torch.Tensor, np.ndarray]:
+        cfg = self.cfg
+        if cfg.model_type != "3dgs":
+            raise ValueError(f"Model type {cfg.model_type} is not supported for volume fitting.")
+        if reset:
+            self._losses = []
+            self.splats, self.optimizers, self.schedulers = (
+                self._initialize_splats_and_optimizers()
+            )
+        if max_steps is None:
+            max_steps = cfg.max_steps
+
+        init_step = 0
+
+        volume = trainset[0].to(self.device)
+        renders = torch.ones(1)  # for typing
+        # Training loop.
+        start_time = datetime.now()
+        pbar = tqdm(range(init_step, max_steps))
+        for step in pbar:
+            # forward
+            renders = self.rasterize_volume_splats()
+            if (
+                step == 1
+                or (
+                    ((step + 1) % cfg.refine_every) == 0
+                    and cfg.refine_stop_iter > (step + 1) >= cfg.refine_start_iter
+                )
+                or (
+                    (step % cfg.refine_every) == 0
+                    and cfg.refine_stop_iter > step >= cfg.refine_start_iter
+                )
+                or ((step % cfg.reset_every) == 0 and ((step - 1) % cfg.reset_every) == 0)
+            ):
+                r = torch.squeeze(renders).cpu().detach().numpy()
+                ## show slices of the 3D volume
+                show_2d(
+                    [
+                        r.sum(0),
+                        r.sum(1),
+                        r[:, r.shape[1] // 2, :],
+                    ],
+                    norm="minmax",
+                    cbar=True,
+                    title=[f"step {step} render (yx) sum", "render (zx) sum", "render (zx) slice"],
+                )
+                # print(f"Intensities iter {step}: \n", self.cfg.activation_intensity(self.splats["intensities"]))
+                # print(f"Scaled intensities iter {step}:\n", self.cfg.activation_intensity(self.splats["intensities"]) * np.sqrt(2*np.pi) * self.cfg.activation_sigma(self.splats["sigmas"]))
+                # print(f"Sigmas iter {step}: \n", self.cfg.activation_sigma(self.splats["sigmas"]))
+
+            # the way info is done is a bit redundant, can be cleaned up later
+            info = {
+                "height": self.cfg.raster_shape[0],
+                "width": self.cfg.raster_shape[1],
+                "positions": self.splats["positions"],
+                "sigmas": self.splats["sigmas"],
+                "n_images": 1,  # len(trainset),
+                "mask": torch.ones_like(self.splats["sigmas"], dtype=torch.float64),
+            }
+
+            self.strategy.step_pre_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=step + 1,
+                info=info,
+            )
+
+            loss = self.compute_loss(renders, volume)
+            loss.backward()
+            desc = f"loss={loss.item():.3e}"
+            pbar.set_description(desc)
+
+            self.strategy.step_post_backward(
+                params=self.splats,
+                optimizers=self.optimizers,
+                state=self.strategy_state,
+                step=step + 1,
+                info=info,
+            )
+
+            # print and/or checkpoint
+            if cfg.print_every > 0:
+                if (step + 1) % cfg.print_every == 0 or step == 0 or step == max_steps - 1:
+                    mem = torch.cuda.max_memory_allocated() / 1024**3
+                    d = timedelta(seconds=(datetime.now() - start_time).seconds)
+                    print(
+                        f"Step: {step} | num_GS: {len(self.splats['positions'])} | mem {mem:.2f} GB | ellapsed time (h:m:s) {d}"
+                    )
+                # write a checkpointing function
+
+            # optimize
+            for optimizer in self.optimizers.values():
+                optimizer.step()
+                optimizer.zero_grad(set_to_none=True)
+            for scheduler in self.schedulers:
+                scheduler.step()
+
+            self._losses.append(loss.item())
+
+        return torch.squeeze(renders).cpu().detach().numpy(), self.losses
+
+    def fit_tomo(  # Placeholder for 3D volume fitting
+        self, trainset: TomoDataset, max_steps: int | None = None
+    ) -> tuple[np.ndarray | torch.Tensor, np.ndarray]:
+        ### attn: Nalini
+        ### conceptually I don't like the way this gsplat did the training loop, it feels silly to not just iterate
+        ### through the trainloader like a normal training loop, but I guess it's necessary because
+        ### we're counting "steps" (i.e. each time a backwards call is performed) rather than
+        ### epochs. What makes the most sense to me would be more like:
+
+        # for epoch in range(num_epochs):
+        #     for image_batch, poses in trainloader:
+        #        image_batch = image_batch.to(self.device)
+        #        renders = self.rasterize_splats(poses, *args)
+        #        self.strategy.step_pre_backward(*args, step = epoch) ## necessary??
+        #        loss = self.compute_loss_all(*args)
+        #        loss.backward()
+        #        self.strategy.update_step(*args) ## accumulating gradients
+        #        optimizers.step()
+        #     self.strategy.step_post_backward(*args, step = epoch) # so splitting etc. only happens once on the appropriate epoch
+        #     ## and of course the update_step() stuff would have to be removed from the post_backward call
+        #     self.schedulers.step()
+
+        ### this might just be worse than the way it was done, but it just makes more sense to me
+        ### it would explicitly separate the batch size from gradient accumlation and the strategy,
+
+        # trainloader = DataLoader(
+        #     trainset,
+        #     batch_size=cfg.batch_size,
+        #     shuffle=True,
+        #     num_workers=1,
+        #     persistent_workers=True,
+        #     pin_memory=True,
+        # )
+        # trainloader_iter = iter(trainloader)
+        raise NotImplementedError
 
     def plot_gaussians(
         self,
@@ -411,7 +587,10 @@ class GS:
         )
         collection.set_array(inten)
         ax.add_collection(collection)
-
+        ax.set_title(
+            f"Mean Intensity: {np.mean(inten):.3f} | Mean Sigma: {np.mean(sig):.3f} | "
+            f"Num GS: {len(self.splats['positions'])}"
+        )
         ax.set_aspect("equal")
         ax.set_ylim(0, self.cfg.raster_shape[0] * self.cfg.raster_sampling[0])
         ax.set_xlim(0, self.cfg.raster_shape[1] * self.cfg.raster_sampling[1])
@@ -423,8 +602,156 @@ class GS:
         sm.set_array([])
         plt.colorbar(sm, ax=ax, label="Intensity")
         plt.show()
-        ax.set_ylabel("y (A)")
-        sm = plt.cm.ScalarMappable(cmap=cmap)
-        sm.set_array([])
-        plt.colorbar(sm, ax=ax, label="Intensity")
+
+    def plot_gaussians_3d(
+        self,
+        rescale_sigma: float = 1,
+        cmap: str = "viridis",
+        alpha: float = 0.8,
+        projected: bool = False,  # new argument
+    ):
+        """
+        Plot 3D Gaussian splats as ellipses/circles on three orthogonal slices through the center of the volume,
+        or as projections along each axis if projected=True.
+
+        Args:
+            rescale_sigma: float, multiply sigma by this for visualization.
+            cmap: matplotlib colormap name.
+            alpha: float, transparency for overlap.
+            projected: bool, if True, show projections along each axis with single-color colormap.
+        """
+        if self.model_type != "3dgs":
+            raise NotImplementedError("plot_gaussians_3d is only for 3dgs models.")
+
+        pos = self.splats["positions"].detach().cpu().numpy()
+        sig = self.cfg.activation_sigma(self.splats["sigmas"]).detach().cpu().numpy()
+        inten = self.cfg.activation_intensity(self.splats["intensities"]).detach().cpu().numpy()
+
+        zc = self.cfg.volume_size[0] / 2
+        yc = self.cfg.volume_size[1] / 2
+        xc = self.cfg.volume_size[2] / 2
+
+        fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+        slice_names = ["xy (z=center)", "xz (y=center)", "yz (x=center)"]
+        proj_names = ["xy (proj z)", "xz (proj y)", "yz (proj x)"]
+        slice_centers = [zc, yc, xc]
+        slice_axes = [
+            (1, 2, 0),  # y, x, z
+            (0, 2, 1),  # z, x, y
+            (0, 1, 2),  # z, y, x
+        ]
+
+        if projected:
+            cmap = "Reds"
+            for i, (ax, name, axes) in enumerate(zip(axs, proj_names, slice_axes)):
+                # Project along the orthogonal axis (i.e., ignore that coordinate)
+                y = pos[:, axes[0]]
+                x = pos[:, axes[1]]
+                if self.cfg.isotropic_splats:
+                    radius = np.mean(sig, axis=1) * rescale_sigma
+                    patches = [Circle((xi, yi), ri) for xi, yi, ri in zip(x, y, radius)]
+                else:
+                    sig_a = sig[:, axes[0]] * rescale_sigma
+                    sig_b = sig[:, axes[1]] * rescale_sigma
+                    if "quaternions" in self.splats:
+                        # For projections, ignore rotation or set to zero for simplicity
+                        angles_deg = np.zeros(len(x))
+                        patches = [
+                            Ellipse((xi, yi), width=2 * sb, height=2 * sa, angle=angle_deg)
+                            for xi, yi, sa, sb, angle_deg in zip(x, y, sig_a, sig_b, angles_deg)
+                        ]
+                    else:
+                        patches = [
+                            Ellipse((xi, yi), width=2 * sb, height=2 * sa)
+                            for xi, yi, sa, sb in zip(x, y, sig_a, sig_b)
+                        ]
+                collection = PatchCollection(
+                    patches,
+                    cmap=plt.cm.get_cmap(cmap),
+                    alpha=alpha,
+                    linewidth=0,
+                )
+                collection.set_array(inten)
+                ax.add_collection(collection)
+                ax.set_title(
+                    f"{name}\nProjected GS | Mean Intensity: {np.mean(inten):.3f} | Mean Sigma: {np.mean(sig):.3f} | "
+                    f"Num GS: {len(pos)}"
+                )
+                ax.set_aspect("equal")
+                ax.set_xlim(0, self.cfg.volume_size[axes[1]])
+                ax.set_ylim(0, self.cfg.volume_size[axes[0]])
+                ax.invert_yaxis()
+                ax.set_xlabel(["z", "y", "x"][axes[1]])
+                ax.set_ylabel(["z", "y", "x"][axes[0]])
+                sm = plt.cm.ScalarMappable(cmap=cmap)
+                sm.set_array([])
+                plt.colorbar(sm, ax=ax, label="Intensity")
+            plt.tight_layout()
+            plt.show()
+            return
+
+        # ...existing code for slices...
+        for i, (ax, name, center, axes) in enumerate(
+            zip(axs, slice_names, slice_centers, slice_axes)
+        ):
+            # Select splats near the center slice (within 1.25 voxel)
+            mask = np.abs(pos[:, axes[2]] - center) < 1.25
+            pos_slice = pos[mask]
+            sig_slice = sig[mask]
+            inten_slice = inten[mask]
+            if pos_slice.shape[0] == 0:
+                ax.set_title(f"No splats in {name} slice")
+                continue
+
+            y = pos_slice[:, axes[0]]
+            x = pos_slice[:, axes[1]]
+
+            if self.cfg.isotropic_splats:
+                radius = np.mean(sig_slice, axis=1) * rescale_sigma
+                patches = [Circle((xi, yi), ri) for xi, yi, ri in zip(x, y, radius)]
+            else:
+                sig_a = sig_slice[:, axes[0]] * rescale_sigma
+                sig_b = sig_slice[:, axes[1]] * rescale_sigma
+
+                # Handle rotation via quaternions if available
+                if "quaternions" in self.splats:
+                    quats = self.splats["quaternions"].detach().cpu().numpy()[mask]
+                    # For each quaternion, compute rotation angle in the slice plane
+                    # For simplicity, set angle=0 (no rotation) for now
+                    # TODO: implement proper 3D quaternion to 2D slice angle if needed
+                    angles_deg = np.zeros(len(quats))
+                    patches = [
+                        Ellipse((xi, yi), width=2 * sb, height=2 * sa, angle=angle_deg)
+                        for xi, yi, sa, sb, angle_deg in zip(x, y, sig_a, sig_b, angles_deg)
+                    ]
+                else:
+                    patches = [
+                        Ellipse((xi, yi), width=2 * sb, height=2 * sa)
+                        for xi, yi, sa, sb in zip(x, y, sig_a, sig_b)
+                    ]
+
+            collection = PatchCollection(
+                patches,
+                cmap=plt.cm.get_cmap(cmap),
+                alpha=alpha,
+                linewidth=0,
+            )
+            collection.set_array(inten_slice)
+            ax.add_collection(collection)
+            ax.set_title(
+                f"{name}\nMean Intensity: {np.mean(inten_slice):.3f} | Mean Sigma: {np.mean(sig_slice):.3f} | "
+                f"Num GS: {len(pos_slice)}"
+            )
+            ax.set_aspect("equal")
+            # Set axis limits based on volume size
+            ax.set_xlim(0, self.cfg.volume_size[axes[1]])
+            ax.set_ylim(0, self.cfg.volume_size[axes[0]])
+            ax.invert_yaxis()
+            ax.set_xlabel(["z", "y", "x"][axes[1]])
+            ax.set_ylabel(["z", "y", "x"][axes[0]])
+            sm = plt.cm.ScalarMappable(cmap=cmap)
+            sm.set_array([])
+            plt.colorbar(sm, ax=ax, label="Intensity")
+
+        plt.tight_layout()
         plt.show()

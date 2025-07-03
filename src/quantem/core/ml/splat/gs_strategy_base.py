@@ -153,6 +153,8 @@ class StrategyBase:
     ):
         """Inplace split the Gaussian with the given mask.
 
+        ## TODO add a splitting option for variance of sigmas for anisotropic splats
+
         Args:
             params: A dictionary of parameters.
             optimizers: A dictionary of optimizers, each corresponding to a parameter.
@@ -263,15 +265,6 @@ class StrategyBase:
                     p[keeps] = torch.stack(weighted_pos)
 
                 elif name == "sigmas":
-                    print(
-                        "sigmas stuff",
-                        "keeps",
-                        keeps,
-                        "merges",
-                        merges,
-                        "combined_inds",
-                        combined_inds,
-                    )
                     weighted_sigmas = []
                     for inds in combined_inds:
                         total_intensity = torch.sum(intensities[inds])

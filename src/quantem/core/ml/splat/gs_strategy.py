@@ -379,12 +379,9 @@ class DefaultStrategy(StrategyBase):
                 prune_big = mean_sigmas.flatten() > self.cfg.prune_sigma_big_A
                 prune_small = mean_sigmas.flatten() < self.cfg.prune_sigma_small_A
             else:
-                if self.cfg.model_type == "2dgs":
-                    sigmas = self.cfg.activation_sigma(params["sigmas"])
-                    prune_big = torch.any(sigmas > self.cfg.prune_sigma_big_A, dim=-1)
-                    prune_small = torch.any(sigmas < self.cfg.prune_sigma_small_A, dim=-1)
-                else:
-                    raise NotImplementedError
+                sigmas = self.cfg.activation_sigma(params["sigmas"])
+                prune_big = torch.any(sigmas > self.cfg.prune_sigma_big_A, dim=-1)
+                prune_small = torch.any(sigmas < self.cfg.prune_sigma_small_A, dim=-1)
             prune_x = (
                 params["positions"][:, 2] > self.cfg.volume_size[2] + self.cfg.prune_pad_A
             ) | (params["positions"][:, 2] < -self.cfg.prune_pad_A)
