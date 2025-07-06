@@ -218,7 +218,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             rot_ZXZ(
                 mags=vol.unsqueeze(0),  # Add batch dimension
                 z1=z1,
-                x=x,
+                x=-x,
                 z3=z3,
                 device=device,
                 mode="bilinear",

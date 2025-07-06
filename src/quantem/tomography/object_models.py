@@ -166,7 +166,7 @@ class ObjectConstraints(ObjectBase):
         """
         'Applies' soft constraints to the object model. This will return additional loss terms.
         """
-        soft_loss = 0.0
+        soft_loss = torch.tensor(0.0, device=obj.device, dtype=obj.dtype, requires_grad=True)
         if self.soft_constraints["tv_vol"] > 0:
             tv_loss = get_TV_loss(
                 obj.unsqueeze(0).unsqueeze(0), factor=self.soft_constraints["tv_vol"]

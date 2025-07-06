@@ -386,6 +386,7 @@ class TomographyBase(AutoSerialize):
         cmap: str = "turbo",
         fft: bool = False,
         norm: str = "log_auto",
+        figax: tuple[plt.Figure, plt.Axes] | None = None,
         **kwargs,
     ):
         """
@@ -400,7 +401,10 @@ class TomographyBase(AutoSerialize):
 
         volume_obj_np = self.volume_obj.obj.detach().cpu().numpy()
 
-        fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
+        if figax is None:
+            fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
+        else:
+            fig, ax = figax
 
         show_2d(
             volume_obj_np.sum(axis=0),
