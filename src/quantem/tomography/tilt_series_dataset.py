@@ -10,6 +10,7 @@ from quantem.core.utils.validators import ensure_valid_array
 # from quantem.tomography.alignment import tilt_series_cross_cor_align, compute_com_tilt_series
 
 
+# DEPRECATED: Use TomographyDataset instead.
 class TiltSeries(Dataset3d):
     def __init__(
         self,

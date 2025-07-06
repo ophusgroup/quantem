@@ -38,6 +38,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
         shrinkage: float = None,
         filter_name: str = "hamming",
         circle: bool = True,
+        plot_loss: bool = False,
     ):
         num_angles, num_rows, num_cols = self.dataset.tilt_series.shape
         sirt_tilt_series = self.dataset.tilt_series.clone()
@@ -83,6 +84,12 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
             self.loss.append(loss.item())
 
         self.sirt_recon_vol = self.volume_obj
+
+        # Permutation due to sinogram ordering.
+        self.sirt_recon_vol.obj = self.sirt_recon_vol.obj.permute(1, 2, 0)
+
+        if plot_loss:
+            self.plot_loss()
 
     def ad_recon(
         self,

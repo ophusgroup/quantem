@@ -64,7 +64,7 @@ class TomographyBase(AutoSerialize):
         self._logger = logger
 
     @classmethod
-    def from_tilt_series(
+    def from_data(
         cls,
         tilt_series: Dataset3d | NDArray | Tensor,
         tilt_angles: NDArray | Tensor,
@@ -384,61 +384,67 @@ class TomographyBase(AutoSerialize):
     def plot_projections(
         self,
         cmap: str = "turbo",
-        loss: bool = False,
         fft: bool = False,
+        norm: str = "log_auto",
+        **kwargs,
     ):
+        """
+        Plots the projections of the volume object.
+        Note that the volume object is in the order of (z, y, x).
+        Parameters
+        ----------
+        cmap : str
+            The colormap to use for the projections.
+        fft : bool
+        """
+
         volume_obj_np = self.volume_obj.obj.detach().cpu().numpy()
 
-        volume_obj_np = np.transpose(volume_obj_np, (1, 2, 0))
-        if loss:
-            fig, ax = plt.subplots(ncols=4, figsize=(25, 8))
-            ax[3].semilogy(
-                self.loss,
-            )
-            ax[3].set_title("Loss")
-        else:
-            fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
+        fig, ax = plt.subplots(ncols=3, figsize=(20, 8))
 
         show_2d(
             volume_obj_np.sum(axis=0),
             figax=(fig, ax[0]),
             cmap=cmap,
-            title="Z-X Projection",
+            title="Y-X Projection",
         )
         show_2d(
             volume_obj_np.sum(axis=1),
             figax=(fig, ax[1]),
             cmap=cmap,
-            title="Y-X Projection",
+            title="Z-X Projection",
         )
         show_2d(
             volume_obj_np.sum(axis=2),
             figax=(fig, ax[2]),
             cmap=cmap,
-            title="Y-Z Projection",
+            title="Z-Y Projection",
         )
 
         if fft:
             fig, ax = plt.subplots(ncols=3, figsize=(25, 8))
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=0))))),
+                np.abs(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=0)))),
                 figax=(fig, ax[0]),
                 cmap=cmap,
-                title="Z-X Projection FFT",
+                title="Y-X Projection FFT",
+                norm=norm,
             )
 
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=1))))),
+                np.abs(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=1)))),
                 figax=(fig, ax[1]),
                 cmap=cmap,
-                title="Y-X Projection FFT",
+                title="Z-X Projection FFT",
+                norm=norm,
             )
             show_2d(
-                np.abs(np.log(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=2))))),
+                np.abs(np.fft.fftshift(np.fft.fftn(volume_obj_np.sum(axis=2)))),
                 figax=(fig, ax[2]),
                 cmap=cmap,
-                title="Y-Z Projection FFT",
+                title="Z-Y Projection FFT",
+                norm=norm,
             )
 
     def plot_slice(
@@ -446,55 +452,42 @@ class TomographyBase(AutoSerialize):
         cmap="turbo",
         slice_index: int = 0,
         vmin: float = 0,
+        figax: tuple[plt.Figure, plt.Axes] | None = None,
     ):
-        fig, ax = plt.subplots(figsize=(15, 8), ncols=3)
+        if figax is None:
+            fig, ax = plt.subplots(figsize=(15, 8), ncols=3)
+        else:
+            fig, ax = figax
 
-        # show_2d(
-        #     self.volume_obj.array[slice_index, :, :],
-        #     figax = (fig, ax[0]),
-        #     cmap = cmap,
-        #     title = f"Z-X Slice {slice_index}",
-        #     norm = norm,
-        #     cbar = True,
-        # )
-        # show_2d(
-        #     self.volume_obj.array[:, slice_index, :],
-        #     figax = (fig, ax[1]),
-        #     cmap = cmap,
-        #     title = f"Y-X Sliec {slice_index}",
-        #     norm = norm,
-        # )
-        # show_2d(
-        #     self.volume_obj.array[:, :, slice_index],
-        #     figax = (fig, ax[2]),
-        #     cmap = cmap,
-        #     title = f"Y-Z Slice {slice_index}",
-        #     norm = norm,
-        # )
-
-        ax[0].matshow(
-            self.volume_obj.array[slice_index, :, :],
+        show_2d(
+            self.volume_obj.obj[slice_index, :, :],
+            figax=(fig, ax[0]),
+            cmap=cmap,
+            vmin=vmin,
+        )
+        show_2d(
+            self.volume_obj.obj[:, slice_index, :],
+            figax=(fig, ax[1]),
             cmap=cmap,
             vmin=vmin,
         )
 
-        ax[1].matshow(
-            self.volume_obj.array[:, slice_index, :],
-            cmap=cmap,
-            vmin=vmin,
-        )
-
-        ax[2].matshow(
-            self.volume_obj.array[:, :, slice_index],
+        show_2d(
+            self.volume_obj.obj[:, :, slice_index],
+            figax=(fig, ax[2]),
             cmap=cmap,
             vmin=vmin,
         )
 
     def plot_loss(
         self,
-        figsize: tuple = (8, 8),
+        figsize: tuple = (8, 4),
+        figax: tuple[plt.Figure, plt.Axes] | None = None,
     ):
-        fig, ax = plt.subplots(figsize=figsize)
+        if figax is None:
+            fig, ax = plt.subplots(figsize=figsize)
+        else:
+            fig, ax = figax
 
         ax.semilogy(
             self.loss,

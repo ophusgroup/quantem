@@ -1,7 +1,6 @@
 """
-A fully torch based implementation of the Radon transform based on compatible with CPU and GPU.
+scikit-image's radon and iradon functions fully implemented in Torch.
 
-Implementation using scikit-image's radon and iradon functions.
 Reference: van der Walt, S., et al. (2014). scikit-image: image processing in Python. PeerJ, 2, e453.
 """
 

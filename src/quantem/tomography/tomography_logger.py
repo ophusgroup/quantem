@@ -5,11 +5,9 @@ from quantem.tomography.object_models import ObjectModelType
 from quantem.tomography.tomography_dataset import TomographyDataset
 
 
-class TomoLogger(LoggerBase):
+class LoggerTomography(LoggerBase):
     def __init__(self, log_dir: str, run_prefix: str, run_suffix: str = None):
         super().__init__(log_dir, run_prefix, run_suffix)
-
-    # def log(self, tomo: Tomography):
 
     # --- Tomography focused logging methods ---
 
