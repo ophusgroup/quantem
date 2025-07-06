@@ -56,6 +56,20 @@ class TomographyDataset(AutoSerialize):
         # signal_units: str = "arb. units",
         # _token: object | None = None,
     ):
+        """
+        tilt_series: (N, H, W)
+        tilt_angles: (N,) - In units of degrees, the alpha tilt angle.
+        z1_angles: (N,) - In units of degrees, beta tilt angle.
+        z3_angles: (N,) - In units of degrees, negative beta tilt angle.
+        shifts: (N, 2)
+
+        - The convention we use for projecting down is ZXZ Euler Angles.
+        - In theory, Z1 and Z3 should be the same value, except Z3 would be the
+        negative value of Z1. However, in some cases this is not the case and
+        there could be some merit in also optimizing both angles. However, the
+        downside is the rotation becomes less interpretable.
+        - The tilt angle can also be optimized.
+        """
         validated_tilt_series = torch.tensor(validate_array(tilt_series, "tilt_series"))
         validated_tilt_angles = torch.tensor(validate_array(tilt_angles, "tilt_angles"))
 
