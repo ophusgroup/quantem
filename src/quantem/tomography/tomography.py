@@ -191,7 +191,7 @@ class Tomography(TomographyConv, TomographyML, TomographyBase):
                     )
                     self.logger.tilt_angles_figure(dataset=self.dataset, step=a0)
 
-            self.logger.flush()
+                self.logger.flush()
 
         self.ad_recon_vol = self.volume_obj.forward()
 

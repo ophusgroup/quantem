@@ -11,7 +11,7 @@ from quantem.core.visualization.visualization import show_2d
 from quantem.imaging.drift import cross_correlation_shift
 from quantem.tomography.object_models import ObjectModelType, ObjectVoxelwise
 from quantem.tomography.tomography_dataset import TomographyDataset
-from quantem.tomography.tomography_logger import TomoLogger
+from quantem.tomography.tomography_logger import LoggerTomography
 
 
 class TomographyBase(AutoSerialize):
@@ -34,7 +34,7 @@ class TomographyBase(AutoSerialize):
         volume_obj: ObjectModelType,  # ObjectDIP?
         device: str = "cuda",
         # ABF/HAADF property
-        logger: TomoLogger | None = None,
+        logger: LoggerTomography | None = None,
         _token: object | None = None,
     ):
         """Initialize a Tomography object.
@@ -61,7 +61,7 @@ class TomographyBase(AutoSerialize):
         self._hard_constraints = self.DEFAULT_HARD_CONSTRAINTS.copy()
         self._soft_constraints = self.DEFAULT_SOFT_CONSTRAINTS.copy()
 
-        self._logger = logger
+        self._logger = None
 
     @classmethod
     def from_data(
@@ -216,13 +216,13 @@ class TomographyBase(AutoSerialize):
         return len(self.loss)
 
     @property
-    def logger(self) -> TomoLogger:
+    def logger(self) -> LoggerTomography:
         return self._logger
 
     @logger.setter
-    def logger(self, logger: TomoLogger):
-        if not isinstance(logger, TomoLogger):
-            raise TypeError("Logger must be a TomoLogger")
+    def logger(self, logger: LoggerTomography):
+        if not isinstance(logger, LoggerTomography):
+            raise TypeError("Logger must be a LoggerTomography")
 
         self._logger = logger
 
