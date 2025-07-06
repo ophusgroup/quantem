@@ -40,7 +40,7 @@ defaults: list[Mapping] = [_defaults]
 no_default = "__no_default__"
 config_lock = threading.Lock()
 
-PATH = Path(os.getenv("QUANTUM_CONFIG", "~/.config/quantem")).expanduser().resolve()
+PATH = Path(os.getenv("QUANTEM_CONFIG", "~/.config/quantem")).expanduser().resolve()
 
 config: dict = {}
 aliases: dict[str, dict[str, str]] = {"device": {"gpu": "cuda:0"}}

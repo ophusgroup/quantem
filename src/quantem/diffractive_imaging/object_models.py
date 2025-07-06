@@ -401,7 +401,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         return gradient
 
 
-class ObjectDIP(ObjectConstraints, ObjectBase):
+class ObjectDIP(ObjectConstraints):
     """
     DIP/model based object model.
     """
@@ -425,7 +425,7 @@ class ObjectDIP(ObjectConstraints, ObjectBase):
             rng=rng,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
-        self.model = model
+        self._model = model
         if model_input is None:
             self.model_input = torch.ones((1, 1, 1, 1), dtype=self.dtype, device=self.device)
         else:
