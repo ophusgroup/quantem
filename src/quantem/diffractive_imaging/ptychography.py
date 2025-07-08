@@ -10,7 +10,7 @@ from quantem.diffractive_imaging.object_models import ObjectModelType
 from quantem.diffractive_imaging.probe_models import ProbeModelType
 from quantem.diffractive_imaging.ptycho_utils import SimpleBatcher
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
-from quantem.diffractive_imaging.ptychography_ml import PtychographyML
+from quantem.diffractive_imaging.ptychography_opt import PtychographyOpt
 from quantem.diffractive_imaging.ptychography_visualizations import PtychographyVisualizations
 
 if TYPE_CHECKING:
@@ -20,7 +20,7 @@ else:
         import torch
 
 
-class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase):
+class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
     """
@@ -293,7 +293,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                     loss_type="l2",
                 )
 
-                loss += self._soft_constraints() / len(batch_indices)
+                loss += self._soft_constraints()
 
                 self.backward(
                     loss,
@@ -322,7 +322,7 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
             if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self.obj, self.probe)
 
-            pbar.set_description(f"Epoch {a0 + 1}/{num_iter}, Loss: {epoch_loss:.4f}, ")
+            pbar.set_description(f"Loss: {epoch_loss:.3e}, ")
 
         return self
 
@@ -349,7 +349,6 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
                 patch_indices,
             )
             self.probe_model.backward(prop_gradient, obj_patches)
-            # TODO -- connect other optimizable values to this, e.g. descan
 
     def gradient_step(self, amplitudes, overlap):
         """Computes analytical gradient using the Fourier projection modified overlap"""
@@ -362,19 +361,19 @@ class Ptychography(PtychographyML, PtychographyVisualizations, PtychographyBase)
         """Replaces the Fourier amplitude of overlap with the measured data."""
         # corner centering measured amplitudes
         measured_amplitudes = torch.fft.fftshift(measured_amplitudes, dim=(-2, -1))
-        fourier_overlap = torch.fft.fft2(overlap_array)
+        fourier_overlap = torch.fft.fft2(overlap_array, norm="ortho")
         # from quantem.core.visualization.visualization import show_2d
         # show_2d([fourier_overlap[0,0], torch.abs(fourier_overlap[0,0])])
         if self.num_probes == 1:  # faster
             fourier_modified_overlap = measured_amplitudes * torch.exp(
                 1.0j * torch.angle(fourier_overlap)
             )
-        else:  # necessary for mixed state
+        else:  # necessary for mixed state # TODO check this with  normalization
             farfield_amplitudes = self.estimate_amplitudes(overlap_array, corner_centered=True)
             farfield_amplitudes[farfield_amplitudes == 0] = torch.inf
             amplitude_modification = measured_amplitudes / farfield_amplitudes
             fourier_modified_overlap = amplitude_modification * fourier_overlap
 
-        return torch.fft.ifft2(fourier_modified_overlap)
+        return torch.fft.ifft2(fourier_modified_overlap, norm="ortho")
 
     # endregion --- reconstruction ---

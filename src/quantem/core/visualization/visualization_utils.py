@@ -371,6 +371,11 @@ def add_cbar_to_ax(
 
     sm = cm.ScalarMappable(norm=norm, cmap=cmap)
     cb = fig.colorbar(sm, cax=cax, ticks=ticks, format=formatter)
+    # set tick positions, fixes bug of gap between image and bbox
+    for label in cb.ax.get_yticklabels():
+        label.set_verticalalignment("center")
+        label.set_horizontalalignment("left")
+
     return cb
 
 

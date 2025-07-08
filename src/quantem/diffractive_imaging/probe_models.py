@@ -510,7 +510,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
                 parameters=self.probe_params["polar_parameters"],
                 device="cpu",
             )
-            probes = prb.build()._array
+            probes: np.ndarray = prb.build()._array
         else:
             raise ValueError(
                 "must provide either probe_params or probe in the form of a numpy array or ComplexProbe"
@@ -531,7 +531,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
             ).astype(config.get("dtype_complex"))
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
-        probe_intensity = np.sum(np.abs(np.fft.fft2(probes)) ** 2)
+        probe_intensity = np.sum(np.abs(np.fft.fft2(probes, norm="ortho")) ** 2)
         intensity_norm = np.sqrt(mean_diffraction_intensity / probe_intensity)
         probes *= intensity_norm
         self._initial_probe = self._to_torch(probes)
@@ -550,8 +550,9 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         return "ProbePixelized"
 
     def backward(self, propagated_gradient, obj_patches):
-        obj_normalization = torch.sum(torch.abs(obj_patches[0]) ** 2, dim=0).max()
-        probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization
+        obj_normalization = torch.sum(torch.abs(obj_patches) ** 2, dim=(0, 1)).max()
+        ortho_norm = np.prod(self.roi_shape) ** 0.5  # from ortho fft2
+        probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization / ortho_norm
         self._probe.grad = -1 * probe_grad.clone().detach()
 
 

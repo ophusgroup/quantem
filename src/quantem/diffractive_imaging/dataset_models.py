@@ -675,7 +675,7 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
     def preprocess(
         self,
         com_fit_function: Literal[
-            "none", "plane", "parabola", "bezier_two", "constant"
+            "none", "plane", "parabola", "constant", "no_shift"
         ] = "constant",
         force_com_rotation: float | None = None,
         force_com_transpose: bool | None = None,
@@ -737,7 +737,7 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
         self,
         intensities: np.ndarray,
         dp_mask: np.ndarray | None = None,
-        fit_function: Literal["none", "plane", "parabola", "bezier_two", "constant"] = "plane",
+        fit_function: Literal["none", "plane", "parabola", "constant", "no_shift"] = "plane",
         vectorized_calculation=True,
     ) -> None:
         """
@@ -804,6 +804,10 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
 
         if fit_function == "none":
             com_fit_r, com_fit_c = com_measured_r, com_measured_c
+        elif fit_function == "no_shift":
+            com_fit_r, com_fit_c = np.ones_like(com_measured_r), np.ones_like(com_measured_c)
+            com_fit_r = com_fit_r * self.roi_shape[0] / 2
+            com_fit_c = com_fit_c * self.roi_shape[1] / 2
         else:
             finite_mask = np.isfinite(com_measured_r)
             com_fit_r, com_fit_c, _com_res_r, _com_res_c = fit_origin(
@@ -1104,6 +1108,7 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
             pattern_crop_mask_shape = self.roi_shape
 
         mean_intensity = 0
+        mean_amplitude = 0
         centered_amplitudes = np.zeros(diff_intensities.shape, dtype=dtype)
         amplitudes = np.zeros(diff_intensities.shape, dtype=dtype)
         centered_intensities = np.zeros(diff_intensities.shape, dtype=dtype)
@@ -1123,8 +1128,9 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
             intensities[Rr, Rc] = intensity
             mean_intensity += np.sum(intensity)
             ### shifting amplitude rather than intensity to minimize ringing artifacts
-            amplitude = np.sqrt(intensity)
-            amplitudes[Rr, Rc] = np.maximum(amplitude, 0)
+            amplitude = np.maximum(np.sqrt(intensity), 0)
+            mean_amplitude += np.sum(amplitude)
+            amplitudes[Rr, Rc] = amplitude
 
             shift_amplitude = shift_array(  # shifting to 0,0 then fftshift
                 amplitude,
@@ -1160,6 +1166,7 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
             )
 
         mean_intensity /= amplitudes.shape[0]
+        mean_amplitude /= amplitudes.shape[0]
 
         self.centered_amplitudes = centered_amplitudes
         self.amplitudes = amplitudes
@@ -1172,6 +1179,7 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
         self.initial_descan_shifts = self.descan_shifts.data.clone()
 
         self.mean_diffraction_intensity = mean_intensity
+        self.mean_diffraction_amplitude = mean_amplitude
         self._pattern_crop_mask = pattern_crop_mask
         self._pattern_crop_mask_shape = pattern_crop_mask_shape
         return

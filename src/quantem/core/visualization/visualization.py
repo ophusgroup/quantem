@@ -112,7 +112,7 @@ def _show_2d_array(
     else:
         fig, ax = figax
 
-    ax.imshow(rgba)
+    ax.imshow(rgba, interpolation=config.get("viz.interpolation"))
     ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:

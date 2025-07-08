@@ -10,7 +10,7 @@ else:
         import torch
 
 
-class PtychographyML(PtychographyBase):
+class PtychographyOpt(PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
     """
@@ -110,13 +110,17 @@ class PtychographyML(PtychographyBase):
         self.optimizer_params[key] = opt_params
         opt_params = opt_params.copy()
         opt_type = opt_params.pop("type")
+        opt = None
         if isinstance(opt_type, type):
             opt = opt_type(params, **opt_params)
-        elif opt_type == "adam":
-            opt = torch.optim.Adam(params, **opt_params)
-        elif opt_type == "adamw":
-            opt = torch.optim.AdamW(params, **opt_params)  # TODO pass all other kwargs
-        else:
+        elif isinstance(opt_type, str):
+            if opt_type.lower() == "adam":
+                opt = torch.optim.Adam(params, **opt_params)
+            elif opt_type.lower() == "adamw":
+                opt = torch.optim.AdamW(params, **opt_params)
+            elif opt_type.lower() == "sgd":
+                opt = torch.optim.SGD(params, **opt_params)
+        if opt is None:
             raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
         # if key in self.optimizers.keys():
         #     self.vprint(f"Key {key} is already in optimizers, overwriting.")
