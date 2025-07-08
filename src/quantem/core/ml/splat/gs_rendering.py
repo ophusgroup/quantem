@@ -128,26 +128,21 @@ def rasterization_volume(
 
     if isotropic_splats:
         sigma_iso = sigmas.mean(dim=1)
-        sigma_sq = sigma_iso**2
         norm_const = intensities * (2 * torch.pi) ** 1.5 * sigma_iso.pow(3)
         dist_sq = (diffs**2).sum(dim=1)  # (N, D, H, W)
-        exp_arg = dist_sq / (sigma_sq.view(N, 1, 1, 1) + 1e-12)
+        exp_arg = dist_sq / ((sigma_iso**2).view(N, 1, 1, 1) + 1e-12)
 
     else:
         sigma_z, sigma_y, sigma_x = sigmas.unbind(1)
-        sigma_sq = sigmas**2
+        sigma_sq_expanded = (sigmas**2).view(N, 3, 1, 1, 1)  # (N, 3, 1, 1, 1)
         norm_const = intensities * (2 * torch.pi) ** 1.5 * (sigma_z * sigma_y * sigma_x)
 
         if quaternions is not None:
             R = quaternion_to_rotation_matrix_3d(quaternions)  # (N, 3, 3)
             diffs_rot = torch.einsum("nij,njdhw->nidhw", R, diffs)  # (N, 3, D, H, W)
-
-            # Compute weighted distances
-            sigma_sq_expanded = sigma_sq.view(N, 3, 1, 1, 1)  # (N, 3, 1, 1, 1)
             exp_arg = ((diffs_rot**2) / (sigma_sq_expanded + 1e-12)).sum(dim=1)  # (N, D, H, W)
         else:
             # Axis-aligned ellipsoids - more efficient computation
-            sigma_sq_expanded = sigma_sq.view(N, 3, 1, 1, 1)
             exp_arg = ((diffs**2) / (sigma_sq_expanded + 1e-12)).sum(dim=1)  # (N, D, H, W)
 
     # Compute Gaussians and sum efficiently

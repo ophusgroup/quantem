@@ -57,7 +57,8 @@ class BaseInterval(ABC):
 
         # subtract vmin
         values = np.subtract(values, vmin)
-
+        if np.issubdtype(values.dtype, np.integer):
+            values = values.astype(np.float64)
         # divide by interval
         if (vmax - vmin) != 0.0:
             np.true_divide(values, vmax - vmin, out=values)

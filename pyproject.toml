@@ -43,6 +43,7 @@ dependencies = [
   "torch>=2.7.0",
   "cupy-cuda12x>=13.4.1",
   "torchmetrics>=1.7.3",
+  "torchsummary>=1.5.1",
 ]
 
 [tool.hatch.build.targets.sdist]

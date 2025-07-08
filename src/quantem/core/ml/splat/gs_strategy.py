@@ -218,8 +218,11 @@ class DefaultStrategy(StrategyBase):
             state["count"].zero_()
             torch.cuda.empty_cache()
 
-        # TODO - implement reset intensities?
-        if step % self.cfg.reset_every == 0:
+        if (
+            step % self.cfg.reset_every == 0
+            and self.cfg.reset_every > 0
+            and step < self.cfg.reset_stop_iter
+        ):
             print(f"Step {step} reset intensities and sigmas")
             self.reset_intensities(
                 params=params,
@@ -306,17 +309,19 @@ class DefaultStrategy(StrategyBase):
             grads = state["grad2d"] / count.clamp_min(1)
             grads_sigmas = state["grad_sigma"] / count.clamp_min(1)
             device = grads.device
-
-            print("grads pos: ", grads.max(), grads.mean(), grads.min(), grads.std())
+            if len(grads) == 0:
+                print(f"Step {step} no Gaussians to grow, skipping.")
+                return 0, 0
             print(
-                "grads_sigmas : ",
-                grads_sigmas.max(),
-                grads_sigmas.mean(),
-                grads_sigmas.min(),
-                grads_sigmas.std(),
+                f"grads pos max: {grads.max().item():.2e}, mean: {grads.mean().item():.2e}, min: {grads.min().item():.2e}, std: {grads.std().item():.2e}"
+            )
+            print(
+                f"grads_sigmas max: {grads_sigmas.max().item():.2e}, mean: {grads_sigmas.mean().item():.2e}, min: {grads_sigmas.min().item():.2e}, std: {grads_sigmas.std().item():.2e}"
             )
             grads = (grads + grads_sigmas) / 2
-            print("grads ave: ", grads.max(), grads.mean(), grads.min(), grads.std())
+            print(
+                f"grads ave max: {grads.max().item():.2e}, mean: {grads.mean().item():.2e}, min: {grads.min().item():.2e}, std: {grads.std().item():.2e}"
+            )
 
             is_grad_high = grads > self.cfg.split_dup_grad2d
             is_small = (
@@ -389,13 +394,17 @@ class DefaultStrategy(StrategyBase):
                 params["positions"][:, 1] > self.cfg.volume_size[1] + self.cfg.prune_pad_A
             ) | (params["positions"][:, 1] < -self.cfg.prune_pad_A)
             if self.cfg.model_type == "3dgs":
-                raise NotImplementedError
-                # prune_z =
-            # else:
-            is_prune = prune_intensity | prune_big | prune_small | prune_x | prune_y
+                prune_z = (
+                    params["positions"][:, 0] > self.cfg.volume_size[0] + self.cfg.prune_pad_A
+                ) | (params["positions"][:, 0] < -self.cfg.prune_pad_A)
+            else:
+                prune_z = torch.zeros_like(prune_x, dtype=torch.bool)
+            is_prune = prune_intensity | prune_big | prune_small | prune_x | prune_y | prune_z
             n_prune = int(is_prune.sum().item())
             print(
-                f"Step {step} pruned: total: {n_prune} | intensity: {prune_intensity.sum()} | big: {prune_big.sum()} | small: {prune_small.sum()} | xy: {(prune_x | prune_y).sum()}"
+                f"Step {step} pruned: total: {n_prune} | intensity: {prune_intensity.sum()} | "
+                + f"big: {prune_big.sum()} | small: {prune_small.sum()} | "
+                + f"xyz: {(prune_x | prune_y | prune_z).sum()}"
             )
 
             if n_prune > 0:

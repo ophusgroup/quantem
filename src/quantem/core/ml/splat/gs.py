@@ -1,5 +1,6 @@
 import math
 from datetime import datetime, timedelta
+from typing import Any
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -7,6 +8,7 @@ import torch
 import torch.nn.functional as F
 from matplotlib.collections import PatchCollection
 from matplotlib.patches import Circle, Ellipse
+from matplotlib.widgets import Slider
 from torch.optim import Adam, Optimizer
 from torchmetrics.image import StructuralSimilarityIndexMeasure  # PeakSignalNoiseRatio
 from tqdm.auto import tqdm
@@ -296,13 +298,13 @@ class GS:
         if max_steps is None:
             max_steps = cfg.max_steps
 
-        init_step = 0
+        init_step = len(self.losses)
 
         image = trainset[0].to(self.device)
         renders = torch.ones(1)  # for typing
         # Training loop.
         start_time = datetime.now()
-        pbar = tqdm(range(init_step, max_steps))
+        pbar = tqdm(range(init_step, init_step + max_steps))
         for step in pbar:
             # forward
             renders = self.rasterize_splats(
@@ -319,7 +321,6 @@ class GS:
                     (step % cfg.refine_every) == 0
                     and cfg.refine_stop_iter > step >= cfg.refine_start_iter
                 )
-                or ((step % cfg.reset_every) == 0 and ((step - 1) % cfg.reset_every) == 0)
             ):
                 r = torch.squeeze(renders).cpu().detach().numpy()
                 show_2d(r, title=f"iter {step} render", force_show=True, cbar=True, norm="minmax")
@@ -396,18 +397,18 @@ class GS:
         if max_steps is None:
             max_steps = cfg.max_steps
 
-        init_step = 0
+        init_step = len(self.losses)
 
         volume = trainset[0].to(self.device)
         renders = torch.ones(1)  # for typing
         # Training loop.
         start_time = datetime.now()
-        pbar = tqdm(range(init_step, max_steps))
+        pbar = tqdm(range(init_step, init_step + max_steps))
         for step in pbar:
             # forward
             renders = self.rasterize_volume_splats()
             if (
-                step == 1
+                step == init_step + 1
                 or (
                     ((step + 1) % cfg.refine_every) == 0
                     and cfg.refine_stop_iter > (step + 1) >= cfg.refine_start_iter
@@ -416,7 +417,6 @@ class GS:
                     (step % cfg.refine_every) == 0
                     and cfg.refine_stop_iter > step >= cfg.refine_start_iter
                 )
-                or ((step % cfg.reset_every) == 0 and ((step - 1) % cfg.reset_every) == 0)
             ):
                 r = torch.squeeze(renders).cpu().detach().numpy()
                 ## show slices of the 3D volume
@@ -429,6 +429,7 @@ class GS:
                     norm="minmax",
                     cbar=True,
                     title=[f"step {step} render (yx) sum", "render (zx) sum", "render (zx) slice"],
+                    force_show=True,
                 )
                 # print(f"Intensities iter {step}: \n", self.cfg.activation_intensity(self.splats["intensities"]))
                 # print(f"Scaled intensities iter {step}:\n", self.cfg.activation_intensity(self.splats["intensities"]) * np.sqrt(2*np.pi) * self.cfg.activation_sigma(self.splats["sigmas"]))
@@ -521,6 +522,8 @@ class GS:
         # )
         # trainloader_iter = iter(trainloader)
         raise NotImplementedError
+
+    ##### Visualization functions -- move to a viz module later #####
 
     def plot_gaussians(
         self,
@@ -674,8 +677,9 @@ class GS:
                 collection.set_array(inten)
                 ax.add_collection(collection)
                 ax.set_title(
-                    f"{name}\nProjected GS | Mean Intensity: {np.mean(inten):.3f} | Mean Sigma: {np.mean(sig):.3f} | "
-                    f"Num GS: {len(pos)}"
+                    f"{name} Num GS: {len(pos)}\n"
+                    + f"Intensity μ: {np.mean(inten):.3f}, std: {np.std(inten):.3f} | "
+                    + f"Sigma μ: {np.mean(sig):.3f}, std: {np.std(sig):.3f}"
                 )
                 ax.set_aspect("equal")
                 ax.set_xlim(0, self.cfg.volume_size[axes[1]])
@@ -690,11 +694,9 @@ class GS:
             plt.show()
             return
 
-        # ...existing code for slices...
         for i, (ax, name, center, axes) in enumerate(
             zip(axs, slice_names, slice_centers, slice_axes)
         ):
-            # Select splats near the center slice (within 1.25 voxel)
             mask = np.abs(pos[:, axes[2]] - center) < 1.25
             pos_slice = pos[mask]
             sig_slice = sig[mask]
@@ -750,8 +752,258 @@ class GS:
             ax.set_xlabel(["z", "y", "x"][axes[1]])
             ax.set_ylabel(["z", "y", "x"][axes[0]])
             sm = plt.cm.ScalarMappable(cmap=cmap)
-            sm.set_array([])
+            sm.set_array(inten_slice)
             plt.colorbar(sm, ax=ax, label="Intensity")
 
         plt.tight_layout()
         plt.show()
+
+    def show_orthogonal_slices(
+        self,
+        volume: np.ndarray | None = None,
+        volume_size: tuple[float, float, float] | None = None,
+        z_pos: float | None = None,
+        y_pos: float | None = None,
+        x_pos: float | None = None,
+        cmap: str = "viridis",
+        title: str | None = None,
+        figsize: tuple[int, int] = (15, 5),
+    ) -> tuple[Any, Any]:
+        """
+        Show three orthogonal slices (XY, XZ, YZ) in a single figure.
+        If volume is None, rasterize the current splats to a volume.
+        """
+        if volume is None:
+            rendered_volume = self.rasterize_volume_splats()
+            volume = rendered_volume.squeeze().cpu().detach().numpy()
+        if volume_size is None:
+            volume_size = self.cfg.volume_size
+
+        z_coords = np.arange(volume.shape[0]) * (volume_size[0] / volume.shape[0])
+        y_coords = np.arange(volume.shape[1]) * (volume_size[1] / volume.shape[1])
+        x_coords = np.arange(volume.shape[2]) * (volume_size[2] / volume.shape[2])
+
+        if z_pos is None:
+            z_pos = volume_size[0] / 2
+        if y_pos is None:
+            y_pos = volume_size[1] / 2
+        if x_pos is None:
+            x_pos = volume_size[2] / 2
+
+        z_idx = np.argmin(np.abs(z_coords - z_pos))
+        y_idx = np.argmin(np.abs(y_coords - y_pos))
+        x_idx = np.argmin(np.abs(x_coords - x_pos))
+
+        xy_slice = volume[z_idx, :, :]
+        xz_slice = volume[:, y_idx, :]
+        yz_slice = volume[:, :, x_idx]
+
+        fig, axs = plt.subplots(1, 3, figsize=figsize)
+
+        im1 = axs[0].imshow(
+            xy_slice, cmap=cmap, extent=[0, volume_size[2], volume_size[1], 0], aspect=1
+        )
+        axs[0].set_xlabel("X (Å)")
+        axs[0].set_ylabel("Y (Å)")
+        axs[0].set_title(f"XY slice at Z = {z_coords[z_idx]:.2f} Å")
+
+        im2 = axs[1].imshow(
+            xz_slice, cmap=cmap, extent=[0, volume_size[2], volume_size[0], 0], aspect=1
+        )
+        axs[1].set_xlabel("X (Å)")
+        axs[1].set_ylabel("Z (Å)")
+        axs[1].set_title(f"XZ slice at Y = {y_coords[y_idx]:.2f} Å")
+
+        im3 = axs[2].imshow(
+            yz_slice, cmap=cmap, extent=[0, volume_size[1], volume_size[0], 0], aspect=1
+        )
+        axs[2].set_xlabel("Y (Å)")
+        axs[2].set_ylabel("Z (Å)")
+        axs[2].set_title(f"YZ slice at X = {x_coords[x_idx]:.2f} Å")
+
+        for i, im in enumerate([im1, im2, im3]):
+            cbar = plt.colorbar(im, ax=axs[i], shrink=0.8)
+            if i == 1:
+                cbar.set_label("Intensity")
+
+        if title:
+            fig.suptitle(title, fontsize=14)
+
+        plt.tight_layout()
+        plt.show()
+        return fig, axs
+
+    def show_slices(
+        self,
+        axis: str = "z",
+        sigma_cutoff: float = 3.0,
+        rescale_sigma: float = 1.0,
+        cmap: str = "viridis",
+        alpha: float = 0.7,
+        title: str | None = None,
+        figsize: tuple[int, int] = (10, 8),
+    ) -> tuple[Any, Any]:
+        """
+        Show interactive slices displaying true 2D Gaussian cross-sections.
+        """
+        if axis not in ["z", "y", "x"]:
+            raise ValueError(f"axis must be 'z', 'y', or 'x', got {axis}")
+
+        pos = self.splats["positions"].detach().cpu().numpy()
+        sig = self.cfg.activation_sigma(self.splats["sigmas"]).detach().cpu().numpy()
+        inten = self.cfg.activation_intensity(self.splats["intensities"]).detach().cpu().numpy()
+
+        axis_map = {"z": 0, "y": 1, "x": 2}
+        axis_idx = axis_map[axis]
+
+        # Define slice coordinate range
+        volume_size = self.cfg.volume_size
+        if axis == "z":
+            slice_range = (0, volume_size[0])
+            xlabel, ylabel = "X (Å)", "Y (Å)"
+            x_lim, y_lim = volume_size[2], volume_size[1]
+            coord_indices = (2, 1)  # (x, y)
+            sigma_indices = (2, 1)  # (sigma_x, sigma_y)
+        elif axis == "y":
+            slice_range = (0, volume_size[1])
+            xlabel, ylabel = "X (Å)", "Z (Å)"
+            x_lim, y_lim = volume_size[2], volume_size[0]
+            coord_indices = (2, 0)  # (x, z)
+            sigma_indices = (2, 0)  # (sigma_x, sigma_z)
+        else:  # axis == 'x'
+            slice_range = (0, volume_size[2])
+            xlabel, ylabel = "Y (Å)", "Z (Å)"
+            x_lim, y_lim = volume_size[1], volume_size[0]
+            coord_indices = (1, 0)  # (y, z)
+            sigma_indices = (1, 0)  # (sigma_y, sigma_z)
+
+        splat_positions_axis = pos[:, axis_idx]
+        splat_sigmas_axis = sig[:, axis_idx]
+        splat_positions_xy = pos[:, coord_indices]
+        splat_sigmas_xy = sig[:, sigma_indices]
+
+        fig, ax = plt.subplots(figsize=figsize)
+        plt.subplots_adjust(bottom=0.2)
+        initial_pos = slice_range[0] + (slice_range[1] - slice_range[0]) / 2
+
+        def get_true_gaussian_cross_section(slice_pos):
+            distances = np.abs(splat_positions_axis - slice_pos)
+            mask = distances <= sigma_cutoff * splat_sigmas_axis
+
+            if not np.any(mask):
+                return [], []
+
+            pos_visible_xy = splat_positions_xy[mask]
+            sig_visible_xy = splat_sigmas_xy[mask]
+            inten_visible = inten[mask]  # Keep original intensities constant
+            distances_visible = distances[mask]
+            slice_sigmas_visible = splat_sigmas_axis[mask]
+
+            x_coords = pos_visible_xy[:, 0]
+            y_coords = pos_visible_xy[:, 1]
+
+            sig_x_base = sig_visible_xy[:, 0]
+            sig_y_base = sig_visible_xy[:, 1]
+
+            # Calculate the effective radius scaling based on distance from slice
+            gaussian_falloff = np.exp(-(distances_visible**2) / (2 * slice_sigmas_visible**2))
+            radius_scaling = np.sqrt(gaussian_falloff) * rescale_sigma
+            sig_x_effective = sig_x_base * radius_scaling
+            sig_y_effective = sig_y_base * radius_scaling
+
+            patches = []
+            if self.cfg.isotropic_splats:
+                radii_effective = np.mean([sig_x_effective, sig_y_effective], axis=0)
+                patches = [
+                    Circle((x, y), r) for x, y, r in zip(x_coords, y_coords, radii_effective)
+                ]
+            else:
+                if "quaternions" in self.splats and not self.cfg.isotropic_splats:
+                    angles_deg = np.zeros(len(x_coords))  # Placeholder for now
+                    patches = [
+                        Ellipse((x, y), width=2 * sx, height=2 * sy, angle=angle)
+                        for x, y, sx, sy, angle in zip(
+                            x_coords, y_coords, sig_x_effective, sig_y_effective, angles_deg
+                        )
+                    ]
+                else:
+                    patches = [
+                        Ellipse((x, y), width=2 * sx, height=2 * sy)
+                        for x, y, sx, sy in zip(
+                            x_coords, y_coords, sig_x_effective, sig_y_effective
+                        )
+                    ]
+
+            return patches, inten_visible
+
+        initial_patches, initial_intensities = get_true_gaussian_cross_section(initial_pos)
+        collection = PatchCollection(
+            initial_patches,
+            cmap=plt.cm.get_cmap(cmap),
+            alpha=alpha,
+            linewidth=0,
+        )
+        if len(initial_intensities) > 0:
+            collection.set_array(initial_intensities)
+        ax.add_collection(collection)
+        ax.set_xlim(0, x_lim)
+        ax.set_ylim(0, y_lim)
+        ax.set_aspect("equal")
+        ax.invert_yaxis()
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel(ylabel)
+
+        num_splats = len(initial_patches)
+        if title:
+            ax.set_title(f"{title} - {axis.upper()} = {initial_pos:.2f} Å ({num_splats} splats)")
+        else:
+            ax.set_title(
+                f"True Gaussian Cross-Sections - {axis.upper()} = {initial_pos:.2f} Å ({num_splats} splats)"
+            )
+
+        if len(initial_intensities) > 0:
+            cbar = plt.colorbar(collection, ax=ax, shrink=0.8)
+            cbar.set_label("Cross-Section Intensity")
+
+        ax_slider = plt.axes((0.2, 0.05, 0.6, 0.03))
+        slider = Slider(
+            ax_slider,
+            f"{axis.upper()} position (Å)",
+            slice_range[0],
+            slice_range[1],
+            valinit=initial_pos,
+            valfmt="%.2f",
+        )
+        current_collection = [collection]  # Use a mutable container for closure
+
+        def update_slice(val):
+            slice_pos = slider.val
+            patches, intensities = get_true_gaussian_cross_section(slice_pos)
+            if current_collection[0] is not None:
+                try:
+                    current_collection[0].remove()
+                except ValueError:  # Handle case where collection is already removed
+                    pass
+            if patches:
+                new_collection = PatchCollection(
+                    patches,
+                    cmap=plt.cm.get_cmap(cmap),
+                    alpha=alpha,
+                    linewidth=0,
+                )
+                new_collection.set_array(intensities)
+                ax.add_collection(new_collection)
+                current_collection[0] = new_collection
+
+            num_splats = len(patches)
+            if title:
+                ax.set_title(f"{title} - {axis.upper()} = {slice_pos:.2f} Å ({num_splats} splats)")
+            else:
+                ax.set_title(
+                    f"True Gaussian Cross-Sections - {axis.upper()} = {slice_pos:.2f} Å ({num_splats} splats)"
+                )
+            fig.canvas.draw_idle()
+
+        slider.on_changed(update_slice)
+        plt.show()
+        return fig, ax
