@@ -269,6 +269,7 @@ def _normalize_show_input_to_grid(
         Normalized grid format where each inner list represents a row of arrays.
     """
     if isinstance(arrays, np.ndarray):
+        arrays = arrays.astype(np.float32)
         if arrays.ndim == 2:
             return [[arrays]]
         elif arrays.ndim == 3:
@@ -489,7 +490,7 @@ def show_2d(
         scalebar=scalebar,
         cmap=cmap,
         cbar=cbar,
-        title=title,
+        title=kwargs.pop("titles", None) if title is None else title,
         chroma_boost=kwargs.pop("chroma_boost", 1.0),
     )
 

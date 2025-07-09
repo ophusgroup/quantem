@@ -1,11 +1,14 @@
 from typing import Any, Self
 
+import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.patches import Circle, Wedge
 from numpy.typing import NDArray
 
 from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset4d import Dataset4d
 from quantem.core.utils.validators import ensure_valid_array
+from quantem.core.visualization import show_2d
 
 
 class Dataset4dstem(Dataset4d):
@@ -282,29 +285,76 @@ class Dataset4dstem(Dataset4d):
 
     def get_virtual_image(
         self,
-        mask: np.ndarray,
+        mask: np.ndarray | None = None,
+        mode: str | None = None,
+        geometry: tuple | None = None,
         name: str = "virtual_image",
         attach: bool = True,
+        show: bool = False,
     ) -> Dataset2d:
         """
-        Get virtual image.
+        Get virtual image using either a provided mask or by creating a mask from mode and geometry.
 
         Parameters
         ----------
-        mask : np.ndarray
+        mask : np.ndarray | None, optional
             Mask for forming virtual images from 4D-STEM data. The mask should be the same
-            shape as the datacube Kx and Ky
+            shape as the datacube Kx and Ky. If provided, mode and geometry are ignored.
+        mode : str | None, optional
+            Mode for automatic mask creation. Options are "circle" or "annular".
+            Required if mask is not provided.
+        geometry : tuple | None, optional
+            Geometry parameters for automatic mask creation:
+            - For "circle" mode: ((cy, cx), r) where (cy, cx) is center and r is radius
+            - For "annular" mode: ((cy, cx), (r_inner, r_outer)) where (cy, cx) is center
+              and (r_inner, r_outer) are inner and outer radii
+            Required if mask is not provided.
         name : str, optional
             Name of virtual image, by default "virtual_image"
         attach : bool, optional
             If True, attaches virtual image to dataset, by default True
+        show : bool, optional
+            If True, displays the virtual image overlaid with the mean diffraction pattern
+            and detector geometry using matplotlib.
 
         Returns
         -------
-        Dataset
-            A new Dataset with the virtual image
+        Dataset2d
+            A new Dataset2d with the virtual image
         """
-        virtual_image = np.sum(self.array * mask, axis=(-1, -2))
+        if mask is not None:
+            # Use provided mask
+            if mask.shape != self.array.shape[-2:]:
+                raise ValueError(
+                    f"Mask shape {mask.shape} does not match diffraction pattern shape {self.array.shape[-2:]}"
+                )
+            final_mask = mask
+        elif mode is not None and geometry is not None:
+            # Create mask from mode and geometry
+            if mode == "circle":
+                if (
+                    len(geometry) != 2
+                    or len(geometry[0]) != 2
+                    or not isinstance(geometry[1], (int, float))
+                ):
+                    raise ValueError("For circle mode, geometry must be ((cy, cx), r)")
+                center, radius = geometry
+                final_mask = self._create_circle_mask(center, radius)
+            elif mode == "annular":
+                if len(geometry) != 2 or len(geometry[0]) != 2 or len(geometry[1]) != 2:
+                    raise ValueError(
+                        "For annular mode, geometry must be ((cy, cx), (r_inner, r_outer))"
+                    )
+                center, radii = geometry
+                final_mask = self._create_annular_mask(center, radii)
+            else:
+                raise ValueError(
+                    f"Unknown mode '{mode}'. Supported modes are 'circle' and 'annular'"
+                )
+        else:
+            raise ValueError("Either mask or both mode and geometry must be provided")
+
+        virtual_image = np.sum(self.array * final_mask, axis=(-1, -2))
 
         virtual_image_dataset = Dataset2d.from_array(
             array=virtual_image,
@@ -318,52 +368,165 @@ class Dataset4dstem(Dataset4d):
         if attach is True:
             self._virtual_images[name] = virtual_image_dataset
 
+        if show:
+            dp_mean_dataset = self.get_dp_mean(attach=False)
+            _fig, ax = show_2d(dp_mean_dataset.array, title=f"Mean DP with {name} detector")
+
+            if mask is not None:
+                # For custom masks, show the mask contour
+                ax.contour(final_mask, colors="red", linewidths=2, alpha=0.8)
+                ax.text(
+                    0.02,
+                    0.98,
+                    "Custom Mask",
+                    transform=ax.transAxes,
+                    color="red",
+                    fontsize=12,
+                    verticalalignment="top",
+                    bbox=dict(boxstyle="round", facecolor="white", alpha=0.8),
+                )
+            elif mode == "circle" and geometry is not None:
+                center, radius = geometry
+                cy, cx = center
+                circle = Circle((cx, cy), radius, color="red", fill=True, alpha=0.2)
+                ax.add_patch(circle)
+                circle = Circle(
+                    (cx, cy),
+                    radius,
+                    color="red",
+                    fill=False,
+                    alpha=0.8,
+                    linewidth=2,
+                )
+                ax.add_patch(circle)
+            elif mode == "annular" and geometry is not None:
+                center, radii = geometry
+                cy, cx = center
+                r_inner, r_outer = radii
+                annulus_filled = Wedge(
+                    (cx, cy),
+                    r_outer,
+                    0,
+                    360,
+                    width=r_outer - r_inner,
+                    color="red",
+                    fill=True,
+                    alpha=0.2,
+                )
+                ax.add_patch(annulus_filled)
+                circle_inner = Circle(
+                    (cx, cy), r_inner, color="red", fill=False, linewidth=2, alpha=0.8
+                )
+                circle_outer = Circle(
+                    (cx, cy), r_outer, color="red", fill=False, linewidth=2, alpha=0.8
+                )
+                ax.add_patch(circle_inner)
+                ax.add_patch(circle_outer)
+            plt.show()
+
         return virtual_image_dataset
 
-    # def show(
-    #     self,
-    #     index : tuple[int,int] = (0,0),
-    #     scalebar: ScalebarConfig | bool = True,
-    #     title: str | None = None,
-    #     **kwargs,
-    # ):
-    #     """
-    #     Display the dataset and associated diffraction patterns.
+    def _create_circle_mask(self, center: tuple[float, float], radius: float) -> np.ndarray:
+        """
+        Create a circular mask for virtual image formation.
 
-    #     Parameters
-    #     ----------
-    #     index : tuple, optional
-    #         Index for the dataset view, by default (0, 0)
-    #     scalebar : ScalebarConfig | bool, optional
-    #         Scalebar configuration, by default True
-    #     title : str | None, optional
-    #         Title for the plot, by default None
-    #     **kwargs : dict
-    #         Additional keyword arguments for the plot
-    #     """
-    #     list_of_objs = [self[index]]
-    #     if hasattr(self, "_dp_mean"):
-    #         list_of_objs.append(self.dp_mean)
-    #     if hasattr(self, "_dp_max"):
-    #         list_of_objs.append(self.dp_max)
-    #     if hasattr(self, "_dp_median"):
-    #         list_of_objs.append(self.dp_median)
+        Parameters
+        ----------
+        center : tuple[float, float]
+            Center coordinates (cy, cx) of the circle
+        radius : float
+            Radius of the circle
 
-    #     ncols = len(list_of_objs)
+        Returns
+        -------
+        np.ndarray
+            Boolean mask with True inside the circle
+        """
+        cy, cx = center
+        dp_shape = self.array.shape[-2:]  # Get diffraction pattern dimensions
+        y, x = np.ogrid[: dp_shape[0], : dp_shape[1]]
 
-    #     if figax is None:
-    #         figsize = (axsize[0] * ncols, axsize[1])
-    #         fig, axs = plt.subplots(1, ncols, figsize=figsize, squeeze=False)
-    #     else:
-    #         fig, axs = figax
-    #         if not isinstance(axs, np.ndarray):
-    #             axs = np.array([[axs]])
-    #         elif axs.ndim == 1:
-    #             axs = axs.reshape(1, -1)
-    #         if axs.shape != (1, ncols):
-    #             raise ValueError()
+        # Calculate distance from center
+        distance = np.sqrt((y - cy) ** 2 + (x - cx) ** 2)
 
-    #     for obj, ax in zip(list_of_objs, axs[0]):
-    #         obj.show(scalebar=scalebar, title=title, figax=(fig, ax), **kwargs)
+        return distance <= radius
 
-    #     return fig, axs
+    def _create_annular_mask(
+        self, center: tuple[float, float], radii: tuple[float, float]
+    ) -> np.ndarray:
+        """
+        Create an annular (ring-shaped) mask for virtual image formation.
+
+        Parameters
+        ----------
+        center : tuple[float, float]
+            Center coordinates (cy, cx) of the annulus
+        radii : tuple[float, float]
+            Inner and outer radii (r_inner, r_outer) of the annulus
+
+        Returns
+        -------
+        np.ndarray
+            Boolean mask with True inside the annular region
+        """
+        cy, cx = center
+        r_inner, r_outer = radii
+        dp_shape = self.array.shape[-2:]  # Get diffraction pattern dimensions
+        y, x = np.ogrid[: dp_shape[0], : dp_shape[1]]
+
+        # Calculate distance from center
+        distance = np.sqrt((y - cy) ** 2 + (x - cx) ** 2)
+
+        return (distance >= r_inner) & (distance <= r_outer)
+
+    def show_virtual_images(self, figsize: tuple[int, int] | None = None, **kwargs) -> tuple:
+        """
+        Display all virtual images stored in the dataset using show_2d.
+
+        Parameters
+        ----------
+        figsize : tuple[int, int] | None, optional
+            Figure size in inches. If None, automatically calculated based on number of images
+        **kwargs
+            Additional keyword arguments passed to show_2d (e.g., cmap, norm, cbar, etc.)
+
+        Returns
+        -------
+        tuple
+            (fig, axs) tuple from matplotlib/show_2d
+        """
+        if not self.virtual_images:
+            print("No virtual images to display. Create virtual images with get_virtual_image().")
+            return None, None
+
+        arrays = [vi.array for vi in self.virtual_images.values()]
+        titles = list(self.virtual_images.keys())
+
+        n_images = len(arrays)
+        if n_images <= 4:
+            arrays_organized = arrays
+            titles_organized = titles
+        else:
+            max_cols = 4
+            arrays_organized = []
+            titles_organized = []
+
+            for i in range(0, n_images, max_cols):
+                row_arrays = arrays[i : i + max_cols]
+                row_titles = titles[i : i + max_cols]
+                arrays_organized.append(row_arrays)
+                titles_organized.append(row_titles)
+
+        if figsize is None:
+            if n_images == 1:
+                figsize = (6, 6)
+            elif n_images <= 4:
+                figsize = (4 * min(n_images, 2), 4 * ((n_images + 1) // 2))
+            else:
+                n_rows = (n_images + 3) // 4
+                n_cols = min(n_images, 4)
+                figsize = (4 * n_cols, 4 * n_rows)
+
+        fig, axs = show_2d(arrays_organized, title=titles_organized, figsize=figsize, **kwargs)
+
+        return fig, axs

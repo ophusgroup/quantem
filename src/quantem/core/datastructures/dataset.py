@@ -108,7 +108,8 @@ class Dataset(AutoSerialize):
 
     @array.setter
     def array(self, value: NDArray) -> None:
-        self._array = ensure_valid_array(value, dtype=self.dtype, ndim=self.ndim)
+        self._array = ensure_valid_array(value, ndim=self.ndim)  # want to allow changing dtype
+        # self._array = ensure_valid_array(value, dtype=self.dtype, ndim=self.ndim)
 
     @property
     def name(self) -> str:
@@ -174,7 +175,7 @@ class Dataset(AutoSerialize):
         figure out a more permanent device solution that enables easier translation between
         numpy <-> cupy <-> torch <-> numpy
         """
-        return str(self.array.device)
+        return str(self.array.device)  # type:ignore
 
     # --- Summaries ---
     def __repr__(self) -> str:
