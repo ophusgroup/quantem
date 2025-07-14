@@ -269,7 +269,8 @@ def _normalize_show_input_to_grid(
         Normalized grid format where each inner list represents a row of arrays.
     """
     if isinstance(arrays, np.ndarray):
-        arrays = arrays.astype(np.float32)
+        if not np.iscomplexobj(arrays):
+            arrays = arrays.astype(np.float32)  # int/bool arrays can cause issues with norm
         if arrays.ndim == 2:
             return [[arrays]]
         elif arrays.ndim == 3:

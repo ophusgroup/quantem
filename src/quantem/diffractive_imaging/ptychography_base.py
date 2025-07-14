@@ -117,6 +117,7 @@ class PtychographyBase(AutoSerialize):
         self._constraints = self.DEFAULT_CONSTRAINTS.copy()
         self._obj_padding_px = np.array([0, 0])
         self.obj_fov_mask = torch.ones(self.dset._obj_shape_full_2d(self.obj_padding_px).shape)
+        self.batch_size = self.dset.num_gpts
 
         self._schedulers = {}
         self._optimizers = {}
@@ -550,22 +551,23 @@ class PtychographyBase(AutoSerialize):
             else:
                 raise ValueError("probe_model must be a subclass of ProbeModelType")
 
-        if isinstance(probe_model, type):
-            if not issubclass(probe_model, ProbeModelType):
-                raise TypeError(
-                    f"probe_model must be a subclass of ProbeModelType, got {type(probe_model)}"
-                )
+        # TODO reimplement wrapper or some "simple" way of doing ptycho with pixelated
+        # if isinstance(probe_model, type):
+        #     if not issubclass(probe_model, ProbeModelType):
+        #         raise TypeError(
+        #             f"probe_model must be a subclass of ProbeModelType, got {type(probe_model)}"
+        #         )
 
-            self._probe_model = probe_model(
-                num_probes=num_probes,
-                probe_params=probe_params,
-                vacuum_probe_intensity=vacuum_probe_intensity,
-                initial_probe_array=initial_probe,
-                device=self.device,
-                rng=self.rng,
-            )
+        #     self._probe_model = probe_model(
+        #         num_probes=num_probes,
+        #         probe_params=probe_params,
+        #         vacuum_probe_intensity=vacuum_probe_intensity,
+        #         initial_probe_array=initial_probe,
+        #         device=self.device,
+        #         rng=self.rng,
+        #     )
         # autoreload bug leads to type issues
-        elif isinstance(probe_model, ProbeBase) or "probe" in str(type(probe_model)):
+        if isinstance(probe_model, ProbeBase) or "probe" in str(type(probe_model)):
             # add protections for changing num_probes and such
             self._probe_model = probe_model
         else:
@@ -610,6 +612,16 @@ class PtychographyBase(AutoSerialize):
         for k, v in self._constraints["dataset"].items():
             if k in self.dset.DEFAULT_CONSTRAINTS.keys():
                 self.dset.add_constraint(k, v)
+
+    @property
+    def batch_size(self) -> int:
+        return self._batch_size
+
+    @batch_size.setter
+    def batch_size(self, val: int | None) -> None:
+        if val is not None:
+            v = validate_gt(validate_int(val, "batch_size"), 0, "batch_size")
+            self._batch_size = int(v)
 
     # endregion --- explicit class properties ---
 
@@ -967,14 +979,14 @@ class PtychographyBase(AutoSerialize):
             else:
                 targets = self.dset.centered_amplitudes[batch_indices]
             preds = torch.sqrt(pred_intensities + 1e-9)  # add eps to avoid diverging gradients
-            norm = self.dset.mean_diffraction_amplitude
+            norm = self.dset.mean_diffraction_intensity  # sgd is more stable with amplitude norm
         else:
             if use_unshifted:
                 targets = self.dset.intensities[batch_indices]
             else:
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
-            norm = self.dset.mean_diffraction_intensity
+            norm = self.dset.mean_diffraction_intensity**1.5  # otherwise sgd diverges??
         if loss_type == "l1":
             error = arr.sum(arr.abs(preds - targets))
         elif loss_type == "l2":

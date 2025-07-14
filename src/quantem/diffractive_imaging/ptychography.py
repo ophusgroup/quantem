@@ -230,6 +230,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         store_iterations_every: int | None = None,
         device: Literal["cpu", "gpu"] | None = None,
         autograd: bool = True,
+        loss_type: Literal["l1", "l2"] = "l2",
     ) -> Self:
         """
         reason for having a single reconstruct() is so that updating things like constraints
@@ -240,12 +241,16 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         # TODO maybe make an "process args" method that handles things like:
         # mode, store_iterations, device,
         self._check_preprocessed()
-        self.set_obj_type(obj_type, force=reset)
+        self.set_obj_type(obj_type, force=reset)  # TODO update this or remove, DIPs...
         if device is not None:
             self.to(device)
-        batch_size = self.dset.num_gpts if batch_size is None else batch_size
-        self.store_iterations = store_iterations
+        self.batch_size = batch_size
         self.store_iterations_every = store_iterations_every
+        if store_iterations_every is not None and store_iterations is None:
+            self.store_iterations = True
+        else:
+            self.store_iterations = store_iterations
+
         if reset:
             self.reset_recon()
         self.constraints = constraints
@@ -263,14 +268,10 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         if new_scheduler:
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        if "descan" in self.optimizer_params.keys():
-            learn_descan = True  # TODO clean this up... not sure how
-        else:
-            learn_descan = False
-
-        batcher = SimpleBatcher(self.dset.num_gpts, batch_size, rng=self.rng)
-
+        learn_descan = True if "descan" in self.optimizer_params.keys() else False
+        batcher = SimpleBatcher(self.dset.num_gpts, self.batch_size, rng=self.rng)
         pbar = tqdm(range(num_iter), disable=not self.verbose)
+
         for a0 in pbar:
             epoch_loss = 0.0
 
@@ -280,6 +281,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                 )
                 shifted_probes = self.probe_model.forward(positions_px_fractional)
                 obj_patches = self.obj_model.forward(patch_indices)
+                self._obj_patches = obj_patches
                 propagated_probes, overlap = self.forward_operator(
                     obj_patches, shifted_probes, descan_shifts
                 )
@@ -290,7 +292,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                     batch_indices,
                     amplitude_error=True,
                     use_unshifted=learn_descan,
-                    loss_type="l2",
+                    loss_type=loss_type,
                 )
 
                 loss += self._soft_constraints()
@@ -319,8 +321,9 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
             self._record_lrs()
             self._epoch_losses.append(epoch_loss)
             self._epoch_recon_types.append(f"{self.obj_model.name}-{self.probe_model.name}")
-            if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
-                self.append_recon_iteration(self.obj, self.probe)
+            if self.store_iterations and (a0 % self.store_iterations_every == 0):
+                # if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
+                self.append_recon_iteration(self.obj_model.obj, self.probe_model.probe)
 
             pbar.set_description(f"Loss: {epoch_loss:.3e}, ")
 

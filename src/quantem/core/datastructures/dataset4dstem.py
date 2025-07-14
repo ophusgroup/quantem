@@ -23,7 +23,19 @@ class Dataset4dstem(Dataset4d):
     ----------
     virtual_images : dict[str, Dataset2d]
         Dictionary storing virtual images generated from the 4D-STEM dataset.
-        Keys are image names and values are Dataset objects containing the images.
+        Keys are image names and values are Dataset2d objects containing the images.
+    virtual_detectors : dict[str, dict]
+        Dictionary storing virtual detector information (masks, modes, geometry)
+        for regenerating virtual images after dataset operations.
+
+    Notes
+    -----
+    Virtual images are automatically regenerated after dataset operations like cropping,
+    padding, and binning. The detector information (mode and geometry) is preserved and
+    used to create new virtual images that match the transformed dataset dimensions.
+
+    For virtual images created with custom masks, regeneration is not automatic due to
+    the complexity of mask transformation. These will need to be recreated manually.
     """
 
     def __init__(
@@ -65,6 +77,7 @@ class Dataset4dstem(Dataset4d):
             _token=_token,
         )
         self._virtual_images = {}
+        self._virtual_detectors = {}  # Store detector information for regeneration
 
     @classmethod
     def from_file(cls, file_path: str, file_type: str) -> "Dataset4dstem":
@@ -144,6 +157,19 @@ class Dataset4dstem(Dataset4d):
             Dictionary with image names as keys and Dataset2d objects as values
         """
         return self._virtual_images
+
+    @property
+    def virtual_detectors(self) -> dict[str, dict]:
+        """
+        Dictionary storing virtual detector information for regenerating virtual images.
+
+        Returns
+        -------
+        dict[str, dict]
+            Dictionary with detector names as keys and detector info dictionaries as values.
+            Each detector info dict contains 'mask', 'mode', and 'geometry' keys.
+        """
+        return self._virtual_detectors
 
     @property
     def dp_mean(self) -> Dataset2d:
@@ -367,6 +393,12 @@ class Dataset4dstem(Dataset4d):
 
         if attach is True:
             self._virtual_images[name] = virtual_image_dataset
+            # Store detector information for regeneration after operations
+            self._virtual_detectors[name] = {
+                "mask": final_mask.copy() if mask is not None else None,
+                "mode": mode,
+                "geometry": geometry,
+            }
 
         if show:
             dp_mean_dataset = self.get_dp_mean(attach=False)
@@ -530,3 +562,130 @@ class Dataset4dstem(Dataset4d):
         fig, axs = show_2d(arrays_organized, title=titles_organized, figsize=figsize, **kwargs)
 
         return fig, axs
+
+    def regenerate_virtual_images(self) -> None:
+        """
+        Regenerate virtual images from stored detector information.
+        This is called after operations like crop, bin, or pad to update virtual images
+        to match the new dataset dimensions.
+        """
+        if not self._virtual_detectors:
+            return
+
+        # Clear existing virtual images
+        self._virtual_images.clear()
+
+        # Regenerate each virtual image
+        for name, detector_info in self._virtual_detectors.items():
+            try:
+                if detector_info["mode"] is not None and detector_info["geometry"] is not None:
+                    # Regenerate from mode and geometry
+                    self.get_virtual_image(
+                        mode=detector_info["mode"],
+                        geometry=detector_info["geometry"],
+                        name=name,
+                        attach=True,
+                        show=False,
+                    )
+                else:
+                    print(
+                        f"Warning: Cannot regenerate virtual image '{name}' - insufficient detector information."
+                    )
+            except Exception as e:
+                print(f"Warning: Failed to regenerate virtual image '{name}': {e}")
+
+    def update_virtual_detector(
+        self,
+        name: str,
+        mask: np.ndarray | None = None,
+        mode: str | None = None,
+        geometry: tuple | None = None,
+    ) -> None:
+        """
+        Update virtual detector information and regenerate the corresponding virtual image.
+
+        This is useful for updating custom masks after dataset operations or changing
+        detector parameters.
+
+        Parameters
+        ----------
+        name : str
+            Name of the virtual detector to update
+        mask : np.ndarray | None, optional
+            New mask for the detector. Should match current diffraction pattern dimensions.
+        mode : str | None, optional
+            New mode for the detector ("circle" or "annular")
+        geometry : tuple | None, optional
+            New geometry for the detector
+        """
+        if name not in self._virtual_detectors:
+            raise ValueError(
+                f"Virtual detector '{name}' not found. Available detectors: {list(self._virtual_detectors.keys())}"
+            )
+
+        # Update detector information
+        self._virtual_detectors[name]["mask"] = mask.copy() if mask is not None else None
+        self._virtual_detectors[name]["mode"] = mode
+        self._virtual_detectors[name]["geometry"] = geometry
+
+        # Regenerate the virtual image
+        self.get_virtual_image(
+            mask=mask, mode=mode, geometry=geometry, name=name, attach=True, show=False
+        )
+
+    def clear_virtual_images(self) -> None:
+        """
+        Clear virtual images while keeping detector information for regeneration.
+        """
+        self._virtual_images.clear()
+
+    def clear_all_virtual_data(self) -> None:
+        """
+        Clear both virtual images and detector information.
+        """
+        self._virtual_images.clear()
+        self._virtual_detectors.clear()
+
+    def copy(self, copy_custom_attributes: bool = True) -> Self:
+        """
+        Copies Dataset4dstem including virtual images and other custom attributes.
+
+        Parameters
+        ----------
+        copy_custom_attributes : bool, optional
+            If True, copies non-standard attributes. Default is True.
+
+        Returns
+        -------
+        Dataset4dstem
+            A new Dataset4dstem instance with all attributes copied
+        """
+        # Call parent copy method which will handle custom attributes
+        new_dataset = super().copy(copy_custom_attributes)
+
+        return new_dataset
+
+    def _copy_custom_attributes(self, new_dataset) -> None:
+        """
+        Copy custom attributes specific to Dataset4dstem.
+
+        Parameters
+        ----------
+        new_dataset
+            The new dataset instance to copy attributes to
+        """
+        # First call parent's generic attribute copying
+        super()._copy_custom_attributes(new_dataset)
+
+        # Handle Dataset4dstem-specific attributes that need special treatment
+        # Override virtual detector information with custom logic
+        new_dataset._virtual_detectors = {}
+        for name, detector_info in self._virtual_detectors.items():
+            new_dataset._virtual_detectors[name] = {
+                "mask": None,  # Custom masks can't be regenerated after operations
+                "mode": detector_info["mode"],
+                "geometry": detector_info["geometry"],
+            }
+
+        # Initialize empty virtual images dict (will be populated by regenerate_virtual_images)
+        new_dataset._virtual_images = {}
