@@ -396,7 +396,12 @@ def validate_array_or_tensor(
     if dtype is not None:
         val_dtype_str = canonical_dtype_str(value.dtype)
         req_dtype_str = canonical_dtype_str(dtype)
-        if val_dtype_str != req_dtype_str:
+        if "complex" in val_dtype_str and "complex" not in req_dtype_str:
+            raise ValueError(
+                f"{name} must be real-valued of type {req_dtype_str}, got "
+                + f"{val_dtype_str}. Will not cast complex to real"
+            )
+        elif val_dtype_str != req_dtype_str:
             value = arr.as_type(value, req_dtype_str)
     if ndim is not None and value.ndim != ndim:
         if expand_dims and ndim > value.ndim:

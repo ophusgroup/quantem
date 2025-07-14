@@ -1,4 +1,4 @@
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
@@ -6,16 +6,16 @@ import numpy as np
 
 from quantem.core import config
 from quantem.core.visualization import show_2d
+from quantem.diffractive_imaging.ptycho_utils import center_crop_arr
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
 
 
-# TODO make dataclass
 class PtychographyVisualizations(PtychographyBase):
     def show_obj(
         self,
         obj: np.ndarray | None = None,
         cbar: bool = False,
-        interval_type: Literal["quantile", "manual"] = "quantile",
+        norm: Literal["quantile", "manual", "minmax", "abs"] = "quantile",
         **kwargs,
     ):
         if obj is None:
@@ -25,12 +25,12 @@ class PtychographyVisualizations(PtychographyBase):
             if obj.ndim == 2:
                 obj = obj[None, ...]
 
-        if interval_type == "quantile":
-            norm = {"interval_type": "quantile"}
-        elif interval_type in ["manual", "minmax", "abs"]:
-            norm = {"interval_type": "manual"}
+        if norm == "quantile":
+            norm_dict = {"interval_type": "quantile"}
+        elif norm in ["manual", "minmax", "abs"]:
+            norm_dict = {"interval_type": "manual"}
         else:
-            raise ValueError(f"Unknown interval type: {interval_type}")
+            raise ValueError(f"Unknown norm type: {norm}")
 
         ph_cmap = config.get("viz.phase_cmap")
         if obj.shape[0] > 1:
@@ -60,7 +60,7 @@ class PtychographyVisualizations(PtychographyBase):
             ims,
             title=titles,
             cmap=cmaps,
-            norm=norm,
+            norm=norm_dict,
             cbar=cbar,
             scalebar=scalebar,
             **kwargs,
@@ -282,6 +282,315 @@ class PtychographyVisualizations(PtychographyBase):
         )
         plt.show()
 
-    def show_object_epochs(self):
-        # image grid
-        pass
+    def show_epochs(
+        self,
+        show_probe: bool = True,
+        show_object: bool = True,
+        epochs: list[int] | slice | None = None,
+        every_nth: int | None = None,
+        max_n: int | None = None,
+        cbar: bool = False,
+        norm: Literal["quantile", "manual", "minmax", "abs"] = "quantile",
+        interval_scaling: Literal["each", "all"] = "each",
+        max_width: int = 4,
+        cropped: bool = True,
+        **kwargs,
+    ):
+        """
+        Display object and/or probe reconstructions from stored epoch snapshots.
+
+        Parameters
+        ----------
+        show_probe : bool, optional
+            Whether to show probe reconstructions, by default True
+        show_object : bool, optional
+            Whether to show object reconstructions, by default True
+        epochs : list[int] | slice | None, optional
+            Specific epoch iterations to display. If None, shows all available epochs
+        every_nth : int | None, optional
+            Show every nth epoch instead of all. Overrides epochs parameter
+        max_epochs : int | None, optional
+            Maximum number of epochs to display
+        cbar : bool, optional
+            Whether to show colorbars, by default False
+        norm : str, optional
+            Normalization method for object display, by default "quantile"
+        interval_scaling : str, optional
+            How to scale intervals: "each" for per-image scaling, "all" for global scaling across all epochs, by default "each"
+        max_width : int, optional
+            Maximum number of images per row, by default 4
+        cropped : bool, optional
+            Whether to show cropped objects (default True) or full objects
+        **kwargs
+            Additional arguments passed to show_2d
+        """
+        if not self.epoch_snapshots:
+            print("No epoch snapshots available. Use store_iterations=True during reconstruction.")
+            return
+
+        if not show_object and not show_probe:
+            print("Must show at least one of object or probe")
+            return
+
+        all_iterations = [snapshot["iteration"] for snapshot in self.epoch_snapshots]
+
+        if every_nth is not None:
+            selected_indices = list(range(0, len(self.epoch_snapshots), every_nth))
+        elif epochs is not None:
+            if isinstance(epochs, slice):
+                selected_indices = list(range(*epochs.indices(len(self.epoch_snapshots))))
+            else:
+                selected_indices = []
+                for epoch in epochs:
+                    try:
+                        idx = all_iterations.index(epoch)
+                        selected_indices.append(idx)
+                    except ValueError:
+                        print(f"Warning: Epoch {epoch} not found in snapshots")
+        else:
+            selected_indices = list(range(len(self.epoch_snapshots)))
+
+        if max_n is not None:
+            selected_indices = selected_indices[:max_n]  # TEST
+
+        if not selected_indices:
+            print("No valid epochs selected for display")
+            return
+
+        selected_snapshots = [self.epoch_snapshots[i] for i in selected_indices]
+
+        if norm == "quantile":
+            norm_dict = {"interval_type": "quantile"}
+            # TODO: implement global quantile scaling for interval_scaling="all"
+        elif norm in ["manual", "minmax", "abs"]:
+            norm_dict: dict[str, Any] = {"interval_type": "manual"}
+
+            # Calculate global vmin/vmax if interval_scaling="all" and objects are shown
+            if interval_scaling == "all" and show_object:
+                all_object_values = []
+                for snapshot in selected_snapshots:
+                    obj = cast(np.ndarray, snapshot["obj"])
+
+                    if cropped:
+                        obj = self._crop_epoch_obj(obj)
+
+                    if obj.ndim == 3 and obj.shape[0] > 1:
+                        obj_display = obj.sum(0)
+                    else:
+                        obj_display = obj[0] if obj.ndim == 3 else obj
+
+                    if self.obj_type == "potential":
+                        all_object_values.append(np.abs(obj_display))
+                    elif self.obj_type == "pure_phase":
+                        all_object_values.append(np.angle(obj_display))
+                    else:  # complex
+                        all_object_values.extend([np.angle(obj_display), np.abs(obj_display)])
+
+                if all_object_values:
+                    all_values_flat = np.concatenate([arr.ravel() for arr in all_object_values])
+                    norm_dict["vmin"] = float(np.min(all_values_flat))
+                    norm_dict["vmax"] = float(np.max(all_values_flat))
+            else:
+                norm_dict["vmin"] = kwargs.get("vmin")
+                norm_dict["vmax"] = kwargs.get("vmax")
+        else:
+            raise ValueError(f"Unknown norm type: {norm}")
+
+        if show_object and show_probe:
+            self._show_object_and_probe_epochs(
+                selected_snapshots, norm_dict, cbar, max_width, cropped, **kwargs
+            )
+        elif show_object:
+            self._show_object_epochs_only(
+                selected_snapshots, norm_dict, cbar, max_width, cropped, **kwargs
+            )
+        elif show_probe:
+            self._show_probe_epochs_only(selected_snapshots, cbar, max_width, **kwargs)
+
+    def _crop_epoch_obj(self, obj: np.ndarray) -> np.ndarray:
+        """Apply the same cropping logic as obj_cropped property to epoch snapshot objects."""
+        cropped = self._crop_rotate_obj_fov(obj)
+        if self.obj_type == "pure_phase":
+            cropped = np.exp(1j * np.angle(cropped))
+        cropped = center_crop_arr(cropped, tuple(self.obj_shape_crop))
+        return cropped
+
+    def _show_object_epochs_only(self, snapshots, norm_dict, cbar, max_width, cropped, **kwargs):
+        """Display only object reconstructions from epoch snapshots."""
+        ph_cmap = config.get("viz.phase_cmap")
+
+        all_images = []
+        all_titles = []
+        all_cmaps = []
+
+        for snapshot in snapshots:
+            obj = snapshot["obj"]
+            iteration = snapshot["iteration"]
+
+            if cropped:
+                obj = self._crop_epoch_obj(obj)
+
+            if obj.ndim == 3 and obj.shape[0] > 1:
+                obj_display = obj.sum(0)
+                title_prefix = f"Epoch {iteration} Summed "
+            else:
+                obj_display = obj[0] if obj.ndim == 3 else obj
+                title_prefix = f"Epoch {iteration} "
+
+            if self.obj_type == "potential":
+                all_images.append(np.abs(obj_display))
+                all_titles.append(title_prefix + "Potential")
+                all_cmaps.append(ph_cmap)
+            elif self.obj_type == "pure_phase":
+                all_images.append(np.angle(obj_display))
+                all_titles.append(title_prefix + "Phase")
+                all_cmaps.append(ph_cmap)
+            else:  # complex
+                all_images.extend([np.angle(obj_display), np.abs(obj_display)])
+                all_titles.extend([title_prefix + "Phase", title_prefix + "Amplitude"])
+                all_cmaps.extend([ph_cmap, "gray"])
+
+        images_grid = [all_images[i : i + max_width] for i in range(0, len(all_images), max_width)]
+        titles_grid = [all_titles[i : i + max_width] for i in range(0, len(all_titles), max_width)]
+        cmaps_grid = [all_cmaps[i : i + max_width] for i in range(0, len(all_cmaps), max_width)]
+
+        scalebars: list = [[None for _ in row] for row in images_grid]
+        if scalebars:
+            scalebars[0][0] = {"sampling": self.sampling[0], "units": "Å"}
+
+        show_2d(
+            images_grid,
+            title=titles_grid,
+            cmap=cmaps_grid,
+            norm=norm_dict,
+            cbar=cbar,
+            scalebar=scalebars,
+            **kwargs,
+        )
+
+    def _show_probe_epochs_only(self, snapshots, cbar, max_width, **kwargs):
+        """Display only probe reconstructions from epoch snapshots."""
+        all_probes = []
+        all_titles = []
+
+        for snapshot in snapshots:
+            probe = snapshot["probe"]
+            iteration = snapshot["iteration"]
+
+            if probe.ndim == 3 and probe.shape[0] > 1:
+                probe_display = np.fft.fftshift(probe.sum(0))
+                title = f"Epoch {iteration} Summed Probe"
+            else:
+                probe_display = np.fft.fftshift(probe[0] if probe.ndim == 3 else probe)
+                title = f"Epoch {iteration} Probe"
+
+            all_probes.append(probe_display)
+            all_titles.append(title)
+
+        probes_grid = [all_probes[i : i + max_width] for i in range(0, len(all_probes), max_width)]
+        titles_grid = [all_titles[i : i + max_width] for i in range(0, len(all_titles), max_width)]
+
+        # Set up scalebars
+        scalebars: list = [[None for _ in row] for row in probes_grid]
+        if scalebars:
+            scalebars[0][0] = {
+                "sampling": self.reciprocal_sampling[0],
+                "units": r"$\mathrm{A^{-1}}$",
+            }
+
+        show_2d(
+            probes_grid,
+            title=titles_grid,
+            scalebar=scalebars,
+            cbar=cbar,
+            **kwargs,
+        )
+
+    def _show_object_and_probe_epochs(
+        self, snapshots, norm_dict, cbar, max_width, cropped, **kwargs
+    ):
+        """Display both object and probe reconstructions from epoch snapshots."""
+        ph_cmap = config.get("viz.phase_cmap")
+
+        all_images = []
+        all_titles = []
+        all_cmaps = []
+        all_scalebars = []
+
+        for snapshot in snapshots:
+            obj = snapshot["obj"]
+            probe = snapshot["probe"]
+            iteration = snapshot["iteration"]
+
+            # Apply cropping if requested
+            if cropped:
+                obj = self._crop_epoch_obj(obj)
+
+            row_images = []
+            row_titles = []
+            row_cmaps = []
+            row_scalebars = []
+
+            # Process object
+            if obj.ndim == 3 and obj.shape[0] > 1:
+                obj_display = obj.sum(0)
+                obj_prefix = "Summed "
+            else:
+                obj_display = obj[0] if obj.ndim == 3 else obj
+                obj_prefix = ""
+
+            if self.obj_type == "potential":
+                row_images.append(np.abs(obj_display))
+                row_titles.append(f"Epoch {iteration} {obj_prefix}Potential")
+                row_cmaps.append(ph_cmap)
+                row_scalebars.append({"sampling": self.sampling[0], "units": "Å"})
+            elif self.obj_type == "pure_phase":
+                row_images.append(np.angle(obj_display))
+                row_titles.append(f"Epoch {iteration} {obj_prefix}Phase")
+                row_cmaps.append(ph_cmap)
+                row_scalebars.append({"sampling": self.sampling[0], "units": "Å"})
+            else:  # complex
+                row_images.extend([np.angle(obj_display), np.abs(obj_display)])
+                row_titles.extend(
+                    [
+                        f"Epoch {iteration} {obj_prefix}Phase",
+                        f"Epoch {iteration} {obj_prefix}Amplitude",
+                    ]
+                )
+                row_cmaps.extend([ph_cmap, "gray"])
+                row_scalebars.extend([{"sampling": self.sampling[0], "units": "Å"}, None])
+
+            # Process probe
+            if probe.ndim == 3 and probe.shape[0] > 1:
+                probe_display = np.fft.fftshift(probe.sum(0))
+                probe_title = f"Epoch {iteration} Summed Probe"
+            else:
+                probe_display = np.fft.fftshift(probe[0] if probe.ndim == 3 else probe)
+                probe_title = f"Epoch {iteration} Probe"
+
+            row_images.append(probe_display)
+            row_titles.append(probe_title)
+            row_cmaps.append(None)
+            row_scalebars.append(
+                {"sampling": self.reciprocal_sampling[0], "units": r"$\mathrm{A^{-1}}$"}
+            )
+
+            all_images.append(row_images)
+            all_titles.append(row_titles)
+            all_cmaps.append(row_cmaps)
+            all_scalebars.append(row_scalebars)
+
+        show_2d(
+            all_images,
+            title=all_titles,
+            cmap=all_cmaps,
+            norm=norm_dict,
+            cbar=cbar,
+            scalebar=all_scalebars,
+            **kwargs,
+        )
+
+    # def show_epochs(self):
+    #     ## show the object at each .epoch_snapshots
+    #     ## options to show probe as well, defaults to just object
+    #     ## also option to not show every saved epoch, but only select ones or every nth

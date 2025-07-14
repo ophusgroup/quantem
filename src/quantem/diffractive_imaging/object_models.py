@@ -22,6 +22,14 @@ from quantem.core.utils.validators import (
 from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
 
+"""
+Currently all object models.obj are complex valued for "complex" or "pure_phase" object types,
+and real valued for "potential" object types. This could be changed to be always complex valued, 
+(after applying constraints) as currently the real-valued potential is made complex in get_obj_patches, 
+which will not be used for implicit NNs, which leads to an inconsistency. Leaving for now as I'm not 
+sure if this would lead to other issues, so a bit of testing will be needed.
+"""
+
 
 class ObjectBase(AutoSerialize):
     """
@@ -35,9 +43,10 @@ class ObjectBase(AutoSerialize):
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         rng: np.random.Generator | int | None = None,
+        shape: tuple[int, int, int] | None = None,
         *args,
     ):
-        self._shape = (-1, -1, -1)
+        self._shape = shape if shape is not None else (-1, -1, -1)
         self.num_slices = num_slices
         self._device = device
         self._obj_type = obj_type
@@ -48,12 +57,13 @@ class ObjectBase(AutoSerialize):
 
     @property
     def shape(self) -> tuple:
+        ## recently added shape to init as an option, hopefully this doesn't break anything
         return self._shape
 
     @shape.setter
     def shape(self, s: tuple) -> None:
         """set in Ptychography as the shape is determined by com_rotation, sampling, etc."""
-        s = tuple(s)
+        s = tuple(int(x) for x in s)
         if len(s) != 3:
             raise ValueError(
                 f"Shape must be a tuple of length 3 (depth, row, col), got {len(s)}: {s}"
@@ -209,12 +219,14 @@ class ObjectBase(AutoSerialize):
         propagated_array: np.ndarray
             Fourier-convolved array
         """
-        propagated = torch.fft.ifft2(torch.fft.fft2(array) * propagator_array)
+        propagated = torch.fft.ifft2(
+            torch.fft.fft2(array, norm="ortho") * propagator_array, norm="ortho"
+        )
         return propagated
 
     def _get_obj_patches(self, obj_array, patch_indices):
         """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
-        if self.obj_type == "potential":
+        if not obj_array.is_complex():
             obj_array = torch.exp(1.0j * obj_array)
         obj_flat = obj_array.reshape(obj_array.shape[0], -1)
         # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
@@ -288,11 +300,11 @@ class ObjectConstraints(ObjectBase):
                 obj2 = amp * torch.exp(1.0j * phase)
         else:  # is potential, apply positivity
             if self.constraints["fix_potential_baseline"]:
-                ### pushing towards 0 can make reconstruction worse?
                 if mask is not None:
-                    offset = obj[mask < 0.5 * mask.max()].mean() / 2
+                    offset = obj[mask < 0.5 * mask.max()].mean()
                 else:
-                    offset = torch.mean(obj) / 2
+                    offset = torch.min(obj)
+
             else:
                 offset = 0
 
@@ -321,6 +333,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         rng: np.random.Generator | int | None = None,
+        shape: tuple[int, int, int] | None = None,
     ):
         super().__init__(
             num_slices=num_slices,
@@ -328,6 +341,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
             device=device,
             obj_type=obj_type,
             rng=rng,
+            shape=shape,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
@@ -412,10 +426,11 @@ class ObjectDIP(ObjectConstraints):
         model_input: torch.Tensor | None = None,
         num_slices: int = 1,
         slice_thicknesses: float | Sequence | torch.Tensor | None = None,
-        input_noise_std: float = 0.0,
+        input_noise_std: float = 0.025,
         device: str = "cpu",
         obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
         rng: np.random.Generator | int | None = None,
+        shape: tuple[int, int, int] | None = None,
     ):
         super().__init__(
             num_slices=num_slices,
@@ -423,11 +438,22 @@ class ObjectDIP(ObjectConstraints):
             device=device,
             obj_type=obj_type,
             rng=rng,
+            shape=shape,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self._model = model
         if model_input is None:
-            self.model_input = torch.ones((1, 1, 1, 1), dtype=self.dtype, device=self.device)
+            if np.all(np.array(self.shape) > 0):  # confirm shape is set
+                self.model_input = torch.randn(
+                    (1, *self.shape),
+                    dtype=self.dtype,
+                    device=self.device,
+                    generator=self._rng_torch,
+                )
+            else:
+                # cannot set model input yet
+                warn("Model input not set")
+                self.model_input = torch.zeros((1, 1, 1, 1), dtype=self.dtype, device=self.device)
         else:
             self.model_input = model_input.clone().detach()
         self.pretrain_target = self.model_input.clone().detach()
@@ -442,6 +468,13 @@ class ObjectDIP(ObjectConstraints):
         return "ObjDIP"
 
     @property
+    def dtype(self) -> "torch.dtype":
+        if hasattr(self.model, "dtype"):
+            return getattr(self.model, "dtype")
+        else:
+            return self.model_input.dtype
+
+    @property
     def model(self) -> "torch.nn.Module":
         """get the DIP model"""
         return self._model
@@ -451,6 +484,12 @@ class ObjectDIP(ObjectConstraints):
         """set the DIP model"""
         if not isinstance(dip, torch.nn.Module):
             raise TypeError(f"DIP must be a torch.nn.Module, got {type(dip)}")
+        if hasattr(dip, "dtype"):
+            dt = getattr(dip, "dtype")
+            if self.obj_type == "potential" and dt.is_complex:
+                raise ValueError("DIP model must be a real-valued model for potential objects")
+            elif self.obj_type == "complex" and not dt.is_complex:
+                raise ValueError("DIP model must be a complex-valued model for complex objects")
         self._model = dip.to(self.device)
         self.set_pretrained_weights(self._model)
 
@@ -600,7 +639,14 @@ class ObjectDIP(ObjectConstraints):
     @property
     def obj(self):
         obj = self.model(self._model_input)[0]
+        if self.obj_type == "pure_phase" and "complex" not in str(self.dtype):
+            # using a real-valued model for a pure-phase (complex) object
+            obj = torch.ones_like(obj) * torch.exp(1j * obj)
         return self.apply_constraints(obj, mask=self.mask)
+
+    @property
+    def _obj(self):
+        return self.model(self._model_input)[0]
 
     def forward(self, patch_indices: torch.Tensor):
         """Get patch indices of the object"""
@@ -614,8 +660,10 @@ class ObjectDIP(ObjectConstraints):
                 )
                 * self._input_noise_std
             )
-            self._model_input += noise
-        return self._get_obj_patches(self.obj, patch_indices)
+            model_input = self.model_input + noise
+        else:
+            model_input = self.model_input
+        return self._get_obj_patches(self.model(model_input)[0], patch_indices)
 
     def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
@@ -698,6 +746,7 @@ class ObjectDIP(ObjectConstraints):
         output = self.obj
 
         for a0 in pbar:
+            # doing this here because we don't call forward
             if self._input_noise_std > 0.0:
                 noise = (
                     torch.randn(
@@ -708,12 +757,15 @@ class ObjectDIP(ObjectConstraints):
                     )
                     * self._input_noise_std
                 )
-                self._model_input += noise
+                # self._model_input += noise
+                model_input = self.model_input + noise
+            else:
+                model_input = self.model_input
 
             if apply_constraints:
                 output = self.obj
             else:
-                output = self.model(self.model_input)[0]
+                output = self.model(model_input)[0]
             loss: torch.Tensor = loss_fn(output, self.pretrain_target)
             loss.backward()
             optimizer.step()
@@ -728,7 +780,7 @@ class ObjectDIP(ObjectConstraints):
             # save losses and lrs
             self._pretrain_losses.append(loss.item())
             self._pretrain_lrs.append(optimizer.param_groups[0]["lr"])
-            pbar.set_description(f"Epoch {a0 + 1}/{num_epochs}, Loss: {loss.item():.4f}, ")
+            pbar.set_description(f"Epoch {a0 + 1}/{num_epochs}, Loss: {loss.item():.3e}, ")
 
         if show:
             self.visualize_pretrain(output)
@@ -792,7 +844,7 @@ class ObjectDIP(ObjectConstraints):
                     target.mean(0).cpu().detach().numpy(),
                 ],
                 figax=(fig, axs_bot),
-                title=["Predicted Object Potential", "Target Object Potential"],
+                title=[f"Pred obj ({self.obj_type})", f"Target obj ({self.obj_type})"],
                 cmap="magma",
                 cbar=True,
             )

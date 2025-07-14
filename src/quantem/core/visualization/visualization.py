@@ -87,7 +87,7 @@ def _show_2d_array(
         angle = None
 
     norm_config = _resolve_normalization(norm, **kwargs)
-    scalebar_config = _resolve_scalebar(scalebar)
+    scalebar_config = _resolve_scalebar(scalebar, **kwargs)
 
     norm_obj = CustomNormalization(
         interval_type=norm_config.interval_type,
@@ -112,7 +112,7 @@ def _show_2d_array(
     else:
         fig, ax = figax
 
-    ax.imshow(rgba)
+    ax.imshow(rgba, interpolation=config.get("viz.interpolation"))
     ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:
@@ -269,6 +269,8 @@ def _normalize_show_input_to_grid(
         Normalized grid format where each inner list represents a row of arrays.
     """
     if isinstance(arrays, np.ndarray):
+        if not np.iscomplexobj(arrays):
+            arrays = arrays.astype(np.float32)  # int/bool arrays can cause issues with norm
         if arrays.ndim == 2:
             return [[arrays]]
         elif arrays.ndim == 3:
@@ -489,7 +491,7 @@ def show_2d(
         scalebar=scalebar,
         cmap=cmap,
         cbar=cbar,
-        title=title,
+        title=kwargs.pop("titles", None) if title is None else title,
         chroma_boost=kwargs.pop("chroma_boost", 1.0),
     )
 
@@ -530,5 +532,8 @@ def show_2d(
         axs = axs[0]
     elif axs.shape[1] == 1:
         axs = axs[:, 0]
+
+    if kwargs.get("force_show", False):
+        plt.show()
 
     return fig, axs

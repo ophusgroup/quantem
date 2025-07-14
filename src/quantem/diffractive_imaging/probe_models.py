@@ -1,13 +1,19 @@
 from abc import abstractmethod
-from typing import TYPE_CHECKING, Any, Self
+from copy import deepcopy
+from typing import Any, Callable, Self
 from warnings import warn
 
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage as ndi
+import torch
+from tqdm.auto import tqdm
 
 from quantem.core import config
 from quantem.core.datastructures import Dataset2d, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.ml.blocks import reset_weights
+from quantem.core.ml.loss_functions import get_loss_function
 from quantem.core.utils.utils import to_numpy
 from quantem.core.utils.validators import (
     validate_arr_gt,
@@ -16,6 +22,7 @@ from quantem.core.utils.validators import (
     validate_gt,
     validate_tensor,
 )
+from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.complexprobe import (
     POLAR_ALIASES,
     POLAR_SYMBOLS,
@@ -26,12 +33,6 @@ from quantem.diffractive_imaging.ptycho_utils import (
     get_com_2d,
     shift_array,
 )
-
-if TYPE_CHECKING:
-    import torch
-else:
-    if config.get("has_torch"):
-        import torch
 
 
 class ProbeBase(AutoSerialize):
@@ -49,7 +50,7 @@ class ProbeBase(AutoSerialize):
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         device: str = "cpu",
-        rng: np.random.Generator = np.random.default_rng(),
+        rng: np.random.Generator | int | None = None,
         *args,
         **kwargs,
     ):
@@ -298,7 +299,8 @@ class ProbeBase(AutoSerialize):
                     if self.probe_params["polar_parameters"]["C10"] != 0:
                         self.probe_params[k] = -1 * self.probe_params["polar_parameters"]["C10"]
                         continue
-                raise ValueError(f"Missing probe parameter '{k}' in probe_params")
+                print(f"Missing probe parameter '{k}' in probe_params")
+                # raise ValueError(f"Missing probe parameter '{k}' in probe_params")
 
     @abstractmethod
     def to(self, device: str | torch.device):
@@ -427,7 +429,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.initial_probe_array = initial_probe_array
         if initial_probe_array is not None:
-            self.roi_shape = initial_probe_array.shape
+            self.roi_shape = np.array(initial_probe_array.shape)
 
     # TODO write classmethods for from_params and from_array
     # from_params should accept vacuum probe as well
@@ -510,7 +512,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
                 parameters=self.probe_params["polar_parameters"],
                 device="cpu",
             )
-            probes = prb.build()._array
+            probes: np.ndarray = prb.build()._array
         else:
             raise ValueError(
                 "must provide either probe_params or probe in the form of a numpy array or ComplexProbe"
@@ -531,7 +533,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
             ).astype(config.get("dtype_complex"))
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
-        probe_intensity = np.sum(np.abs(np.fft.fft2(probes)) ** 2)
+        probe_intensity = np.sum(np.abs(np.fft.fft2(probes, norm="ortho")) ** 2)
         intensity_norm = np.sqrt(mean_diffraction_intensity / probe_intensity)
         probes *= intensity_norm
         self._initial_probe = self._to_torch(probes)
@@ -550,9 +552,452 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         return "ProbePixelized"
 
     def backward(self, propagated_gradient, obj_patches):
-        obj_normalization = torch.sum(torch.abs(obj_patches[0]) ** 2, dim=0).max()
-        probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization
+        obj_normalization = torch.sum(torch.abs(obj_patches) ** 2, dim=(0, 1)).max()
+        ortho_norm: float = np.prod(self.roi_shape) ** 0.5  # from ortho fft2 # type:ignore
+        probe_grad = torch.sum(propagated_gradient, dim=1) / obj_normalization / ortho_norm
         self._probe.grad = -1 * probe_grad.clone().detach()
 
 
-ProbeModelType = ProbePixelated  # | ProbeParameterized
+class ProbeDIP(ProbeConstraints, ProbeBase):
+    """
+    DIP/model based probe model.
+    """
+
+    def __init__(
+        self,
+        model: "torch.nn.Module",
+        model_input: torch.Tensor | None = None,
+        num_probes: int = 1,
+        probe_params: dict = {},
+        vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
+        input_noise_std: float = 0.025,
+        device: str = "cpu",
+        rng: np.random.Generator | int | None = None,
+    ):
+        super().__init__(
+            num_probes=num_probes,
+            probe_params=probe_params,
+            vacuum_probe_intensity=vacuum_probe_intensity,
+            device=device,
+        )
+        self.rng = rng
+        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
+        self.model = model
+
+        if model_input is None:
+            # Create default model input - will be set properly in set_initial_probe
+            self.model_input = torch.zeros(
+                (1, num_probes, 1, 1), dtype=torch.complex64, device=self.device
+            )
+        else:
+            self.model_input = model_input.clone().detach()
+
+        self.pretrain_target = self.model_input.clone().detach()
+        self._optimizer = None
+        self._scheduler = None
+        self._pretrain_losses = []
+        self._pretrain_lrs = []
+        self._model_input_noise_std = input_noise_std
+
+    @property
+    def name(self) -> str:
+        return "ProbeDIP"
+
+    @property
+    def dtype(self) -> "torch.dtype":
+        if hasattr(self.model, "dtype"):
+            return getattr(self.model, "dtype")
+        else:
+            return self.model_input.dtype
+
+    @property
+    def model(self) -> "torch.nn.Module":
+        """get the DIP model"""
+        return self._model
+
+    @model.setter
+    def model(self, dip: "torch.nn.Module"):
+        """set the DIP model"""
+        if not isinstance(dip, torch.nn.Module):
+            raise TypeError(f"DIP must be a torch.nn.Module, got {type(dip)}")
+        if hasattr(dip, "dtype"):
+            dt = getattr(dip, "dtype")
+            if not dt.is_complex:
+                raise ValueError("DIP model must be a complex-valued model for probe objects")
+        self._model = dip.to(self.device)
+        self.set_pretrained_weights(self._model)
+
+    @property
+    def pretrained_weights(self) -> dict[str, torch.Tensor]:
+        """get the pretrained weights of the DIP model"""
+        return self._pretrained_weights
+
+    def set_pretrained_weights(self, model: torch.nn.Module):
+        """set the pretrained weights of the DIP model"""
+        if not isinstance(model, torch.nn.Module):
+            raise TypeError(f"Pretrained model must be a torch.nn.Module, got {type(model)}")
+        self._pretrained_weights = deepcopy(model.state_dict())
+
+    @property
+    def model_input(self) -> torch.Tensor:
+        """get the model input"""
+        return self._model_input
+
+    @model_input.setter
+    def model_input(self, input_tensor: torch.Tensor):
+        """set the model input"""
+        inp = validate_tensor(
+            input_tensor,
+            name="model_input",
+            dtype=torch.complex64,
+            ndim=4,
+            expand_dims=True,
+        )
+        self._model_input = inp.to(self.device)
+
+    @property
+    def pretrain_target(self) -> torch.Tensor:
+        """get the pretrain target"""
+        return self._pretrain_target
+
+    @pretrain_target.setter
+    def pretrain_target(self, target: torch.Tensor):
+        """set the pretrain target"""
+        if target.ndim == 4:
+            target = target.squeeze(0)
+        target = validate_tensor(
+            target,
+            name="pretrain_target",
+            ndim=3,
+            dtype=torch.complex64,
+            expand_dims=True,
+        )
+        if target.shape[-3:] != self.model_input.shape[-3:]:
+            raise ValueError(
+                f"Pretrain target shape {target.shape} does not match model input shape {self.model_input.shape}"
+            )
+        self._pretrain_target = target.to(self.device)
+
+    @property
+    def _model_input_noise_std(self) -> float:
+        """standard deviation of the gaussian noise added to the model input each forward call"""
+        return self._input_noise_std
+
+    @_model_input_noise_std.setter
+    def _model_input_noise_std(self, std: float):
+        validate_gt(std, 0.0, "input_noise_std", geq=True)
+        self._input_noise_std = std
+
+    @property
+    def optimizer(self) -> torch.optim.Optimizer:
+        """get the optimizer for the DIP model"""
+        if self._optimizer is None:
+            raise ValueError("Optimizer is not set. Use set_optimizer() to set it.")
+        return self._optimizer
+
+    def set_optimizer(self, opt_params: dict):
+        """set the optimizer for the DIP model"""
+        opt_type = opt_params.pop("type")
+        if isinstance(opt_type, torch.optim.Optimizer):
+            self._optimizer = opt_type
+        elif isinstance(opt_type, type):
+            self._optimizer = opt_type(self.model.parameters(), **opt_params)
+        elif opt_type == "adam":
+            self._optimizer = torch.optim.Adam(self.model.parameters(), **opt_params)
+        elif opt_type == "adamw":
+            self._optimizer = torch.optim.AdamW(self.model.parameters(), **opt_params)
+        elif opt_type == "sgd":
+            self._optimizer = torch.optim.SGD(self.model.parameters(), **opt_params)
+        else:
+            raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
+
+    @property
+    def scheduler(
+        self,
+    ) -> (
+        torch.optim.lr_scheduler._LRScheduler
+        | torch.optim.lr_scheduler.CyclicLR
+        | torch.optim.lr_scheduler.ReduceLROnPlateau
+        | torch.optim.lr_scheduler.ExponentialLR
+        | None
+    ):
+        """get the learning rate scheduler for the DIP model"""
+        return self._scheduler
+
+    def set_scheduler(self, params: dict, num_iter: int | None = None) -> None:
+        sched_type: str = params["type"].lower()
+        optimizer = self.optimizer
+        base_LR = optimizer.param_groups[0]["lr"]
+        if sched_type == "none":
+            scheduler = None
+        elif sched_type == "cyclic":
+            scheduler = torch.optim.lr_scheduler.CyclicLR(
+                optimizer,
+                base_lr=params.get("base_lr", base_LR / 4),
+                max_lr=params.get("max_lr", base_LR * 4),
+                step_size_up=params.get("step_size_up", 100),
+                mode=params.get("mode", "triangular2"),
+                cycle_momentum=params.get("momentum", False),
+            )
+        elif sched_type.startswith(("plat", "reducelronplat")):
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                factor=params.get("factor", 0.5),
+                patience=params.get("patience", 10),
+                threshold=params.get("threshold", 1e-3),
+                min_lr=params.get("min_lr", base_LR / 20),
+                cooldown=params.get("cooldown", 20),
+            )
+        elif sched_type in ["exp", "gamma", "exponential"]:
+            if "gamma" in params.keys():
+                gamma = params["gamma"]
+            elif num_iter is not None:
+                fac = params.get("factor", 0.01)
+                gamma = fac ** (1.0 / num_iter)
+            else:
+                gamma = 0.999
+            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
+        else:
+            raise ValueError(f"Unknown scheduler type: {sched_type}")
+        self._scheduler = scheduler
+
+    @property
+    def pretrain_losses(self) -> np.ndarray:
+        return np.array(self._pretrain_losses)
+
+    @property
+    def pretrain_lrs(self) -> np.ndarray:
+        return np.array(self._pretrain_lrs)
+
+    @property
+    def probe(self) -> torch.Tensor:
+        """get the full probe"""
+        probe = self.model(self._model_input)[0]
+        return self.apply_constraints(probe)
+
+    @property
+    def _probe(self) -> torch.Tensor:
+        return self.model(self._model_input)[0]
+
+    def forward(self, fract_positions: torch.Tensor) -> torch.Tensor:
+        """Get shifted probes at fractional positions"""
+        if self._input_noise_std > 0.0:
+            noise = (
+                torch.randn(
+                    self.model_input.shape,
+                    dtype=self.dtype,
+                    device=self.device,
+                    generator=self._rng_torch,
+                )
+                * self._input_noise_std
+            )
+            model_input = self.model_input + noise
+        else:
+            model_input = self.model_input
+
+        probe = self.model(model_input)[0]
+        shifted_probes = fourier_shift_expand(probe, fract_positions).swapaxes(0, 1)
+        return shifted_probes
+
+    def set_initial_probe(
+        self,
+        roi_shape: np.ndarray | tuple,
+        reciprocal_sampling: np.ndarray,
+        mean_diffraction_intensity: float,
+        device: str | None = None,
+        *args,
+    ):
+        """Set initial probe and create appropriate model input"""
+        if device is not None:
+            self._device = device
+        self.roi_shape = np.array(roi_shape)
+        self.reciprocal_sampling = reciprocal_sampling
+        self.mean_diffraction_intensity = mean_diffraction_intensity
+
+        # could check if num_probes corresponds to out_channels of model
+
+        if not torch.any(self.model_input):
+            self.model_input = torch.randn(
+                (1, self.num_probes, *roi_shape),
+                dtype=self.dtype,
+                device=self.device,
+                generator=self._rng_torch,
+            )
+
+    def to(self, device: str | torch.device):
+        """Move all relevant tensors to a different device."""
+        self.device = device
+        self._model = self._model.to(self.device)
+        self._model_input = self._model_input.to(self.device)
+        if hasattr(self, "_initial_probe"):
+            self._initial_probe = self._initial_probe.to(self.device)
+
+    @property
+    def params(self):
+        """optimization parameters"""
+        return self._model.parameters()
+
+    def reset(self):
+        """Reset the object model to its initial or pre-trained state"""
+        self.model.load_state_dict(self.pretrained_weights.copy())
+
+    def pretrain(
+        self,
+        model_input: torch.Tensor | None = None,
+        pretrain_target: torch.Tensor | None = None,
+        reset: bool = False,
+        num_epochs: int = 100,
+        optimizer_params: dict | None = None,
+        scheduler_params: dict | None = None,
+        loss_fn: Callable | str = "l2",
+        apply_constraints: bool = False,
+        show: bool = True,
+    ):
+        if optimizer_params is not None:
+            self.set_optimizer(optimizer_params)
+
+        if scheduler_params is not None:
+            self.set_scheduler(scheduler_params, num_epochs)
+
+        if reset:
+            self._model.apply(reset_weights)
+            self._pretrain_losses = []
+            self._pretrain_lrs = []
+
+        if model_input is not None:
+            self.model_input = model_input
+        if pretrain_target is not None:
+            if pretrain_target.shape[-3:] != self.model_input.shape[-3:]:
+                raise ValueError(
+                    f"Model target shape {pretrain_target.shape} does not match model input shape {self.model_input.shape}"
+                )
+            self.pretrain_target = pretrain_target.clone().detach().to(self.device)
+        elif self.pretrain_target is None:
+            self.pretrain_target = self._initial_probe.clone().detach()
+
+        loss_fn = get_loss_function(loss_fn, self.dtype)
+        self._pretrain(
+            num_epochs=num_epochs,
+            loss_fn=loss_fn,
+            apply_constraints=apply_constraints,
+            show=show,
+        )
+        self.set_pretrained_weights(self.model)
+
+    def _pretrain(
+        self,
+        num_epochs: int,
+        loss_fn: Callable,
+        apply_constraints: bool = False,
+        show: bool = False,
+    ):
+        """Pretrain the DIP model."""
+        if not hasattr(self, "pretrain_target"):
+            raise ValueError("Pretrain target is not set. Use pretrain_target to set it.")
+
+        self._model.train()
+        optimizer = self.optimizer
+        sch = self.scheduler
+        pbar = tqdm(range(num_epochs))
+        output = self.probe
+
+        for a0 in pbar:
+            if self._input_noise_std > 0.0:
+                noise = (
+                    torch.randn(
+                        self.model_input.shape,
+                        dtype=self.dtype,
+                        device=self.device,
+                        generator=self._rng_torch,
+                    )
+                    * self._input_noise_std
+                )
+                model_input = self.model_input + noise
+            else:
+                model_input = self.model_input
+
+            if apply_constraints:
+                output = self.probe
+            else:
+                output = self.model(model_input)[0]
+            loss: torch.Tensor = loss_fn(output, self.pretrain_target)
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad()
+
+            if sch is not None:
+                if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    sch.step(loss.item())
+                else:
+                    sch.step()
+
+            self._pretrain_losses.append(loss.item())
+            self._pretrain_lrs.append(optimizer.param_groups[0]["lr"])
+            pbar.set_description(f"Epoch {a0 + 1}/{num_epochs}, Loss: {loss.item():.3e}, ")
+
+        if show:
+            self.visualize_pretrain(output)
+
+    def visualize_pretrain(self, pred_probe: torch.Tensor):
+        import matplotlib.gridspec as gridspec
+
+        fig = plt.figure(figsize=(12, 6))
+        gs = gridspec.GridSpec(2, 1, height_ratios=[1, 2], hspace=0.3)
+        ax = fig.add_subplot(gs[0])
+        lines = []
+        lines.extend(
+            ax.semilogy(
+                np.arange(len(self._pretrain_losses)), self._pretrain_losses, c="k", label="loss"
+            )
+        )
+        ax.set_ylabel("Loss", color="k")
+        ax.tick_params(axis="y", which="both", colors="k")
+        ax.spines["left"].set_color("k")
+        ax.set_xlabel("Epochs")
+        nx = ax.twinx()
+        nx.spines["left"].set_visible(False)
+        lines.extend(
+            nx.semilogy(
+                np.arange(len(self._pretrain_lrs)),
+                self._pretrain_lrs,
+                c="tab:orange",
+                label="LR",
+            )
+        )
+        labs = [lin.get_label() for lin in lines]
+        nx.legend(lines, labs, loc="upper center")
+        nx.set_ylabel("LRs")
+
+        n_bot = 2
+        gs_bot = gridspec.GridSpecFromSubplotSpec(1, n_bot, subplot_spec=gs[1])
+        axs_bot = np.array([fig.add_subplot(gs_bot[0, i]) for i in range(n_bot)])
+        target = self.pretrain_target
+        show_2d(
+            [
+                np.fft.fftshift(pred_probe.mean(0).cpu().detach().numpy()),
+                np.fft.fftshift(target.mean(0).cpu().detach().numpy()),
+            ],
+            figax=(fig, axs_bot),
+            title=[
+                "Predicted Probe",
+                "Target Probe",
+            ],
+            cmap="magma",
+            cbar=True,
+        )
+        plt.suptitle(
+            f"Final loss: {self._pretrain_losses[-1]:.3e} | Epochs: {len(self._pretrain_losses)}",
+            fontsize=14,
+            y=0.94,
+        )
+        plt.show()
+
+    def backward(self, propagated_gradient, obj_patches):
+        """Backward pass for analytical gradients (not implemented for DIP)"""
+        raise NotImplementedError(
+            f"Analytical gradients are not implemented for {self.name}, use autograd=True"
+        )
+
+
+ProbeModelType = ProbePixelated | ProbeDIP

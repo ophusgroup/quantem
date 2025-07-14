@@ -183,3 +183,6 @@ cython_debug/
 *.zip
 *.h5
 *.npy
+
+# cursor
+.cursor

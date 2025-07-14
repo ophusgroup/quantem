@@ -68,9 +68,9 @@ def fourier_shift_expand(
 ) -> ArrayLike:
     """Fourier-shift array by flat array of positions."""
     phase = fourier_translation_operator(positions, array.shape, expand_dim, dtype=array.dtype)
-    fourier_array = arr.fft2(array)
+    fourier_array = arr.fft2(array, norm="ortho")
     shifted_fourier_array = fourier_array * phase
-    shifted_array = arr.ifft2(shifted_fourier_array)
+    shifted_array = arr.ifft2(shifted_fourier_array, norm="ortho")
     if arr.is_complex(array):
         return shifted_array
     else:
@@ -206,7 +206,7 @@ def shift_array(
         qc = xp.asarray(qc)
 
         p = xp.exp(-(2j * xp.pi) * ((cshift * qc) + (rshift * qr)))
-        shifted_ar = xp.real(xp.fft.ifft2((xp.fft.fft2(ar)) * p))
+        shifted_ar = xp.real(xp.fft.ifft2((xp.fft.fft2(ar, norm="ortho")) * p, norm="ortho"))
 
     else:
         rF = xp.floor(rshift).astype(int).item()
