@@ -415,7 +415,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         return gradient
 
 
-class ObjectDIP(ObjectConstraints, ObjectBase):
+class ObjectDIP(ObjectConstraints):
     """
     DIP/model based object model.
     """
@@ -441,7 +441,7 @@ class ObjectDIP(ObjectConstraints, ObjectBase):
             shape=shape,
         )
         self.constraints = self.DEFAULT_CONSTRAINTS.copy()
-        self.model = model
+        self._model = model
         if model_input is None:
             if np.all(np.array(self.shape) > 0):  # confirm shape is set
                 self.model_input = torch.randn(

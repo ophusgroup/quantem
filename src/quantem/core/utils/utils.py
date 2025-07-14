@@ -7,7 +7,7 @@ import numpy as np
 import scipy.ndimage as ndi
 from matplotlib.patches import Circle, Ellipse
 from scipy.optimize import least_squares
-from tqdm import tqdm
+from tqdm.auto import tqdm
 
 from quantem.core import config
 
