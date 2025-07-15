@@ -9,6 +9,7 @@ import torch.nn as nn
 from quantem.core import config
 from quantem.core.datastructures.dataset4dstem import Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
+from quantem.core.ml.optimizer_mixin import OptimizerMixin
 from quantem.core.utils.utils import electron_wavelength_angstrom, tqdmnd
 from quantem.core.utils.validators import (
     validate_array,
@@ -25,9 +26,14 @@ Dataset models for ptychographic reconstruction.
 """
 
 
-class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
+class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
     _token = object()
     _patch_indices: torch.Tensor
+
+    DEFAULT_LRS = {
+        "descan": 1e-3,
+        "scan_positions": 1e-3,
+    }
 
     def __init__(
         self,
@@ -35,37 +41,65 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         verbose: int | bool = 1,
         _token: object | None = None,
     ):
+        # Initialize parent classes in the correct order, #TODO clean up
+        AutoSerialize.__init__(self)
+        OptimizerMixin.__init__(self)
         torch.nn.Module.__init__(self)
+
+        if _token is not self._token:
+            raise RuntimeError("Use PtychographyDatasetRaster.from_* to instantiate this class.")
+
         if not isinstance(dset, Dataset4dstem):
             raise TypeError(f"Expected a Dataset4dstem instance, got {type(dset)}")
         if dset.units[-1] != "A^-1":
             if dset.units[-1] == "mrad":
                 pass
-                # raise NotImplementedError(
-                #     "The Dataset4dstem must have diffraction units of A^-1, "
-                #     + "but these are in mrad\n Converting from mrad -> A^-1 requires the probe energy,"
-                #     + " so we could either require conversion in advance or accept the energy here?\n"
-                #     + "if energy is hidden in metadata, we could potentially convert on dataset init"
-                # )
             else:
                 raise ValueError(f"Expected diffraction units to be 'A^-1', got {dset.units[-1]}")
+
         self.dset = dset
         self.verbose = verbose
-        self._descan_shifts = nn.Parameter(torch.zeros(self.num_gpts, 2))
-        self._scan_positions_px = nn.Parameter(torch.zeros(self.num_gpts, 2))
-        self.register_buffer("_initial_descan_shifts", self._descan_shifts.clone())
-        self.register_buffer("_initial_scan_positions_px", self._scan_positions_px.clone())
-        self.register_buffer("_intensities", torch.zeros(self.num_gpts, *self.roi_shape))
-        self.register_buffer("_centered_intensities", torch.zeros(self.num_gpts, *self.roi_shape))
-        self.register_buffer("_amplitudes", torch.zeros(self.num_gpts, *self.roi_shape))
-        self.register_buffer("_centered_amplitudes", torch.zeros(self.num_gpts, *self.roi_shape))
-        self.register_buffer(
-            "_patch_indices", torch.zeros(self.num_gpts, *self.roi_shape, dtype=torch.int64)
+        self._preprocessed = False
+
+        # Initialize scan positions and descan shifts as parameters
+        num_positions = self.dset.shape[0] * self.dset.shape[1]
+
+        # scan_positions_px: [num_positions, 2] in pixels
+        self._scan_positions_px = nn.Parameter(
+            torch.zeros((num_positions, 2), dtype=getattr(torch, config.get("dtype_real")))
         )
-        self.register_buffer("_last_patch_positions_px", torch.zeros(self.num_gpts, 2))
+
+        # descan_shifts: [num_positions, 2] descan shifts in pixels
+        self._descan_shifts = nn.Parameter(
+            torch.zeros((num_positions, 2), dtype=getattr(torch, config.get("dtype_real")))
+        )
+
+        # Store initial values for reset
+        self._initial_scan_positions_px = torch.zeros_like(self._scan_positions_px)
+        self._initial_descan_shifts = torch.zeros_like(self._descan_shifts)
+
+        # Initialize other attributes
+        self.register_buffer("_intensities", torch.zeros(num_positions, *self.roi_shape))
+        self.register_buffer("_centered_intensities", torch.zeros(num_positions, *self.roi_shape))
+        self.register_buffer("_amplitudes", torch.zeros(num_positions, *self.roi_shape))
+        self.register_buffer("_centered_amplitudes", torch.zeros(num_positions, *self.roi_shape))
+        self.register_buffer(
+            "_patch_indices", torch.zeros(num_positions, *self.roi_shape, dtype=torch.int64)
+        )
+        self.register_buffer("_last_patch_positions_px", torch.zeros(num_positions, 2))
         self._constraints = {}
         self._probe_energy = None
-        self._preprocessed = False
+
+    def get_optimization_parameters(self):
+        """Get the combined descan and scan position parameters for optimization."""
+        return [self._descan_shifts, self._scan_positions_px]
+
+    def zero_grad(self, set_to_none: bool = True) -> None:
+        """Override to use OptimizerMixin's zero_grad if optimizer exists, else torch.nn.Module's."""
+        if self.has_optimizer():
+            OptimizerMixin.zero_grad(self)
+        else:
+            torch.nn.Module.zero_grad(self, set_to_none=set_to_none)
 
     @classmethod
     def from_file(cls, file_path: str, file_type: str, verbose: int | bool = 1) -> Self:
@@ -149,11 +183,10 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         shifts = validate_tensor(
             shifts,
             name="descan_shifts",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), 2),
+            dtype=getattr(torch, config.get("dtype_real")),
+            shape=(self.dset.shape[0] * self.dset.shape[1], 2),
         )
-        with torch.no_grad():
-            self._descan_shifts.copy_(shifts)
+        self._descan_shifts.data = shifts.to(self.device)
 
     @property
     def scan_positions_px(self) -> nn.Parameter:
@@ -164,14 +197,14 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         positions = validate_tensor(
             positions,
             name="scan_positions_px",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), 2),
+            dtype=getattr(torch, config.get("dtype_real")),
+            shape=(self.dset.shape[0] * self.dset.shape[1], 2),
         )
-        with torch.no_grad():
-            self._scan_positions_px.copy_(positions)
+        self._scan_positions_px.data = positions.to(self.device)
 
     @property
-    def positions_px_fractional(self) -> torch.Tensor:  # TODO remove temp
+    def positions_px_fractional(self) -> torch.Tensor:
+        """fractional component of positions_px_fractional"""
         return self.scan_positions_px - torch.round(self.scan_positions_px)
 
     # endregion --- optimizable parameters ---
@@ -187,8 +220,8 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         shifts = validate_tensor(
             shifts,
             name="initial_descan_shifts",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), 2),
+            dtype=getattr(torch, config.get("dtype_real")),
+            shape=(self.dset.shape[0] * self.dset.shape[1], 2),
         )
         self._initial_descan_shifts = shifts
 
@@ -202,8 +235,8 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         positions = validate_tensor(
             positions,
             name="initial_scan_positions_px",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), 2),
+            dtype=getattr(torch, config.get("dtype_real")),
+            shape=(self.dset.shape[0] * self.dset.shape[1], 2),
         )
         self._initial_scan_positions_px = positions
 
@@ -216,11 +249,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
 
     @centered_amplitudes.setter
     def centered_amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
+        num_positions = self.dset.shape[0] * self.dset.shape[1]
         arr = validate_tensor(
             arr,
             name="centered_amplitudes",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), *self.roi_shape),
+            dtype=getattr(torch, config.get("dtype_real")),
+            ndim=3,
+            shape=(num_positions, *self.roi_shape),
         )
         self._centered_amplitudes = arr
 
@@ -231,11 +266,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
 
     @amplitudes.setter
     def amplitudes(self, arr: "np.ndarray | torch.Tensor") -> None:
+        num_positions = self.dset.shape[0] * self.dset.shape[1]
         arr = validate_tensor(
             arr,
             name="amplitudes",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), *self.roi_shape),
+            dtype=getattr(torch, config.get("dtype_real")),
+            ndim=3,
+            shape=(num_positions, *self.roi_shape),
         )
         self._amplitudes = arr
 
@@ -248,11 +285,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
 
     @centered_intensities.setter
     def centered_intensities(self, arr: "np.ndarray | torch.Tensor") -> None:
+        num_positions = self.dset.shape[0] * self.dset.shape[1]
         arr = validate_tensor(
             arr,
             name="centered_intensities",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), *self.roi_shape),
+            dtype=getattr(torch, config.get("dtype_real")),
+            ndim=3,
+            shape=(num_positions, *self.roi_shape),
         )
         self._centered_intensities = arr
 
@@ -263,11 +302,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
 
     @intensities.setter
     def intensities(self, arr: "np.ndarray | torch.Tensor") -> None:
+        num_positions = self.dset.shape[0] * self.dset.shape[1]
         arr = validate_tensor(
             arr,
             name="intensities",
-            dtype=config.get("dtype_real"),
-            shape=(np.prod(self.gpts), *self.roi_shape),
+            dtype=getattr(torch, config.get("dtype_real")),
+            ndim=3,
+            shape=(num_positions, *self.roi_shape),
         )
         self._intensities = arr
 
@@ -533,13 +574,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         if not hasattr(self, "_last_patch_positions_px"):
             return True
 
-        old_pos = torch.round(self._last_patch_positions_px)
+        old_pos = torch.round(self._last_patch_positions_px.to(self.device))
         new_pos = torch.round(self.scan_positions_px)
-        return not torch.equal(old_pos, new_pos)  # TODO test this
+        return not torch.equal(old_pos, new_pos)
 
     def reset(self) -> None:
-        self.descan_shifts = self.initial_descan_shifts.clone()
-        self.scan_positions_px = self.initial_scan_positions_px.clone()
+        self.descan_shifts = self.initial_descan_shifts.clone().to(self.device)
+        self.scan_positions_px = self.initial_scan_positions_px.clone().to(self.device)
 
     # endregion --- class methods ---
 
@@ -550,19 +591,16 @@ class DatasetConstraints(BaseConstraints, PtychographyDatasetBase):
         "descan_shifts_constant": False,
     }
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
     def apply_soft_constraints(self, descan_shifts: torch.Tensor) -> torch.Tensor:
         self._soft_constraint_loss = {}
+        loss = torch.tensor(0, device=self.device, dtype=getattr(torch, config.get("dtype_real")))
 
-        descan_tv_loss = self.get_descan_tv_loss(
-            descan_shifts,
-            weight=self.constraints["descan_tv_weight"],
-        )
-        self._soft_constraint_loss["descan_tv_loss"] = descan_tv_loss
+        if self.constraints.get("tv_descan", 0) > 0:
+            tv_loss = self.get_descan_tv_loss(descan_shifts, self.constraints["tv_descan"])
+            loss = loss + tv_loss
+            self._soft_constraint_loss["tv_descan"] = tv_loss
 
-        return descan_tv_loss
+        return loss
 
     def get_descan_tv_loss(self, descan_shifts: torch.Tensor, weight: float = 0.0) -> torch.Tensor:
         loss = torch.tensor(0, device=self.device, dtype=getattr(torch, config.get("dtype_real")))
@@ -585,7 +623,7 @@ class DatasetConstraints(BaseConstraints, PtychographyDatasetBase):
         return positions
 
 
-class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
+class PtychographyDatasetRaster(DatasetConstraints):
     def forward(
         self,
         batch_indices: np.ndarray | torch.Tensor,

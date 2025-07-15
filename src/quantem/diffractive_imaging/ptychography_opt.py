@@ -1,4 +1,4 @@
-from typing import TYPE_CHECKING, Any, Generator, Iterator, Sequence
+from typing import TYPE_CHECKING
 
 from quantem.core import config
 from quantem.diffractive_imaging.ptychography_base import PtychographyBase
@@ -15,16 +15,24 @@ class PtychographyOpt(PtychographyBase):
     A class for performing phase retrieval using the Ptychography algorithm.
     """
 
-    OPTIMIZABLE_VALS = ["object", "probe", "descan", "scan_positions"]
-    DEFAULT_LRS = {
-        "object": 5e-3,
-        "probe": 1e-3,
-        "descan": 1e-3,
-        "scan_positions": 1e-3,
-        "tv_weight_z": 0,
-        "tv_weight_yx": 0,
-    }
+    OPTIMIZABLE_VALS = ["object", "probe", "dataset"]
     DEFAULT_OPTIMIZER_TYPE = "adam"
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._optimizer_params = {}
+        self._scheduler_params = {}
+
+    def _get_default_lr(self, key: str) -> float:
+        """Get default learning rate for a given optimization key."""
+        if key == "object":
+            return self.obj_model.DEFAULT_LRS.get("object", 5e-3)
+        elif key == "probe":
+            return self.probe_model.DEFAULT_LRS.get("probe", 1e-3)
+        elif key == "dataset":
+            return 1e-3  # Dataset model uses different keys, so use fallback
+        else:
+            raise ValueError(f"Unknown optimization key: {key}")
 
     # region --- explicit properties and setters ---
 
@@ -36,21 +44,23 @@ class PtychographyOpt(PtychographyBase):
     @optimizer_params.setter
     def optimizer_params(self, d: dict) -> None:
         """
-        # Takes a dictionary {key: torch.optim.Adam(params=[blah], lr=[blah]), ...}
         Takes a dictionary:
         {
-            "key1": {
+            "object": {
                 "type": "adam",
                 "lr": 0.001,
                 },
-            "key2": {
-                ...
+            "probe": {
+                "type": "adam",
+                "lr": 0.001,
+                },
+            "dataset": {
+                "type": "adam",
+                "lr": 0.001,
                 },
             ...
         }
         """
-        # resets _optimizers as well
-        self._optimizers = {}
         self._optimizer_params = {}
         if isinstance(d, (tuple, list)):
             d = {k: {} for k in d}
@@ -63,68 +73,44 @@ class PtychographyOpt(PtychographyBase):
             if "type" not in v.keys():
                 v["type"] = self.DEFAULT_OPTIMIZER_TYPE
             if "lr" not in v.keys():
-                v["lr"] = self.DEFAULT_LRS[k]
+                v["lr"] = self._get_default_lr(k)
             self._optimizer_params[k] = v
 
     @property
-    def optimizers(self) -> dict[str, torch.optim.Adam | torch.optim.AdamW]:
-        return self._optimizers
+    def optimizers(self) -> dict[str, "torch.optim.Optimizer"]:
+        """Get optimizers from all models."""
+        optimizers = {}
+        if "object" in self._optimizer_params and self.obj_model.has_optimizer():
+            optimizers["object"] = self.obj_model.optimizer
+        if "probe" in self._optimizer_params and self.probe_model.has_optimizer():
+            optimizers["probe"] = self.probe_model.optimizer
+        if "dataset" in self._optimizer_params and self.dset.has_optimizer():
+            optimizers["dataset"] = self.dset.optimizer
+        return optimizers
 
     def set_optimizers(self):
-        """Reset all optimizers and set them according to the optimizer_params."""
-        for key, _ in self._optimizer_params.items():
+        """Set optimizers for each model."""
+        for key, params in self._optimizer_params.items():
             if key == "object":
-                self._add_optimizer(key, self.obj_model.params, self._optimizer_params[key])
+                self.obj_model.set_optimizer(params)
             elif key == "probe":
-                self._add_optimizer(key, self.probe_model.params, self._optimizer_params[key])
-            elif key == "descan":
-                self._add_optimizer(key, self.dset.descan_shifts, self._optimizer_params[key])
-            elif key == "scan_positions":
-                self._add_optimizer(key, self.dset.scan_positions_px, self._optimizer_params[key])
+                self.probe_model.set_optimizer(params)
+            elif key == "dataset":
+                self.dset.set_optimizer(params)
             else:
                 raise ValueError(
                     f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
                 )
 
     def remove_optimizer(self, key: str) -> None:
-        self._optimizers.pop(key, None)
+        """Remove optimizer from a specific model."""
         self._optimizer_params.pop(key, None)
-        return
-
-    def _add_optimizer(
-        self,
-        key: str,
-        params: "torch.Tensor|Sequence[torch.Tensor]|Iterator[torch.Tensor]",
-        opt_params: dict,
-    ) -> None:
-        """Can be used to add an optimizer without resetting the other optimizers."""
-        if key not in self.OPTIMIZABLE_VALS:
-            raise ValueError(
-                f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
-            )
-        if isinstance(params, torch.Tensor):
-            params = [params]
-        elif isinstance(params, Generator):
-            params = list(params)
-        [p.requires_grad_(True) for p in params]
-        self.optimizer_params[key] = opt_params
-        opt_params = opt_params.copy()
-        opt_type = opt_params.pop("type")
-        opt = None
-        if isinstance(opt_type, type):
-            opt = opt_type(params, **opt_params)
-        elif isinstance(opt_type, str):
-            if opt_type.lower() == "adam":
-                opt = torch.optim.Adam(params, **opt_params)
-            elif opt_type.lower() == "adamw":
-                opt = torch.optim.AdamW(params, **opt_params)
-            elif opt_type.lower() == "sgd":
-                opt = torch.optim.SGD(params, **opt_params)
-        if opt is None:
-            raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
-        # if key in self.optimizers.keys():
-        #     self.vprint(f"Key {key} is already in optimizers, overwriting.")
-        self._optimizers[key] = opt
+        if key == "object":
+            self.obj_model.reset_optimizer()
+        elif key == "probe":
+            self.probe_model.reset_optimizer()
+        elif key == "dataset":
+            self.dset.reset_optimizer()
 
     @property
     def scheduler_params(self) -> dict[str, dict]:
@@ -136,17 +122,16 @@ class PtychographyOpt(PtychographyBase):
         """
         Takes a dictionary:
         {
-            "key1": {
+            "object": {
                 "type": "cyclic",
                 "base_lr": 0.001,
                 },
-            "key2": {
+            "probe": {
                 ...
                 },
             ...
         }
         """
-        self._schedulers = {}
         for k, v in d.items():
             if not any(v):
                 continue
@@ -161,158 +146,66 @@ class PtychographyOpt(PtychographyBase):
         self._scheduler_params = d
 
     @property
-    def schedulers(
-        self,
-    ) -> dict[
-        str,
-        (
-            torch.optim.lr_scheduler.CyclicLR
-            | torch.optim.lr_scheduler.ReduceLROnPlateau
-            | torch.optim.lr_scheduler.ExponentialLR
-            | None
-        ),
-    ]:
-        return self._schedulers
+    def schedulers(self) -> dict[str, "torch.optim.lr_scheduler._LRScheduler"]:
+        """Get schedulers from all models."""
+        schedulers = {}
+        if "object" in self._scheduler_params and self.obj_model.scheduler is not None:
+            schedulers["object"] = self.obj_model.scheduler
+        if "probe" in self._scheduler_params and self.probe_model.scheduler is not None:
+            schedulers["probe"] = self.probe_model.scheduler
+        if "dataset" in self._scheduler_params and self.dset.scheduler is not None:
+            schedulers["dataset"] = self.dset.scheduler
+        return schedulers
 
     def set_schedulers(
         self,
         params: dict[str, dict],
         num_iter: int | None = None,
     ):
-        """
-        TODO allow for new schedulers to be passed in when adding new optimizers without
-        removing the old schedulers or overwrtiting them. Not entirely sure what usecases there
-        will be for this.
-
-        Sets the schedulers for the optimizer from a dictionary. Expects a dictionary of the form:
-        {
-            "optimizable_key1": {
-                "type": "scheduler_type",
-                "scheduler_kwarg": scheduler_kwarg_value,
-                ...
-            },
-            "optimizable_key2": {
-                "type": "scheduler_type",
-                "scheduler_kwarg": scheduler_kwarg_value,
-                ...
-            },
-            ...
-        }
-        where the keys are the same as the keys in self.OPTIMIZABLE_VALS.
-
-        The scheduler type can be one of the following:
-        - "cyclic"
-        - "plateau" or "reducelronplateau"
-        - "exponential"
-        - None
-
-        The num_iter kwarg is only used for exponential schedulers and if a "factor" is given
-        as a scheduler_kwarg instead of gamma. In that case, the gamma is calculated from num_iter
-        and the factor.
-
-        TODO could update this to allow passing key:optimizer directly, would likely need to
-        rewrite get_schedulers to check the tpye
-        """
-        if not any(self.optimizers):
-            raise NameError("self.optimizers have not yet been set.")
-        self._schedulers = self._get_schedulers(
-            params=params,
-            optimizers=self.optimizers,
-            num_iter=num_iter,
-        )
-
-    def _get_schedulers(
-        self,
-        params: dict[str, dict],
-        optimizers: dict,
-        num_iter: int | None = None,
-    ) -> dict[
-        str,
-        (
-            torch.optim.lr_scheduler.CyclicLR
-            | torch.optim.lr_scheduler.ReduceLROnPlateau
-            | torch.optim.lr_scheduler.ExponentialLR
-            | None
-        ),
-    ]:
-        """
-        return schedulers for a given set of optimizers. Kept seperate from schedulers.setter so
-        that it can be called for pre-training
-        """
-        schedulers = {}
-        for opt_key, p in params.items():
-            if not any(p):
+        """Set schedulers for each model."""
+        for key, scheduler_params in params.items():
+            if not any(scheduler_params):
                 continue
-            elif opt_key not in self.OPTIMIZABLE_VALS:
-                raise KeyError(
-                    f"Scheduler got bad key {opt_key}, schedulers can only be attached to one of {self.OPTIMIZABLE_VALS}"
+            if key not in self.OPTIMIZABLE_VALS:
+                raise ValueError(
+                    f"key to be optimized, {key}, not in allowed keys: {self.OPTIMIZABLE_VALS}"
                 )
-            elif opt_key not in optimizers.keys():
-                raise KeyError(f"optimizers does not have an optimizer for: {opt_key}")
-            else:
-                schedulers[opt_key] = self._get_scheduler(
-                    optimizer=optimizers[opt_key], params=p, num_iter=num_iter
-                )
-        return schedulers
 
-    def _get_scheduler(
-        self,
-        optimizer: torch.optim.Adam,
-        params: dict[str, Any] | torch.optim.lr_scheduler._LRScheduler,
-        num_iter: int | None = None,
-    ) -> (
-        torch.optim.lr_scheduler._LRScheduler
-        | torch.optim.lr_scheduler.CyclicLR
-        | torch.optim.lr_scheduler.ReduceLROnPlateau
-        | torch.optim.lr_scheduler.ExponentialLR
-        | None
-    ):
-        if isinstance(params, torch.optim.lr_scheduler._LRScheduler):
-            return params
+            if key == "object":
+                self.obj_model.set_scheduler(scheduler_params, num_iter)
+            elif key == "probe":
+                self.probe_model.set_scheduler(scheduler_params, num_iter)
+            elif key == "dataset":
+                self.dset.set_scheduler(scheduler_params, num_iter)
 
-        sched_type: str = params["type"].lower()
-        base_LR = optimizer.param_groups[0]["lr"]
-        if sched_type == "none":
-            scheduler = None
-        elif sched_type == "cyclic":
-            scheduler = torch.optim.lr_scheduler.CyclicLR(
-                optimizer,
-                base_lr=params.get("base_lr", base_LR / 4),
-                max_lr=params.get("max_lr", base_LR * 4),
-                step_size_up=params.get("step_size_up", 100),
-                step_size_down=params.get("step_size_down", params.get("step_size_up", 100)),
-                mode=params.get("mode", "triangular2"),
-                cycle_momentum=params.get("momentum", False),
-            )
-        elif sched_type.startswith(("plat", "reducelronplat")):
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=params.get("factor", 0.5),
-                patience=params.get("patience", 10),
-                threshold=params.get("threshold", 1e-3),
-                min_lr=params.get("min_lr", base_LR / 20),
-                cooldown=params.get("cooldown", 50),
-            )
-        elif sched_type in ["exp", "gamma", "exponential"]:
-            if "gamma" in params.keys():
-                gamma = params["gamma"]
-            elif num_iter is not None:
-                fac = params.get("factor", 0.01)
-                gamma = fac ** (1.0 / num_iter)
-            else:
-                gamma = 0.999
-            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-        else:
-            raise ValueError(f"Unknown scheduler type: {sched_type}")
-        return scheduler
+    def step_optimizers(self):
+        """Step all active optimizers."""
+        for key in self._optimizer_params.keys():
+            if key == "object" and self.obj_model.has_optimizer():
+                self.obj_model.step_optimizer()
+            elif key == "probe" and self.probe_model.has_optimizer():
+                self.probe_model.step_optimizer()
+            elif key == "dataset" and self.dset.has_optimizer():
+                self.dset.step_optimizer()
+
+    def zero_grad_all(self):
+        """Zero gradients for all active optimizers."""
+        for key in self._optimizer_params.keys():
+            if key == "object" and self.obj_model.has_optimizer():
+                self.obj_model.zero_grad()
+            elif key == "probe" and self.probe_model.has_optimizer():
+                self.probe_model.zero_grad()
+            elif key == "dataset" and self.dset.has_optimizer():
+                self.dset.zero_grad()
+
+    def step_schedulers(self, loss: float | None = None):
+        """Step all active schedulers."""
+        for key in self._scheduler_params.keys():
+            if key == "object" and self.obj_model.scheduler is not None:
+                self.obj_model.step_scheduler(loss)
+            elif key == "probe" and self.probe_model.scheduler is not None:
+                self.probe_model.step_scheduler(loss)
+            elif key == "dataset" and self.dset.scheduler is not None:
+                self.dset.step_scheduler(loss)
 
     # endregion --- explicit properties and setters ---
-
-    # region --- implicit properties ---
-
-    # endregion --- implicit properties ---
-
-    # region --- methods ---
-
-    # endregion --- methods ---

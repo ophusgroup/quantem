@@ -92,10 +92,7 @@ class PtychographyBase(AutoSerialize):
         self.obj_fov_mask = torch.ones(self.dset._obj_shape_full_2d(self.obj_padding_px).shape)
         self.batch_size = self.dset.num_gpts
 
-        self._schedulers = {}
-        self._optimizers = {}
-        self._scheduler_params = {}
-        self._optimizer_params = {}
+        # Remove centralized optimizer storage - now managed by individual models
 
         self.set_probe_model(probe_model)
         self.set_obj_model(obj_model)
@@ -125,6 +122,7 @@ class PtychographyBase(AutoSerialize):
         Rather than passing 100 flags here, I'm going to suggest that if users want to run very
         customized pre-processing, they just call the functions themselves directly.
         """
+        # self.to(self.device)
         self.obj_padding_px = obj_padding_px
         if not self.dset.preprocessed:
             self.dset.preprocess(
@@ -304,8 +302,10 @@ class PtychographyBase(AutoSerialize):
 
     @property
     def slice_thicknesses(self) -> np.ndarray:
-        return self._to_numpy(self._obj_model.slice_thicknesses)
-        # return self._to_numpy(self._slice_thicknesses)
+        slice_thick = self._obj_model.slice_thicknesses
+        if slice_thick is None:
+            return np.array([])
+        return self._to_numpy(slice_thick)
 
     @slice_thicknesses.setter
     def slice_thicknesses(self, val: float | Sequence | None) -> None:
@@ -909,10 +909,12 @@ class PtychographyBase(AutoSerialize):
                 targets = self.dset.centered_intensities[batch_indices]
             preds = pred_intensities
             norm = self.dset.mean_diffraction_intensity**1.5  # otherwise sgd diverges??
+
+        diff = preds - targets
         if loss_type == "l1":
-            error = arr.sum(arr.abs(preds - targets))
+            error = arr.sum(arr.abs(diff))
         elif loss_type == "l2":
-            error = arr.sum(arr.abs(preds - targets) ** 2)
+            error = arr.sum(arr.abs(diff) ** 2)
         else:
             raise ValueError(f"Unknown loss type {loss_type}, should be 'l1' or 'l2'")
         loss = error / norm

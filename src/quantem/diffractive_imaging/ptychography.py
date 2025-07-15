@@ -26,43 +26,6 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
     A class for performing phase retrieval using the Ptychography algorithm.
     """
 
-    OPTIMIZABLE_VALS = ["object", "probe", "descan", "scan_positions"]
-    DEFAULT_LRS = {
-        "object": 5e-3,
-        "probe": 1e-3,
-        "descan": 1e-3,
-        "scan_positions": 1e-3,
-        "tv_weight_z": 0,
-        "tv_weight_yx": 0,
-    }
-    DEFAULT_OPTIMIZER_TYPE = "adam"
-    # _token = object()
-
-    def __init__(
-        self,
-        dset: DatasetModelType,
-        obj_model: ObjectModelType,
-        probe_model: ProbeModelType,
-        detector_model: DetectorModelType,
-        logger: LoggerPtychography | None = None,
-        device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
-        verbose: int | bool = True,
-        rng: np.random.Generator | int | None = None,
-        _token: None | object = None,
-    ):
-        super().__init__(
-            dset=dset,
-            obj_model=obj_model,
-            probe_model=probe_model,
-            detector_model=detector_model,
-            logger=logger,
-            device=device,
-            verbose=verbose,
-            rng=rng,
-            _token=_token,
-        )
-        self._autograd = True
-
     @classmethod
     def from_models(
         cls,
@@ -103,22 +66,24 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
 
     def reset_recon(self) -> None:
         super().reset_recon()
-        self._optimizers = {}
-        self._schedulers = {}
+        self.obj_model.reset_optimizer()
+        self.probe_model.reset_optimizer()
+        self.dset.reset_optimizer()
 
     def _record_lrs(self) -> None:
         optimizers = self.optimizers
         all_keys = set(self._epoch_lrs.keys()) | set(optimizers.keys())
         for key in all_keys:
             if key in self._epoch_lrs.keys():
-                if key in self.optimizers.keys():
-                    self._epoch_lrs[key].append(self.optimizers[key].param_groups[0]["lr"])
+                if key in optimizers.keys():
+                    self._epoch_lrs[key].append(optimizers[key].param_groups[0]["lr"])
                 else:
                     self._epoch_lrs[key].append(0.0)
             else:  # new optimizer
-                prev_lrs = [0.0] * self.num_epochs
-                # prev_lrs = [0.0] * (self.num_epochs - 1)
-                prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
+                # For new optimizers, backfill with current LR for previous epochs
+                current_epoch = self.num_epochs - 1  # -1 because loss was just appended
+                prev_lrs = [optimizers[key].param_groups[0]["lr"]] * current_epoch
+                prev_lrs.append(optimizers[key].param_groups[0]["lr"])
                 self._epoch_lrs[key] = prev_lrs
 
     def _reset_epoch_constraints(self) -> None:
@@ -209,7 +174,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         if new_scheduler:
             self.set_schedulers(self.scheduler_params, num_iter=num_iter)
 
-        learn_descan = True if "descan" in self.optimizer_params.keys() else False
+        learn_descan = True if "dataset" in self.optimizer_params.keys() else False
         batcher = SimpleBatcher(self.dset.num_gpts, self.batch_size, rng=self.rng)
         pbar = tqdm(range(num_iter), disable=not self.verbose)
 
@@ -253,47 +218,22 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                     patch_indices,
                     targets,
                 )
-                for opt in self.optimizers.values():
-                    opt.step()
-                    opt.zero_grad()
+                self.step_optimizers()
+                self.zero_grad_all()
 
-                epoch_loss += total_loss.item()
-                batch_losses.append(
-                    {
-                        "data_loss": loss.item(),
-                        "constraint_loss": soft_constraint_loss.item(),
-                        "total_loss": total_loss.item(),
-                    }
-                )
+                batch_losses.append(total_loss.item())
 
-            for sch in self.schedulers.values():
-                if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    sch.step(epoch_loss)
-                elif sch is not None:
-                    sch.step()
-
-            self._record_lrs()
+            epoch_loss = float(np.mean(batch_losses))
             self._epoch_losses.append(epoch_loss)
-            self._epoch_recon_types.append(f"{self.obj_model.name}-{self.probe_model.name}")
-            if self.store_iterations and (a0 % self.store_iterations_every == 0):
-                self.append_recon_iteration(self.obj_model.obj, self.probe_model.probe)
+            self._record_lrs()
 
-            pbar.set_description(f"Loss: {epoch_loss:.3e}, ")
+            # Step schedulers with current loss
+            self.step_schedulers(epoch_loss)
 
-            if self.logger is not None:
-                current_lrs = {
-                    param_name: optimizer.param_groups[0]["lr"]
-                    for param_name, optimizer in self.optimizers.items()
-                    if optimizer is not None
-                }
+            if self.store_iterations and (a0 % self.store_iterations_every) == 0:
+                self.append_recon_iteration()
 
-                self.logger.log_epoch(
-                    ptychography_instance=self,
-                    epoch=a0,
-                    epoch_loss=epoch_loss,
-                    batch_losses=batch_losses,
-                    learning_rates=current_lrs,
-                )
+            pbar.set_description(f"Epoch {a0 + 1}/{num_iter}, Loss: {epoch_loss:.3e}")
 
         return self
 
@@ -307,7 +247,6 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         patch_indices: torch.Tensor,
         amplitudes: torch.Tensor,
     ):
-        """ """
         if autograd:
             loss.backward()
         else:

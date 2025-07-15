@@ -200,66 +200,46 @@ class PtychographyVisualizations(PtychographyBase):
 
         lines = []
         epochs = np.arange(len(self.epoch_losses))
-        # colors = plt.cm.tab20.colors # type:ignore  # TODO make a better dual categorical cmap
-        # colors = ["blue", "royalblue", "darkorange", "orange", "green", "limegreen", "red", "coral"]
-        # colors = ["royalblue", "darkorange", "limegreen", "coral"]
         colors = plt.cm.Set1.colors  # type:ignore
+        colors = config.get("viz.colors.set")[1:]
         lines.extend(ax.semilogy(epochs, self.epoch_losses, c="k", label="loss"))
         ax.set_ylabel("Loss", color="k")
         ax.tick_params(axis="y", which="both", colors="k")
         ax.spines["left"].set_color("k")
-        # for label in ax.get_yticklabels():
-        #     label.set_color(colors[0])
         ax.set_xlabel("Epochs")
-        nx = ax.twinx()
-        nx.spines["left"].set_visible(False)
 
-        if plot_lrs:
-            obj_recon_types = np.array([mode.split("-")[0] for mode in self.epoch_recon_types])
-            probe_recon_types = np.array([mode.split("-")[1] for mode in self.epoch_recon_types])
-            obj_modes = np.unique(obj_recon_types)
-            probe_modes = np.unique(probe_recon_types)
+        if plot_lrs and len(self.epoch_lrs) > 0:
+            nx = ax.twinx()
+            nx.spines["left"].set_visible(False)
 
-            for i, (omode, pmode) in enumerate(zip(obj_modes, probe_modes)):
-                if "GD" in omode or "GD" in pmode:
-                    GD_inds = np.where(obj_recon_types == omode)[0]
-                    lines.append(
-                        ax.axvspan(
-                            min(epochs[GD_inds]) - 0.1,
-                            max(epochs[GD_inds]) + 0.1,
-                            color=colors[1],
-                            alpha=0.3,
-                            label="GD",
-                        )
-                    )
-                else:
-                    obj_inds = np.where(obj_recon_types == omode)[0]
+            # Directly plot learning rates for each optimizer type
+            color_idx = 0
+            for lr_type, lr_values in self.epoch_lrs.items():
+                if len(lr_values) > 0:
+                    # Create epochs array that matches lr_values length
+                    lr_epochs = np.arange(len(lr_values))
+                    linestyle = "--" if lr_type == "probe" else "-"
                     lines.extend(
                         nx.semilogy(
-                            epochs[obj_inds],
-                            self.epoch_lrs["object"][obj_inds],
-                            c=colors[i],
-                            label=omode + " LR",
+                            lr_epochs,
+                            lr_values,
+                            c=colors[color_idx % len(colors)],
+                            label=f"{lr_type} LR",
+                            linestyle=linestyle,
                         )
                     )
-                    probe_inds = np.where(probe_recon_types == pmode)[0]
-                    if "probe" in self.epoch_lrs.keys():
-                        lines.extend(
-                            nx.semilogy(
-                                epochs[probe_inds],
-                                self.epoch_lrs["probe"][probe_inds],
-                                c=colors[i],
-                                label=pmode + " LR",
-                                linestyle="--",
-                            )
-                        )
-                nx.set_ylabel("LR", c=colors[0])
-                nx.spines["right"].set_color(colors[0])
-                nx.tick_params(axis="y", which="both", colors=colors[0])
+                    color_idx += 1
 
-        labs = [lin.get_label() for lin in lines]
-        nx.legend(lines, labs, loc="upper center")
-        nx.set_ylabel("LRs")
+            nx.set_ylabel("LRs", c=colors[0])
+            nx.spines["right"].set_color(colors[0])
+            nx.tick_params(axis="y", which="both", colors=colors[0])
+
+            labs = [lin.get_label() for lin in lines]
+            nx.legend(lines, labs, loc="upper center")
+        else:
+            # No learning rates to plot, just show loss
+            pass
+
         ax.set_xbound(-2, np.max(epochs if np.any(epochs) else [1]) + 2)
         if figax is None:
             plt.tight_layout()

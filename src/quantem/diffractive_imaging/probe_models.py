@@ -14,6 +14,7 @@ from quantem.core.datastructures import Dataset2d, Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.ml.blocks import reset_weights
 from quantem.core.ml.loss_functions import get_loss_function
+from quantem.core.ml.optimizer_mixin import OptimizerMixin
 from quantem.core.utils.utils import to_numpy
 from quantem.core.utils.validators import (
     validate_arr_gt,
@@ -35,13 +36,16 @@ from quantem.diffractive_imaging.ptycho_utils import (
 )
 
 
-class ProbeBase(AutoSerialize):
+class ProbeBase(OptimizerMixin, AutoSerialize):
     DEFAULT_PROBE_PARAMS = {
         "energy": None,
         "defocus": None,
         "semiangle_cutoff": None,
         "rolloff": 2,
         "polar_parameters": {},
+    }
+    DEFAULT_LRS = {
+        "probe": 1e-3,
     }
 
     def __init__(
@@ -54,6 +58,7 @@ class ProbeBase(AutoSerialize):
         *args,
         **kwargs,
     ):
+        super().__init__(*args, **kwargs)
         # self._shape = shape
         self.num_probes = num_probes
         self._device = device
@@ -62,6 +67,17 @@ class ProbeBase(AutoSerialize):
         self.vacuum_probe_intensity = vacuum_probe_intensity
         self._constraints = {}
         self.rng = rng
+
+    def get_optimization_parameters(self):
+        """Get the parameters that should be optimized for this model."""
+        try:
+            params = self.params
+            if params is None:
+                return []
+            return params
+        except NotImplementedError:
+            # This happens when params is not implemented yet in abstract base
+            return []
 
     @property
     def shape(self) -> np.ndarray:
@@ -181,8 +197,8 @@ class ProbeBase(AutoSerialize):
         elif not isinstance(rng, np.random.Generator):
             raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
         self._rng = rng
-        seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed from the generator
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
+        self._rng_seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed
+        self._rng_torch = torch.Generator(device=self.device).manual_seed(self._rng_seed % 2**32)
 
     @property
     def reciprocal_sampling(self) -> np.ndarray:
@@ -306,7 +322,7 @@ class ProbeBase(AutoSerialize):
     def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
         self.device = device
-        raise NotImplementedError()
+        self._rng_torch = torch.Generator(device=device).manual_seed(self._rng_seed % 2**32)
 
     @property
     @abstractmethod
@@ -327,15 +343,12 @@ class ProbeConstraints(BaseConstraints, ProbeBase):
         "center_probe": False,
     }
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
     def apply_soft_constraints(self, probe: torch.Tensor) -> torch.Tensor:
         self._soft_constraint_loss = {}
         loss = self._get_zero_loss_tensor()
         return loss
 
-    def apply_constraints(self, probe: torch.Tensor) -> torch.Tensor:
+    def apply_hard_constraints(self, probe: torch.Tensor) -> torch.Tensor:
         if self.constraints["fix_probe"]:
             return self.initial_probe
         if self.constraints["orthogonalize_probe"]:
@@ -386,7 +399,7 @@ class ProbeConstraints(BaseConstraints, ProbeBase):
         return orthogonalized_probe_flat.reshape(start_probe.shape)
 
 
-class ProbePixelated(ProbeConstraints, ProbeBase):
+class ProbePixelated(ProbeConstraints):
     def __init__(
         self,
         num_probes: int = 1,
@@ -416,8 +429,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
     @property
     def probe(self) -> torch.Tensor:
         """get the full probe"""
-        return self.apply_constraints(self._probe)
-        # return self._probe
+        return self.apply_hard_constraints(self._probe)
 
     @probe.setter
     def probe(self, prb: "np.ndarray|torch.Tensor"):
@@ -523,7 +535,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         self.probe = self._initial_probe.clone()
 
     def to(self, device: str | torch.device):
-        self.device = device
+        super().to(device)
         self._probe = self._probe.to(self.device)
 
     @property
@@ -537,7 +549,7 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
         self._probe.grad = -1 * probe_grad.clone().detach()
 
 
-class ProbeDIP(ProbeConstraints, ProbeBase):
+class ProbeDIP(ProbeConstraints):
     """
     DIP/model based probe model.
     """
@@ -573,9 +585,10 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
         self.pretrain_target = self.model_input.clone().detach()
         self._optimizer = None
         self._scheduler = None
-        self._pretrain_losses = []
-        self._pretrain_lrs = []
+        self._pretrain_losses: list[float] = []
+        self._pretrain_lrs: list[float] = []
         self._model_input_noise_std = input_noise_std
+        self.training = False
 
     @property
     def name(self) -> str:
@@ -667,80 +680,6 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
         self._input_noise_std = std
 
     @property
-    def optimizer(self) -> torch.optim.Optimizer:
-        """get the optimizer for the DIP model"""
-        if self._optimizer is None:
-            raise ValueError("Optimizer is not set. Use set_optimizer() to set it.")
-        return self._optimizer
-
-    def set_optimizer(self, opt_params: dict):
-        """set the optimizer for the DIP model"""
-        opt_type = opt_params.pop("type")
-        if isinstance(opt_type, torch.optim.Optimizer):
-            self._optimizer = opt_type
-        elif isinstance(opt_type, type):
-            self._optimizer = opt_type(self.model.parameters(), **opt_params)
-        elif opt_type == "adam":
-            self._optimizer = torch.optim.Adam(self.model.parameters(), **opt_params)
-        elif opt_type == "adamw":
-            self._optimizer = torch.optim.AdamW(self.model.parameters(), **opt_params)
-        elif opt_type == "sgd":
-            self._optimizer = torch.optim.SGD(self.model.parameters(), **opt_params)
-        else:
-            raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
-
-    @property
-    def scheduler(
-        self,
-    ) -> (
-        torch.optim.lr_scheduler._LRScheduler
-        | torch.optim.lr_scheduler.CyclicLR
-        | torch.optim.lr_scheduler.ReduceLROnPlateau
-        | torch.optim.lr_scheduler.ExponentialLR
-        | None
-    ):
-        """get the learning rate scheduler for the DIP model"""
-        return self._scheduler
-
-    def set_scheduler(self, params: dict, num_iter: int | None = None) -> None:
-        sched_type: str = params["type"].lower()
-        optimizer = self.optimizer
-        base_LR = optimizer.param_groups[0]["lr"]
-        if sched_type == "none":
-            scheduler = None
-        elif sched_type == "cyclic":
-            scheduler = torch.optim.lr_scheduler.CyclicLR(
-                optimizer,
-                base_lr=params.get("base_lr", base_LR / 4),
-                max_lr=params.get("max_lr", base_LR * 4),
-                step_size_up=params.get("step_size_up", 100),
-                mode=params.get("mode", "triangular2"),
-                cycle_momentum=params.get("momentum", False),
-            )
-        elif sched_type.startswith(("plat", "reducelronplat")):
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=params.get("factor", 0.5),
-                patience=params.get("patience", 10),
-                threshold=params.get("threshold", 1e-3),
-                min_lr=params.get("min_lr", base_LR / 20),
-                cooldown=params.get("cooldown", 20),
-            )
-        elif sched_type in ["exp", "gamma", "exponential"]:
-            if "gamma" in params.keys():
-                gamma = params["gamma"]
-            elif num_iter is not None:
-                fac = params.get("factor", 0.01)
-                gamma = fac ** (1.0 / num_iter)
-            else:
-                gamma = 0.999
-            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-        else:
-            raise ValueError(f"Unknown scheduler type: {sched_type}")
-        self._scheduler = scheduler
-
-    @property
     def pretrain_losses(self) -> np.ndarray:
         return np.array(self._pretrain_losses)
 
@@ -752,11 +691,11 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
     def probe(self) -> torch.Tensor:
         """get the full probe"""
         probe = self.model(self._model_input)[0]
-        return self.apply_constraints(probe)
+        return self.apply_hard_constraints(probe)
 
     @property
     def _probe(self) -> torch.Tensor:
-        return self.model(self._model_input)[0]
+        return self.forward(None)  # type: ignore
 
     def forward(self, fract_positions: torch.Tensor) -> torch.Tensor:
         """Get shifted probes at fractional positions"""
@@ -805,7 +744,7 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
 
     def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
-        self.device = device
+        super().to(device)
         self._model = self._model.to(self.device)
         self._model_input = self._model_input.to(self.device)
         if hasattr(self, "_initial_probe"):
@@ -814,7 +753,12 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
     @property
     def params(self):
         """optimization parameters"""
-        return self._model.parameters()
+        return self.model.parameters()
+
+    def get_optimization_parameters(self):
+        """Get the parameters that should be optimized for this model."""
+        # Return a fresh list of parameters each time to avoid generator exhaustion
+        return list(self.model.parameters())
 
     def reset(self):
         """Reset the object model to its initial or pre-trained state"""
@@ -876,6 +820,9 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
 
         self._model.train()
         optimizer = self.optimizer
+        if optimizer is None:
+            raise ValueError("Optimizer not set. Call set_optimizer() first.")
+
         sch = self.scheduler
         pbar = tqdm(range(num_epochs))
         output = self.probe
@@ -896,7 +843,7 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
                 model_input = self.model_input
 
             if apply_constraints:
-                output = self.probe
+                output = self.apply_hard_constraints(self.model(model_input)[0])
             else:
                 output = self.model(model_input)[0]
             loss: torch.Tensor = loss_fn(output, self.pretrain_target)

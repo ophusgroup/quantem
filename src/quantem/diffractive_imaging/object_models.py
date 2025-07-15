@@ -12,6 +12,7 @@ from quantem.core import config
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.ml.blocks import reset_weights
 from quantem.core.ml.loss_functions import get_loss_function
+from quantem.core.ml.optimizer_mixin import OptimizerMixin
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
@@ -32,10 +33,16 @@ sure if this would lead to other issues, so a bit of testing will be needed.
 """
 
 
-class ObjectBase(AutoSerialize):
+class ObjectBase(OptimizerMixin, AutoSerialize):
     """
     Base class for all ObjectModels to inherit from.
     """
+
+    DEFAULT_LRS = {
+        "object": 5e-3,
+        "tv_weight_z": 0,
+        "tv_weight_yx": 0,
+    }
 
     def __init__(
         self,
@@ -46,14 +53,17 @@ class ObjectBase(AutoSerialize):
         rng: np.random.Generator | int | None = None,
         shape: tuple[int, int, int] | None = None,
         *args,
+        **kwargs,
     ):
-        self._shape = shape if shape is not None else (-1, -1, -1)
-        self.num_slices = num_slices
-        self._device = device
-        self._obj_type = obj_type
-        self.slice_thicknesses = slice_thicknesses
-        self._constraints = {}
+        super().__init__(*args, **kwargs)
+        self._slice_thicknesses = None
+        self._rng = None
+        self._shape = shape or (1, 1, 1)
         self._mask = None
+        self.device = device
+        self.obj_type = obj_type
+        self.num_slices = num_slices
+        self.slice_thicknesses = slice_thicknesses
         self.rng = rng
 
     @property
@@ -118,7 +128,7 @@ class ObjectBase(AutoSerialize):
         self._shape = (n, *self._shape[1:])
 
     @property
-    def slice_thicknesses(self) -> torch.Tensor:
+    def slice_thicknesses(self) -> torch.Tensor | None:
         return self._slice_thicknesses
 
     @slice_thicknesses.setter
@@ -182,15 +192,25 @@ class ObjectBase(AutoSerialize):
     def reset(self):
         raise NotImplementedError()
 
-    @abstractmethod
     def to(self, device: str | torch.device):
         self.device = device
-        raise NotImplementedError()
+        self._rng_torch = torch.Generator(device=device).manual_seed(self._rng_seed % 2**32)
 
     @property
     @abstractmethod
     def name(self) -> str:
         raise NotImplementedError()
+
+    def get_optimization_parameters(self):
+        """Get the parameters that should be optimized for this model."""
+        try:
+            params = self.params
+            if params is None:
+                return []
+            return params
+        except NotImplementedError:
+            # This happens when params is not implemented yet in abstract base
+            return []
 
     def _propagate_array(
         self, array: "torch.Tensor", propagator_array: "torch.Tensor"
@@ -213,7 +233,7 @@ class ObjectBase(AutoSerialize):
         )
 
     @property
-    def rng(self) -> np.random.Generator:
+    def rng(self) -> np.random.Generator | None:
         return self._rng
 
     @rng.setter
@@ -225,8 +245,8 @@ class ObjectBase(AutoSerialize):
         elif not isinstance(rng, np.random.Generator):
             raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
         self._rng = rng
-        seed = int(rng.integers(0, 2**32))
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed)
+        self._rng_seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed
+        self._rng_torch = torch.Generator(device=self.device).manual_seed(self._rng_seed % 2**32)
 
 
 class ObjectConstraints(BaseConstraints, ObjectBase):
@@ -238,9 +258,6 @@ class ObjectConstraints(BaseConstraints, ObjectBase):
         "tv_weight_yx": 0,
         "surface_zero_weight": 0,
     }
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
     def apply_hard_constraints(
         self, obj: torch.Tensor, mask: torch.Tensor | None = None
@@ -361,7 +378,7 @@ class ObjectConstraints(BaseConstraints, ObjectBase):
         return loss
 
 
-class ObjectPixelated(ObjectConstraints, ObjectBase):
+class ObjectPixelated(ObjectConstraints):
     """
     Object model for pixelized objects.
     """
@@ -406,7 +423,7 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
         self._obj = torch.ones(self.shape, dtype=self.dtype, device=self.device)
 
     def to(self, device: str | torch.device):
-        self.device = device
+        super().to(device)
         self._obj = self._obj.to(self.device)
 
     @property
@@ -480,38 +497,34 @@ class ObjectDIP(ObjectConstraints):
             rng=rng,
             shape=shape,
         )
-        self._model = model
+        self.model = model
+
         if model_input is None:
-            if np.all(np.array(self.shape) > 0):  # confirm shape is set
-                self.model_input = torch.randn(
-                    (1, *self.shape),
-                    dtype=self.dtype,
-                    device=self.device,
-                    generator=self._rng_torch,
-                )
-            else:
-                # cannot set model input yet
-                warn("Model input not set")
-                self.model_input = torch.zeros((1, 1, 1, 1), dtype=self.dtype, device=self.device)
+            # Create default model input - will be set properly in set_initial_obj
+            self.model_input = torch.zeros(
+                (1, num_slices, 1, 1), dtype=self.dtype, device=self.device
+            )
         else:
             self.model_input = model_input.clone().detach()
+
         self.pretrain_target = self.model_input.clone().detach()
-        self._optimizer = None
-        self._scheduler = None
         self._pretrain_losses = []
         self._pretrain_lrs = []
         self._model_input_noise_std = input_noise_std
 
     @property
     def name(self) -> str:
-        return "ObjDIP"
+        return "ObjectDIP"
 
     @property
     def dtype(self) -> "torch.dtype":
         if hasattr(self.model, "dtype"):
             return getattr(self.model, "dtype")
         else:
-            return self.model_input.dtype
+            if self.obj_type in ["complex"]:
+                return config.get("dtype_complex")
+            else:
+                return config.get("dtype_real")
 
     @property
     def model(self) -> "torch.nn.Module":
@@ -525,9 +538,7 @@ class ObjectDIP(ObjectConstraints):
             raise TypeError(f"DIP must be a torch.nn.Module, got {type(dip)}")
         if hasattr(dip, "dtype"):
             dt = getattr(dip, "dtype")
-            if self.obj_type == "potential" and dt.is_complex:
-                raise ValueError("DIP model must be a real-valued model for potential objects")
-            elif self.obj_type == "complex" and not dt.is_complex:
+            if self.obj_type in ["complex"] and not dt.is_complex:
                 raise ValueError("DIP model must be a complex-valued model for complex objects")
         self._model = dip.to(self.device)
         self.set_pretrained_weights(self._model)
@@ -594,80 +605,6 @@ class ObjectDIP(ObjectConstraints):
         self._input_noise_std = std
 
     @property
-    def optimizer(self) -> torch.optim.Optimizer:
-        """get the optimizer for the DIP model"""
-        if self._optimizer is None:
-            raise ValueError("Optimizer is not set. Use set_optimizer() to set it.")
-        return self._optimizer
-
-    def set_optimizer(self, opt_params: dict):
-        """set the optimizer for the DIP model"""
-        opt_type = opt_params.pop("type")
-        if isinstance(opt_type, torch.optim.Optimizer):
-            self._optimizer = opt_type
-        elif isinstance(opt_type, type):
-            self._optimizer = opt_type(self.model.parameters(), **opt_params)
-        elif opt_type == "adam":
-            self._optimizer = torch.optim.Adam(self.model.parameters(), **opt_params)
-        elif opt_type == "adamw":
-            self._optimizer = torch.optim.AdamW(self.model.parameters(), **opt_params)
-        elif opt_type == "sgd":
-            self._optimizer = torch.optim.SGD(self.model.parameters(), **opt_params)
-        else:
-            raise NotImplementedError(f"Unknown optimizer type: {opt_params['type']}")
-
-    @property
-    def scheduler(
-        self,
-    ) -> (
-        torch.optim.lr_scheduler._LRScheduler
-        | torch.optim.lr_scheduler.CyclicLR
-        | torch.optim.lr_scheduler.ReduceLROnPlateau
-        | torch.optim.lr_scheduler.ExponentialLR
-        | None
-    ):
-        """get the learning rate scheduler for the DIP model"""
-        return self._scheduler
-
-    def set_scheduler(self, params: dict, num_iter: int | None = None) -> None:
-        sched_type: str = params["type"].lower()
-        optimizer = self.optimizer
-        base_LR = optimizer.param_groups[0]["lr"]
-        if sched_type == "none":
-            scheduler = None
-        elif sched_type == "cyclic":
-            scheduler = torch.optim.lr_scheduler.CyclicLR(
-                optimizer,
-                base_lr=params.get("base_lr", base_LR / 4),
-                max_lr=params.get("max_lr", base_LR * 4),
-                step_size_up=params.get("step_size_up", 100),
-                mode=params.get("mode", "triangular2"),
-                cycle_momentum=params.get("momentum", False),
-            )
-        elif sched_type.startswith(("plat", "reducelronplat")):
-            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer,
-                mode="min",
-                factor=params.get("factor", 0.5),
-                patience=params.get("patience", 10),
-                threshold=params.get("threshold", 1e-3),
-                min_lr=params.get("min_lr", base_LR / 20),
-                cooldown=params.get("cooldown", 20),
-            )
-        elif sched_type in ["exp", "gamma", "exponential"]:
-            if "gamma" in params.keys():
-                gamma = params["gamma"]
-            elif num_iter is not None:
-                fac = params.get("factor", 0.01)
-                gamma = fac ** (1.0 / num_iter)
-            else:
-                gamma = 0.999
-            scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=gamma)
-        else:
-            raise ValueError(f"Unknown scheduler type: {sched_type}")
-        self._scheduler = scheduler
-
-    @property
     def pretrain_losses(self) -> np.ndarray:
         return np.array(self._pretrain_losses)
 
@@ -677,18 +614,19 @@ class ObjectDIP(ObjectConstraints):
 
     @property
     def obj(self):
+        """get the full object"""
         obj = self.model(self._model_input)[0]
         if self.obj_type == "pure_phase" and "complex" not in str(self.dtype):
             # using a real-valued model for a pure-phase (complex) object
             obj = torch.ones_like(obj) * torch.exp(1j * obj)
-        return self.apply_hard_constraints(obj, mask=self.mask)
+        return self.apply_hard_constraints(obj)
 
     @property
     def _obj(self):
         return self.model(self._model_input)[0]
 
     def forward(self, patch_indices: torch.Tensor):
-        """Get patch indices of the object"""
+        """Get object patches at given indices"""
         if self._input_noise_std > 0.0:
             noise = (
                 torch.randn(
@@ -702,30 +640,39 @@ class ObjectDIP(ObjectConstraints):
             model_input = self.model_input + noise
         else:
             model_input = self.model_input
-        return self._get_obj_patches(self.model(model_input)[0], patch_indices)
+
+        obj_array = self.model(model_input)[0]
+        if self.mask is not None:
+            obj_array = obj_array * self.mask
+        return self._get_obj_patches(obj_array, patch_indices)
 
     def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
-        self.device = device
+        super().to(device)
         self._model = self._model.to(self.device)
         self._model_input = self._model_input.to(self.device)
+        if hasattr(self, "_pretrain_target"):
+            self._pretrain_target = self._pretrain_target.to(self.device)
 
     @property
     def params(self):
         """optimization parameters"""
-        return self._model.parameters()
+        return self.model.parameters()
+
+    def get_optimization_parameters(self):
+        """Get the parameters that should be optimized for this model."""
+        # Return a fresh list of parameters each time to avoid generator exhaustion
+        return list(self._model.parameters())
 
     def reset(self):
-        """
-        Reset the object model to its initial or pre-trained state
-        """
+        """Reset the object model to its initial or pre-trained state"""
         self.model.load_state_dict(self.pretrained_weights.copy())
 
     def pretrain(
         self,
         model_input: torch.Tensor | None = None,
         pretrain_target: torch.Tensor | None = None,
-        reset: bool = False,  # will reinitizlize the model weights
+        reset: bool = False,
         num_epochs: int = 100,
         optimizer_params: dict | None = None,
         scheduler_params: dict | None = None,
@@ -740,7 +687,7 @@ class ObjectDIP(ObjectConstraints):
             self.set_scheduler(scheduler_params, num_epochs)
 
         if reset:
-            self._model.apply(reset_weights)  # TODO make sure this works
+            self._model.apply(reset_weights)
             self._pretrain_losses = []
             self._pretrain_lrs = []
 
@@ -753,10 +700,11 @@ class ObjectDIP(ObjectConstraints):
                 )
             self.pretrain_target = pretrain_target.clone().detach().to(self.device)
         elif self.pretrain_target is None:
-            self.pretrain_target = self.model_input.clone().detach()
+            raise ValueError(
+                "No pretrain target set. Provide pretrain_target or set it beforehand."
+            )
 
         loss_fn = get_loss_function(loss_fn, self.dtype)
-        # set model pretrained weights
         self._pretrain(
             num_epochs=num_epochs,
             loss_fn=loss_fn,
@@ -772,20 +720,20 @@ class ObjectDIP(ObjectConstraints):
         apply_constraints: bool = False,
         show: bool = False,
     ):
-        """
-        Pretrain the DIP model.
-        """
+        """Pretrain the DIP model."""
         if not hasattr(self, "pretrain_target"):
             raise ValueError("Pretrain target is not set. Use pretrain_target to set it.")
 
         self._model.train()
         optimizer = self.optimizer
-        sch = self.scheduler
+        if optimizer is None:
+            raise ValueError("Optimizer not set. Call set_optimizer() first.")
+
+        scheduler = self.scheduler
         pbar = tqdm(range(num_epochs))
         output = self.obj
 
         for a0 in pbar:
-            # doing this here because we don't call forward
             if self._input_noise_std > 0.0:
                 noise = (
                     torch.randn(
@@ -796,13 +744,12 @@ class ObjectDIP(ObjectConstraints):
                     )
                     * self._input_noise_std
                 )
-                # self._model_input += noise
                 model_input = self.model_input + noise
             else:
                 model_input = self.model_input
 
             if apply_constraints:
-                output = self.obj
+                output = self.apply_hard_constraints(self.model(model_input)[0])
             else:
                 output = self.model(model_input)[0]
             loss: torch.Tensor = loss_fn(output, self.pretrain_target)
@@ -810,13 +757,12 @@ class ObjectDIP(ObjectConstraints):
             optimizer.step()
             optimizer.zero_grad()
 
-            if sch is not None:
-                if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
-                    sch.step(loss.item())
+            if scheduler is not None:
+                if isinstance(scheduler, torch.optim.lr_scheduler.ReduceLROnPlateau):
+                    scheduler.step(loss.item())
                 else:
-                    sch.step()
+                    scheduler.step()
 
-            # save losses and lrs
             self._pretrain_losses.append(loss.item())
             self._pretrain_lrs.append(optimizer.param_groups[0]["lr"])
             pbar.set_description(f"Epoch {a0 + 1}/{num_epochs}, Loss: {loss.item():.3e}, ")
