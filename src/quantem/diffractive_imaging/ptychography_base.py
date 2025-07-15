@@ -1,12 +1,13 @@
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal, Sequence
+from typing import Any, Literal, Sequence, cast
+from warnings import warn
 
 import numpy as np
 import scipy.ndimage as ndi
+import torch
 
 import quantem.core.utils.array_funcs as arr
 from quantem.core import config
-from quantem.core.datastructures import Dataset4dstem
 from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import (
     electron_wavelength_angstrom,
@@ -25,7 +26,8 @@ from quantem.diffractive_imaging.dataset_models import (
     PtychographyDatasetBase,
 )
 from quantem.diffractive_imaging.detector_models import DetectorBase, DetectorModelType
-from quantem.diffractive_imaging.object_models import ObjectBase, ObjectModelType, ObjectPixelated
+from quantem.diffractive_imaging.logger_ptychography import LoggerPtychography
+from quantem.diffractive_imaging.object_models import ObjectBase, ObjectModelType
 from quantem.diffractive_imaging.probe_models import ProbeBase, ProbeModelType
 from quantem.diffractive_imaging.ptycho_utils import (
     AffineTransform,
@@ -33,13 +35,6 @@ from quantem.diffractive_imaging.ptycho_utils import (
     fourier_translation_operator,
     sum_patches,
 )
-
-if TYPE_CHECKING:
-    import torch
-else:
-    if config.get("has_torch"):
-        import torch
-
 
 """
 design patterns:
@@ -59,28 +54,6 @@ class PtychographyBase(AutoSerialize):
     It is designed to be subclassed by specific Ptychography algorithms.
     """
 
-    DEFAULT_CONSTRAINTS = {
-        "object": {
-            "fix_potential_baseline": False,
-            "identical_slices": False,
-            "apply_fov_mask": False,
-            "tv_weight_yx": 0.0,
-            "tv_weight_z": 0.0,
-            "surface_zero_weight": 0.0,
-        },
-        "probe": {
-            "fix_probe": False,
-            "fix_probe_com": False,
-        },
-        "dataset": {
-            "descan_tv_weight": 0.0,
-            "descan_shifts_constant": False,
-        },
-        "detector": {
-            "detector_mask": None,
-        },
-    }
-
     _token = object()
 
     def __init__(  # TODO prevent direct instantiation
@@ -89,6 +62,7 @@ class PtychographyBase(AutoSerialize):
         obj_model: ObjectModelType,
         probe_model: ProbeModelType,
         detector_model: DetectorModelType,
+        logger: LoggerPtychography | None = None,
         device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
@@ -114,7 +88,6 @@ class PtychographyBase(AutoSerialize):
         self._epoch_recon_types: list[str] = []
         self._epoch_lrs: dict[str, list] = {}  # LRs/step_sizes across epochs
         self._epoch_snapshots: list[dict[str, int | np.ndarray]] = []
-        self._constraints = self.DEFAULT_CONSTRAINTS.copy()
         self._obj_padding_px = np.array([0, 0])
         self.obj_fov_mask = torch.ones(self.dset._obj_shape_full_2d(self.obj_padding_px).shape)
         self.batch_size = self.dset.num_gpts
@@ -128,17 +101,14 @@ class PtychographyBase(AutoSerialize):
         self.set_obj_model(obj_model)
         self.detector_model = detector_model
         self._compute_propagator_arrays()
+        self.logger = logger
         self.to(self.device)
 
     # region --- preprocessing ---
     ## hopefully will be able to remove some of thes preprocessing flags,
     ## convert plotting and vectorized to kwargs
-    ## could also force users to initialize object and probe models externally, but I prefer
-    ## having the flexibility of passing the types in here and initializing them internally
     def preprocess(
         self,
-        obj_model: ObjectModelType | type | None = None,
-        probe_model: ProbeModelType | type | None = None,
         obj_padding_px: tuple[int, int] = (0, 0),
         com_fit_function: Literal[
             "none", "plane", "parabola", "constant", "no_shift"
@@ -171,15 +141,6 @@ class PtychographyBase(AutoSerialize):
             # change obj_padding_px and whatever else needs to be changed
             self.dset._set_initial_scan_positions_px(self.obj_padding_px)
             self.dset._set_patch_indices(self.obj_padding_px)
-
-        if probe_model is not None:
-            self.set_probe_model(probe_model)
-
-        if obj_model is not None:
-            self.set_obj_model(obj_model)
-        # else:
-        #     self._obj_model.shape = tuple(self.obj_shape_full)
-        #     self._obj_model.reset()
 
         self._compute_propagator_arrays()
         self._set_obj_fov_mask()
@@ -490,44 +451,19 @@ class PtychographyBase(AutoSerialize):
     # def obj_model(self, *args):
     #     raise AttributeError("Use tycho.set_obj_model to set the obj_model")
 
-    def set_obj_model(
-        self,
-        model: ObjectModelType | type | None,
-        num_slices: int | None = None,
-        slice_thicknesses: float | Sequence | None = None,
-        obj_type: Literal["complex", "pure_phase", "potential"] = "complex",
-    ):
-        # TODO test with calling before preprocess, pass in "pixelized" or similar
-        # TODO -- here can transfer obj from existing to new model if applicable?
+    def set_obj_model(self, model: ObjectModelType | type | None):
         if model is None:
-            if hasattr(self, "_obj_model"):
-                return
-            else:
+            if not hasattr(self, "_obj_model"):
                 raise ValueError("obj_model must be a subclass of ObjectModelType")
+            return
 
-        if isinstance(model, type):
-            if not issubclass(model, ObjectModelType):
-                raise TypeError(
-                    f"obj_model must be a subclass of ObjectModelType, got {type(model)}"
-                )
-            if issubclass(model, ObjectPixelated):
-                print("initializing new model obj")
-                num_slices = self.num_slices if num_slices is None else int(num_slices)
-                self._obj_model = model(
-                    num_slices=num_slices,
-                    slice_thicknesses=slice_thicknesses,
-                    device=self.device,
-                    obj_type=obj_type,
-                )
-            else:
-                raise TypeError("please pre-intialize the object model")
-        # autoreload bug leads to type issues, so checking str also
-        elif isinstance(model, ObjectBase) or "object" in str(type(model)):
-            self._obj_model = model
-        else:
-            raise TypeError(f"obj_modelect must be a ObjectModelType, got {type(model)}")
+        # Type checking with autoreload bug workaround
+        if not (isinstance(model, ObjectBase) or "object" in str(type(model))):
+            raise TypeError(f"obj_model must be a ObjectModelType, got {type(model)}")
 
-        # setting object shape manually here as haven't yet set slices
+        self._obj_model = cast(ObjectModelType, model)
+
+        # Set object shape and reset
         rotshape = self.dset._obj_shape_full_2d(self.obj_padding_px)
         obj_shape_full = (self.num_slices, int(rotshape[0]), int(rotshape[1]))
         self._obj_model.shape = obj_shape_full
@@ -537,81 +473,54 @@ class PtychographyBase(AutoSerialize):
     def probe_model(self) -> ProbeModelType:
         return self._probe_model
 
-    def set_probe_model(
-        self,
-        probe_model: ProbeModelType | type | None,
-        num_probes: int = 1,
-        probe_params: dict[str, float] = {},
-        vacuum_probe_intensity: np.ndarray | Dataset4dstem | None = None,
-        initial_probe: np.ndarray | None = None,
-    ):
+    def set_probe_model(self, probe_model: ProbeModelType | type | None):
         if probe_model is None:
-            if hasattr(self, "_probe_model"):
-                return
-            else:
+            if not hasattr(self, "_probe_model"):
                 raise ValueError("probe_model must be a subclass of ProbeModelType")
+            return
 
-        # TODO reimplement wrapper or some "simple" way of doing ptycho with pixelated
-        # if isinstance(probe_model, type):
-        #     if not issubclass(probe_model, ProbeModelType):
-        #         raise TypeError(
-        #             f"probe_model must be a subclass of ProbeModelType, got {type(probe_model)}"
-        #         )
-
-        #     self._probe_model = probe_model(
-        #         num_probes=num_probes,
-        #         probe_params=probe_params,
-        #         vacuum_probe_intensity=vacuum_probe_intensity,
-        #         initial_probe_array=initial_probe,
-        #         device=self.device,
-        #         rng=self.rng,
-        #     )
-        # autoreload bug leads to type issues
-        if isinstance(probe_model, ProbeBase) or "probe" in str(type(probe_model)):
-            # add protections for changing num_probes and such
-            self._probe_model = probe_model
-        else:
+        # Type checking with autoreload bug workaround
+        if not (isinstance(probe_model, ProbeBase) or "probe" in str(type(probe_model))):
             raise TypeError(f"probe_model must be a ProbeModelType, got {type(probe_model)}")
 
+        self._probe_model = cast(ProbeModelType, probe_model)
         self._probe_model.set_initial_probe(
             self.roi_shape, self.reciprocal_sampling, self.dset.mean_diffraction_intensity
         )
         self._probe_model.to(self.device)
-        self._probe_model.constraints = self._constraints["probe"]
 
     @property
     def constraints(self) -> dict[str, Any]:
-        return self._constraints
+        """Get current constraints from all models as a nested dictionary."""
+        return {
+            "object": self.obj_model.constraints,
+            "probe": self.probe_model.constraints,
+            "dataset": self.dset.constraints,
+            "detector": {
+                "detector_mask": getattr(self.detector_model, "detector_mask", None),
+            },
+        }
 
     @constraints.setter
     def constraints(self, c: dict[str, Any]):
-        """Sets both self._constraints as well as the constraints in the object and probe models"""
+        """Set constraints by forwarding to individual models."""
+        constraint_handlers = {
+            "object": self.obj_model,
+            "probe": self.probe_model,
+            "dataset": self.dset,
+        }
+
         for key, value in c.items():
-            if key not in self.DEFAULT_CONSTRAINTS:
+            if key in constraint_handlers and isinstance(value, dict):
+                for subkey, subvalue in value.items():
+                    constraint_handlers[key].add_constraint(subkey, subvalue)
+            elif key == "detector" and isinstance(value, dict):
+                warn("Detector constraints not implemented, skipping")
+            else:
+                valid_keys = list(constraint_handlers.keys()) + ["detector"]
                 raise KeyError(
-                    f"Invalid constraint key '{key}', allowed keys are {list(self.DEFAULT_CONSTRAINTS.keys())}"
+                    f"Invalid constraint category '{key}'. Valid categories are: {valid_keys}"
                 )
-
-            if not isinstance(value, dict):
-                raise ValueError(f"Constraint '{key}' must be a dictionary.")
-
-            allowed_subkeys = self.DEFAULT_CONSTRAINTS[key].keys()
-            for subkey, subvalue in value.items():
-                if subkey not in allowed_subkeys:
-                    raise KeyError(
-                        f"Invalid subkey '{subkey}' for constraint '{key}', allowed subkeys are {list(allowed_subkeys)}"
-                    )
-
-                self._constraints[key][subkey] = subvalue
-        for k, v in self._constraints["object"].items():
-            if k in self.obj_model.DEFAULT_CONSTRAINTS.keys():
-                self.obj_model.add_constraint(k, v)
-        for k, v in self._constraints["probe"].items():
-            if k in self.probe_model.DEFAULT_CONSTRAINTS.keys():
-                self.probe_model.add_constraint(k, v)
-        for k, v in self._constraints["dataset"].items():
-            if k in self.dset.DEFAULT_CONSTRAINTS.keys():
-                self.dset.add_constraint(k, v)
 
     @property
     def batch_size(self) -> int:
@@ -622,6 +531,19 @@ class PtychographyBase(AutoSerialize):
         if val is not None:
             v = validate_gt(validate_int(val, "batch_size"), 0, "batch_size")
             self._batch_size = int(v)
+
+    @property
+    def logger(self) -> LoggerPtychography | None:
+        return self._logger
+
+    @logger.setter
+    def logger(self, logger: LoggerPtychography | None):
+        if logger is None:
+            self._logger = None
+        elif not isinstance(logger, LoggerPtychography):
+            raise TypeError("Logger must be a LoggerPtychography")
+
+        self._logger = logger
 
     # endregion --- explicit class properties ---
 
@@ -874,11 +796,11 @@ class PtychographyBase(AutoSerialize):
         self.obj_model.reset()
         self.probe_model.reset()
         self.dset.reset()
+        # detector reset if necessary
         self._epoch_losses = []
         self._epoch_recon_types = []
         self._epoch_snapshots = []
         self._epoch_lrs = {}
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     def append_recon_iteration(
         self,

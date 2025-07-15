@@ -1,6 +1,6 @@
 from abc import abstractmethod
 from copy import deepcopy
-from typing import Any, Callable, Literal, Self, Sequence
+from typing import Callable, Literal, Self, Sequence
 from warnings import warn
 
 import matplotlib.pyplot as plt
@@ -20,6 +20,7 @@ from quantem.core.utils.validators import (
     validate_tensor,
 )
 from quantem.core.visualization import show_2d
+from quantem.diffractive_imaging.constraints import BaseConstraints
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
 
 """
@@ -57,12 +58,10 @@ class ObjectBase(AutoSerialize):
 
     @property
     def shape(self) -> tuple:
-        ## recently added shape to init as an option, hopefully this doesn't break anything
         return self._shape
 
     @shape.setter
     def shape(self, s: tuple) -> None:
-        """set in Ptychography as the shape is determined by com_rotation, sampling, etc."""
         s = tuple(int(x) for x in s)
         if len(s) != 3:
             raise ValueError(
@@ -151,12 +150,10 @@ class ObjectBase(AutoSerialize):
 
     @property
     def mask(self) -> torch.Tensor | None:
-        """get the mask for the object model"""
         return self._mask
 
     @mask.setter
     def mask(self, mask: torch.Tensor | np.ndarray | None):
-        """set the mask for the object model"""
         if mask is not None:
             mask = validate_tensor(
                 mask,
@@ -171,66 +168,42 @@ class ObjectBase(AutoSerialize):
 
     @property
     def obj(self):
-        """get the full object"""
         raise NotImplementedError()
 
     @property
     def params(self):
-        """optimization parameters"""
         raise NotImplementedError()
 
     @abstractmethod
     def forward(self, patch_indices: torch.Tensor):
-        """Get patch indices of the object"""
         raise NotImplementedError()
 
     @abstractmethod
     def reset(self):
-        """Reset the object model to its initial or pre-trained state"""
         raise NotImplementedError()
 
     @abstractmethod
     def to(self, device: str | torch.device):
-        """Move all relevant tensors to a different device."""
         self.device = device
         raise NotImplementedError()
 
     @property
     @abstractmethod
     def name(self) -> str:
-        """Get the name of the object model."""
         raise NotImplementedError()
 
     def _propagate_array(
         self, array: "torch.Tensor", propagator_array: "torch.Tensor"
     ) -> "torch.Tensor":
-        """
-        Propagates array by Fourier convolving array with propagator_array.
-
-        Parameters
-        ----------
-        array: np.ndarray
-            Wavefunction array to be convolved
-        propagator_array: np.ndarray
-            Propagator array to convolve array with
-
-        Returns
-        -------
-        propagated_array: np.ndarray
-            Fourier-convolved array
-        """
         propagated = torch.fft.ifft2(
             torch.fft.fft2(array, norm="ortho") * propagator_array, norm="ortho"
         )
         return propagated
 
     def _get_obj_patches(self, obj_array, patch_indices):
-        """Extracts complex-valued roi-shaped patches from `obj_array` using patch_indices."""
         if not obj_array.is_complex():
             obj_array = torch.exp(1.0j * obj_array)
         obj_flat = obj_array.reshape(obj_array.shape[0], -1)
-        # patch_indices shape: (batch_size, roi_shape[0], roi_shape[1])
-        # Output shape: (num_slices, batch_size, roi_shape[0], roi_shape[1])
         patches = obj_flat[:, patch_indices]
         return patches
 
@@ -252,42 +225,26 @@ class ObjectBase(AutoSerialize):
         elif not isinstance(rng, np.random.Generator):
             raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
         self._rng = rng
-        seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## seed from the generator
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
+        seed = int(rng.integers(0, 2**32))
+        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed)
 
 
-class ObjectConstraints(ObjectBase):
+class ObjectConstraints(BaseConstraints, ObjectBase):
     DEFAULT_CONSTRAINTS = {
         "fix_potential_baseline": False,
         "identical_slices": False,
         "apply_fov_mask": False,
+        "tv_weight_z": 0,
+        "tv_weight_yx": 0,
+        "surface_zero_weight": 0,
     }
 
-    @property
-    def constraints(self) -> dict[str, Any]:
-        return self._constraints
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    @constraints.setter
-    def constraints(self, c: dict[str, Any]):
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        for key, value in c.items():
-            if key not in gkeys:
-                raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
-            self._constraints[key] = value
-
-    def add_constraint(self, key: str, value: Any):
-        """Add a constraint to the object model."""
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        if key not in gkeys:
-            raise KeyError(f"Invalid object constraint key '{key}', allowed keys are {gkeys}")
-        self._constraints[key] = value
-
-    def apply_constraints(
+    def apply_hard_constraints(
         self, obj: torch.Tensor, mask: torch.Tensor | None = None
     ) -> torch.Tensor:
-        """
-        Apply constraints to the object model.
-        """
         if self.obj_type in ["complex", "pure_phase"]:
             if self.obj_type == "complex":
                 amp = torch.clamp(torch.abs(obj), 0.0, 1.0)
@@ -298,7 +255,7 @@ class ObjectConstraints(ObjectBase):
                 obj2 = amp * mask * torch.exp(1.0j * phase * mask)
             else:
                 obj2 = amp * torch.exp(1.0j * phase)
-        else:  # is potential, apply positivity
+        else:
             if self.constraints["fix_potential_baseline"]:
                 if mask is not None:
                     offset = obj[mask < 0.5 * mask.max()].mean()
@@ -318,6 +275,90 @@ class ObjectConstraints(ObjectBase):
                 obj2[:] = torch.mean(obj2, dim=0, keepdim=True)
 
         return obj2
+
+    def apply_soft_constraints(
+        self, obj: torch.Tensor, mask: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        self._soft_constraint_loss = {}
+
+        tv_loss = self.get_tv_loss(
+            obj,
+            weights=(
+                self.constraints["tv_weight_z"],
+                self.constraints["tv_weight_yx"],
+            ),
+        )
+        self._soft_constraint_loss["tv_loss"] = tv_loss
+
+        surface_zero_loss = self.get_surface_zero_loss(
+            obj,
+            weight=self.constraints["surface_zero_weight"],
+        )
+        self._soft_constraint_loss["surface_zero_loss"] = surface_zero_loss
+
+        return tv_loss + surface_zero_loss
+
+    def get_tv_loss(
+        self, array: torch.Tensor, weights: None | tuple[float, float] = None
+    ) -> torch.Tensor:
+        loss = self._get_zero_loss_tensor()
+        if weights is None:
+            w = (
+                self.constraints["tv_weight_z"],
+                self.constraints["tv_weight_yx"],
+            )
+        elif isinstance(weights, (float, int)):
+            if weights == 0:
+                return loss
+            w = (weights, weights)
+        else:
+            if not any(weights):
+                return loss
+            if len(weights) != 2:
+                raise ValueError(f"weights must be a tuple of length 2, got {weights}")
+            w = weights
+
+        if array.is_complex():
+            ph = array.angle()
+            loss += self._calc_tv_loss(ph, w)
+            amp = array.abs()
+            if self.obj_type == "complex":
+                loss += self._calc_tv_loss(amp, w)
+        else:
+            loss += self._calc_tv_loss(array, w)
+
+        return loss
+
+    def _calc_tv_loss(self, array: torch.Tensor, weight: tuple[float, float]) -> torch.Tensor:
+        loss = self._get_zero_loss_tensor()
+        calc_dim = 0
+        for dim in range(array.ndim):
+            if dim == 0 and array.ndim == 3:
+                w = weight[0]
+            else:
+                w = weight[1]
+            if w > 0:
+                calc_dim += 1
+                loss += w * torch.mean(torch.abs(array.diff(dim=dim)))
+        loss /= calc_dim
+        return loss
+
+    def get_surface_zero_loss(
+        self, array: torch.Tensor, weight: float | int = 0.0
+    ) -> torch.Tensor:
+        loss = self._get_zero_loss_tensor()
+        if weight == 0:
+            return loss
+        if array.shape[0] < 3:
+            return loss
+        if array.is_complex():
+            amp = array.abs()
+            ph = array.angle()
+            loss += weight * (torch.mean(amp[0]) + torch.mean(amp[-1]))
+            loss += weight * (torch.mean(torch.diff(ph[0])) + torch.mean(torch.diff(ph[-1])))
+        else:
+            loss += weight * (torch.mean(array[0]) + torch.mean(array[-1]))
+        return loss
 
 
 class ObjectPixelated(ObjectConstraints, ObjectBase):
@@ -343,11 +384,10 @@ class ObjectPixelated(ObjectConstraints, ObjectBase):
             rng=rng,
             shape=shape,
         )
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
 
     @property
     def obj(self):
-        return self.apply_constraints(self._obj, mask=self.mask)
+        return self.apply_hard_constraints(self._obj, mask=self.mask)
         # return self._obj
 
     @property
@@ -440,7 +480,6 @@ class ObjectDIP(ObjectConstraints):
             rng=rng,
             shape=shape,
         )
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self._model = model
         if model_input is None:
             if np.all(np.array(self.shape) > 0):  # confirm shape is set
@@ -642,7 +681,7 @@ class ObjectDIP(ObjectConstraints):
         if self.obj_type == "pure_phase" and "complex" not in str(self.dtype):
             # using a real-valued model for a pure-phase (complex) object
             obj = torch.ones_like(obj) * torch.exp(1j * obj)
-        return self.apply_constraints(obj, mask=self.mask)
+        return self.apply_hard_constraints(obj, mask=self.mask)
 
     @property
     def _obj(self):

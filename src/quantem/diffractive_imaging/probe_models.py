@@ -5,8 +5,8 @@ from warnings import warn
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.ndimage as ndi
 import torch
+from scipy.ndimage import center_of_mass
 from tqdm.auto import tqdm
 
 from quantem.core import config
@@ -28,9 +28,9 @@ from quantem.diffractive_imaging.complexprobe import (
     POLAR_SYMBOLS,
     ComplexProbe,
 )
+from quantem.diffractive_imaging.constraints import BaseConstraints
 from quantem.diffractive_imaging.ptycho_utils import (
     fourier_shift_expand,
-    get_com_2d,
     shift_array,
 )
 
@@ -148,7 +148,7 @@ class ProbeBase(AutoSerialize):
             vp2 = np.fft.fftshift(vp2)
 
         # fix centering
-        com: list | tuple = ndi.center_of_mass(vp2)
+        com: list | tuple = center_of_mass(vp2)
         vp2 = shift_array(
             vp2,
             -com[0],
@@ -320,90 +320,70 @@ class ProbeBase(AutoSerialize):
         )
 
 
-class ProbeConstraints(ProbeBase):
+class ProbeConstraints(BaseConstraints, ProbeBase):
     DEFAULT_CONSTRAINTS = {
         "fix_probe": False,
-        "fix_probe_com": False,
+        "orthogonalize_probe": False,
+        "center_probe": False,
     }
-    # Defaults are kept in PtychographyConstraints for now, not sure where they'll end up
-    # eventually, as it contains hard + soft constraints, but if adding new constraints here
-    # also need to be added along with default values there
 
-    @property
-    def constraints(self) -> dict[str, Any]:
-        return self._constraints
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    @constraints.setter
-    def constraints(self, c: dict[str, Any]):
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        for key, value in c.items():
-            if key not in gkeys:
-                raise KeyError(f"Invalid constraint key '{key}', allowed keys are {gkeys}")
-            self._constraints[key] = value
-
-    def add_constraint(self, key: str, value: Any):
-        """Add a constraint to the object model."""
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        if key not in gkeys:
-            raise KeyError(f"Invalid constraint key '{key}', allowed keys are {gkeys}")
-        self._constraints[key] = value
+    def apply_soft_constraints(self, probe: torch.Tensor) -> torch.Tensor:
+        self._soft_constraint_loss = {}
+        loss = self._get_zero_loss_tensor()
+        return loss
 
     def apply_constraints(self, probe: torch.Tensor) -> torch.Tensor:
-        """
-        Apply constraints to the object model.
-        """
-        if self.num_probes > 1:
+        if self.constraints["fix_probe"]:
+            return self.initial_probe
+        if self.constraints["orthogonalize_probe"]:
             probe = self._probe_orthogonalization_constraint(probe)
-
-        if self.constraints["fix_probe_com"]:
+        if self.constraints["center_probe"]:
             probe = self._probe_center_of_mass_constraint(probe)
-
         return probe
 
     def _probe_center_of_mass_constraint(self, start_probe: torch.Tensor) -> torch.Tensor:
-        """
-        Ptychographic center of mass constraint.
-        Used for centering corner-centered probe intensity.
-        """
-        probe_intensity = torch.abs(start_probe) ** 2
-        com = get_com_2d(probe_intensity, corner_centered=True)
-        print("com shape: ", com.shape)
-        shifted_probe = fourier_shift_expand(start_probe, -1 * com, expand_dim=False)
-        print("shifted probe shape: ", shifted_probe.shape)
-        return shifted_probe
+        probe_int = torch.abs(start_probe) ** 2
+        probe_int_com = self._to_torch(
+            np.array(
+                [
+                    center_of_mass(probe_int[i].detach().cpu().numpy())
+                    for i in range(self.num_probes)
+                ]
+            )
+        )
+        probe_int_com = probe_int_com - torch.tensor(
+            [s // 2 for s in self.roi_shape], device=self.device
+        )
+        return fourier_shift_expand(start_probe, -probe_int_com, expand_dim=False)
 
     def _probe_orthogonalization_constraint(self, start_probe: torch.Tensor) -> torch.Tensor:
-        """
-        Ptychographic probe-orthogonalization constraint.
-        Used to ensure mixed states are orthogonal to each other.
-        Adapted from https://github.com/AdvancedPhotonSource/tike/blob/main/src/tike/ptycho/probe.py#L690
-        """
-
-        n_probes = start_probe.shape[0]
-        orthogonal_probes = []
-
-        original_norms = torch.norm(
-            torch.reshape(start_probe, (n_probes, -1)), dim=1, keepdim=True
+        if self.num_probes == 1:
+            return start_probe
+        probe_flat = start_probe.flatten(start_dim=1)
+        probe_conj_flat = torch.conj(probe_flat)
+        overlap_matrix = torch.zeros(
+            (self.num_probes, self.num_probes),
+            dtype=probe_flat.dtype,
+            device=probe_flat.device,
         )
-
-        # Gram-Schmidt orthogonalization
-        for i in range(n_probes):
-            probe_i = start_probe[i]
-            for j in range(len(orthogonal_probes)):
-                projection = (
-                    torch.sum(orthogonal_probes[j].conj() * probe_i) * orthogonal_probes[j]
-                )
-                probe_i = probe_i - projection
-            orthogonal_probes.append(probe_i / torch.norm(probe_i))
-
-        orthogonal_probes = torch.stack(orthogonal_probes)
-        orthogonal_probes = orthogonal_probes * torch.reshape(original_norms, (-1, 1, 1))
-
-        # Sort probes by real-space intensity
-        intensities = torch.sum(torch.abs(orthogonal_probes) ** 2, dim=(-2, -1))
-        intensities_order = torch.flip(torch.argsort(intensities), dims=(0,))
-
-        return orthogonal_probes[intensities_order]
+        for i in range(self.num_probes):
+            for j in range(self.num_probes):
+                overlap_matrix[i, j] = torch.sum(probe_conj_flat[i] * probe_flat[j])
+        try:
+            eigvals, eigvecs = torch.linalg.eigh(overlap_matrix)
+        except Exception as e:
+            warn(f"Probe orthogonalization failed, skipping: {e}")
+            return start_probe
+        eigvals = eigvals.real
+        eigvecs = eigvecs.real
+        eigvals = torch.clamp(eigvals, min=1e-12)
+        sqrt_inv_eigvals = torch.diag(1.0 / torch.sqrt(eigvals))
+        orthogonalization_matrix = eigvecs @ sqrt_inv_eigvals @ eigvecs.T
+        orthogonalized_probe_flat = orthogonalization_matrix @ probe_flat
+        return orthogonalized_probe_flat.reshape(start_probe.shape)
 
 
 class ProbePixelated(ProbeConstraints, ProbeBase):
@@ -426,7 +406,6 @@ class ProbePixelated(ProbeConstraints, ProbeBase):
             device=device,
             rng=rng,
         )
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.initial_probe_array = initial_probe_array
         if initial_probe_array is not None:
             self.roi_shape = np.array(initial_probe_array.shape)
@@ -581,7 +560,6 @@ class ProbeDIP(ProbeConstraints, ProbeBase):
             device=device,
         )
         self.rng = rng
-        self.constraints = self.DEFAULT_CONSTRAINTS.copy()
         self.model = model
 
         if model_input is None:

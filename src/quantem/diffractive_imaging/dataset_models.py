@@ -1,12 +1,10 @@
 from abc import abstractmethod
 from typing import Any, Literal, Self
-from warnings import warn
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torch.nn as nn
-from numpy.typing import NDArray
 
 from quantem.core import config
 from quantem.core.datastructures.dataset4dstem import Dataset4dstem
@@ -14,13 +12,17 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.utils.utils import electron_wavelength_angstrom, tqdmnd
 from quantem.core.utils.validators import (
     validate_array,
-    validate_float,
     validate_gt,
     validate_int,
     validate_tensor,
 )
 from quantem.core.visualization import show_2d
+from quantem.diffractive_imaging.constraints import BaseConstraints
 from quantem.diffractive_imaging.ptycho_utils import AffineTransform, fit_origin, shift_array
+
+"""
+Dataset models for ptychographic reconstruction.
+"""
 
 
 class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
@@ -96,10 +98,10 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
     @classmethod
     def from_array(
         cls,
-        array: NDArray | Any,
+        array: np.ndarray | Any,
         name: str | None = None,
-        origin: NDArray | tuple | list | float | int | None = None,
-        sampling: NDArray | tuple | list | float | int | None = None,
+        origin: np.ndarray | tuple | list | float | int | None = None,
+        sampling: np.ndarray | tuple | list | float | int | None = None,
         units: list[str] | tuple | list | None = None,
         signal_units: str = "arb. units",
         verbose: int | bool = 1,
@@ -109,13 +111,13 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
 
         Parameters
         ----------
-        array : NDArray | Any
+        array : np.ndarray | Any
             The underlying 4D array data
         name : str | None, optional
             A descriptive name for the dataset. If None, defaults to "4D-STEM dataset"
-        origin : NDArray | tuple | list | float | int | None, optional
+        origin : np.ndarray | tuple | list | float | int | None, optional
             The origin coordinates for each dimension. If None, defaults to zeros
-        sampling : NDArray | tuple | list | float | int | None, optional
+        sampling : np.ndarray | tuple | list | float | int | None, optional
             The sampling rate/spacing for each dimension. If None, defaults to ones
         units : list[str] | tuple | list | None, optional
             Units for each dimension. If None, defaults to ["pixels"] * 4
@@ -301,7 +303,7 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
     @mean_diffraction_intensity.setter
     def mean_diffraction_intensity(self, value: float) -> None:
         n = "mean_diffraction_intensity"
-        self._mean_diffraction_intensity = validate_float(validate_gt(value, 0, n), n)
+        self._mean_diffraction_intensity = validate_gt(value, 0, n)
 
     @property
     def com_transpose(self) -> bool:
@@ -370,7 +372,7 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
         if energy is None:
             self._probe_energy = None
         else:
-            self._probe_energy = validate_float(energy, "probe_energy")
+            self._probe_energy = validate_gt(energy, 0, "probe_energy")
 
     # endregion --- explicit properties (have setters) ---
 
@@ -542,50 +544,44 @@ class PtychographyDatasetBase(AutoSerialize, torch.nn.Module):
     # endregion --- class methods ---
 
 
-class DatasetConstraints(PtychographyDatasetBase):
+class DatasetConstraints(BaseConstraints, PtychographyDatasetBase):
     DEFAULT_CONSTRAINTS = {
         "descan_tv_weight": 0.0,
         "descan_shifts_constant": False,
     }
 
-    @property
-    def constraints(self) -> dict[str, Any]:
-        return self._constraints
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
 
-    @constraints.setter
-    def constraints(self, c: dict[str, Any]):
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        for key, value in c.items():
-            if key not in gkeys:
-                raise KeyError(f"Invalid dataset constraint key '{key}', allowed keys are {gkeys}")
-            self._constraints[key] = value
+    def apply_soft_constraints(self, descan_shifts: torch.Tensor) -> torch.Tensor:
+        self._soft_constraint_loss = {}
 
-    def add_constraint(self, key: str, value: Any):
-        """Add a constraint to the object model."""
-        gkeys = self.DEFAULT_CONSTRAINTS.keys()
-        if key not in gkeys:
-            raise KeyError(f"Invalid dataset constraint key '{key}', allowed keys are {gkeys}")
-        self._constraints[key] = value
+        descan_tv_loss = self.get_descan_tv_loss(
+            descan_shifts,
+            weight=self.constraints["descan_tv_weight"],
+        )
+        self._soft_constraint_loss["descan_tv_loss"] = descan_tv_loss
+
+        return descan_tv_loss
+
+    def get_descan_tv_loss(self, descan_shifts: torch.Tensor, weight: float = 0.0) -> torch.Tensor:
+        loss = torch.tensor(0, device=self.device, dtype=getattr(torch, config.get("dtype_real")))
+        if weight == 0:
+            return loss
+
+        x_loss = torch.mean(torch.abs(descan_shifts[:, 0].diff()))
+        y_loss = torch.mean(torch.abs(descan_shifts[:, 1].diff()))
+        return weight * (x_loss + y_loss) / 2
 
     def apply_descan_constraints(
         self,
         descan: torch.Tensor,
     ) -> torch.Tensor:
-        """
-        Apply constraints to the object model.
-        """
         if self.constraints["descan_shifts_constant"]:
-            new_descan = torch.ones_like(descan) * descan.mean(dim=0, keepdim=True)
-        else:
-            new_descan = descan
-
-        return new_descan
+            descan = torch.zeros_like(descan)
+        return descan
 
     def apply_position_constraints(self, positions: torch.Tensor) -> torch.Tensor:
-        """
-        Apply constraints to the scan positions.
-        """
-        # Currently no position constraints
         return positions
 
 
@@ -698,10 +694,6 @@ class PtychographyDatasetRaster(DatasetConstraints, PtychographyDatasetBase):
                     *padded_diffraction_intensities_shape,
                 ),
                 in_place=True,
-            )
-            warn(
-                "Padded diffraction intensities does not currently support vacuum probe intensity.",
-                UserWarning,
             )
             # if vacuum_probe_intensity is not None:
             #     vppad = Dataset.from_array(np.fft.fftshift(vacuum_probe_intensity))

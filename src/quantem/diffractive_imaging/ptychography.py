@@ -6,6 +6,7 @@ from tqdm.auto import tqdm
 from quantem.core import config
 from quantem.diffractive_imaging.dataset_models import DatasetModelType
 from quantem.diffractive_imaging.detector_models import DetectorModelType
+from quantem.diffractive_imaging.logger_ptychography import LoggerPtychography
 from quantem.diffractive_imaging.object_models import ObjectModelType
 from quantem.diffractive_imaging.probe_models import ProbeModelType
 from quantem.diffractive_imaging.ptycho_utils import SimpleBatcher
@@ -43,6 +44,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         obj_model: ObjectModelType,
         probe_model: ProbeModelType,
         detector_model: DetectorModelType,
+        logger: LoggerPtychography | None = None,
         device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
@@ -53,6 +55,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
             obj_model=obj_model,
             probe_model=probe_model,
             detector_model=detector_model,
+            logger=logger,
             device=device,
             verbose=verbose,
             rng=rng,
@@ -67,6 +70,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         obj_model: ObjectModelType,
         probe_model: ProbeModelType,
         detector_model: DetectorModelType,
+        logger: LoggerPtychography | None = None,
         device: str | int = "cpu",  # "gpu" | "cpu" | "cuda:X"
         verbose: int | bool = True,
         rng: np.random.Generator | int | None = None,
@@ -76,6 +80,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
             obj_model=obj_model,
             probe_model=probe_model,
             detector_model=detector_model,
+            logger=logger,
             device=device,
             verbose=verbose,
             rng=rng,
@@ -95,73 +100,6 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
     # endregion --- explicit properties and setters ---
 
     # region --- methods ---
-
-    def get_tv_loss(
-        self, array: torch.Tensor, weights: None | tuple[float, float] = None
-    ) -> torch.Tensor:
-        """
-        weight is tuple (weight_z, weight_yx) or float -> (weight, weight)
-        for 2D array, only weight_yx is used
-
-        """
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
-        if weights is None:
-            w = (
-                self.constraints["object"]["tv_weight_z"],
-                self.constraints["object"]["tv_weight_yx"],
-            )
-        elif isinstance(weights, (float, int)):
-            if weights == 0:
-                return loss
-            w = (weights, weights)
-        else:
-            if not any(weights):
-                return loss
-            if len(weights) != 2:
-                raise ValueError(f"weights must be a tuple of length 2, got {weights}")
-            w = weights
-
-        if array.is_complex():
-            ph = array.angle()
-            loss += self._calc_tv_loss(ph, w)
-            amp = array.abs()
-            if torch.max(amp) - torch.min(amp) > 1e-3:  # is complex and not pure_phase
-                loss += self._calc_tv_loss(amp, w)
-        else:
-            loss += self._calc_tv_loss(array, w)
-
-        return loss
-
-    def _calc_tv_loss(self, array: torch.Tensor, weight: tuple[float, float]) -> torch.Tensor:
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
-        calc_dim = 0
-        for dim in range(array.ndim):
-            if dim == 0 and array.ndim == 3:  # there's surely a cleaner way but whatev
-                w = weight[0]
-            else:
-                w = weight[1]
-            if w > 0:
-                calc_dim += 1
-                loss += w * torch.mean(torch.abs(array.diff(dim=dim)))  # careful w/ mean -> NaN
-        loss /= calc_dim
-        return loss
-
-    def get_surface_zero_loss(
-        self, array: torch.Tensor, weight: float | int = 0.0
-    ) -> torch.Tensor:
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
-        if weight == 0:
-            return loss
-        if array.shape[0] < 3:
-            return loss  # no surfaces to zero
-        if array.is_complex():
-            amp = array.abs()
-            ph = array.angle()
-            loss += weight * (torch.mean(amp[0]) + torch.mean(amp[-1]))
-            loss += weight * (torch.mean(torch.diff(ph[0])) + torch.mean(torch.diff(ph[-1])))
-        else:
-            loss += weight * (torch.mean(array[0]) + torch.mean(array[-1]))
-        return loss
 
     def reset_recon(self) -> None:
         super().reset_recon()
@@ -183,35 +121,38 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                 prev_lrs.append(self.optimizers[key].param_groups[0]["lr"])
                 self._epoch_lrs[key] = prev_lrs
 
-    def _soft_constraints(self) -> torch.Tensor:
-        loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
-        if (
-            self.constraints["object"]["tv_weight_z"] > 0
-            or self.constraints["object"]["tv_weight_yx"] > 0
-        ):
-            loss += self.get_tv_loss(
-                self.obj_model.obj,
-                weights=(
-                    self.constraints["object"]["tv_weight_z"],
-                    self.constraints["object"]["tv_weight_yx"],
-                ),
-            )
-        if self.constraints["object"]["surface_zero_weight"] > 0:
-            loss += self.get_surface_zero_loss(
-                self.obj_model.obj,
-                weight=self.constraints["object"]["surface_zero_weight"],
-            )
-        if self.constraints["dataset"]["descan_tv_weight"] > 0:
-            loss += self.get_tv_loss(
-                self.dset.descan_shifts[:, 0],
-                weights=self.constraints["dataset"]["descan_tv_weight"],
-            )
-            loss += self.get_tv_loss(
-                self.dset.descan_shifts[:, 1],
-                weights=self.constraints["dataset"]["descan_tv_weight"],
-            )
+    def _reset_epoch_constraints(self) -> None:
+        """Reset constraint loss accumulation for all models."""
+        self.obj_model.reset_epoch_constraint_losses()
+        self.probe_model.reset_epoch_constraint_losses()
+        self.dset.reset_epoch_constraint_losses()
 
-        return loss
+    def _accumulate_constraints(self) -> None:
+        """Accumulate constraint losses from all models."""
+        self.obj_model.accumulate_constraint_losses(self.obj_model.soft_constraint_loss)
+        self.probe_model.accumulate_constraint_losses(self.probe_model.soft_constraint_loss)
+        self.dset.accumulate_constraint_losses(self.dset.soft_constraint_loss)
+
+    def _soft_constraints(self) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Calculate soft constraints by calling apply_soft_constraints on each model."""
+        total_loss = torch.tensor(0, device=self.device, dtype=self._dtype_real)
+        constraint_losses = {}
+
+        obj_loss = self.obj_model.apply_soft_constraints(
+            self.obj_model.obj, mask=self.obj_model.mask
+        )
+        total_loss += obj_loss
+        constraint_losses.update(self.obj_model.soft_constraint_loss)
+
+        probe_loss = self.probe_model.apply_soft_constraints(self.probe_model.probe)
+        total_loss += probe_loss
+        constraint_losses.update(self.probe_model.soft_constraint_loss)
+
+        dataset_loss = self.dset.apply_soft_constraints(self.dset.descan_shifts)
+        total_loss += dataset_loss
+        constraint_losses.update(self.dset.soft_constraint_loss)
+
+        return total_loss, constraint_losses
 
     # endregion --- methods ---
 
@@ -274,6 +215,9 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
 
         for a0 in pbar:
             epoch_loss = 0.0
+            batch_losses = []
+
+            self._reset_epoch_constraints()
 
             for batch_indices in batcher:
                 patch_indices, _positions_px, positions_px_fractional, descan_shifts = (
@@ -295,10 +239,13 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                     loss_type=loss_type,
                 )
 
-                loss += self._soft_constraints()
+                soft_constraint_loss, _constraint_losses = self._soft_constraints()
+                total_loss = loss + soft_constraint_loss
+
+                self._accumulate_constraints()
 
                 self.backward(
-                    loss,
+                    total_loss,
                     autograd,
                     obj_patches,
                     propagated_probes,
@@ -310,7 +257,14 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                     opt.step()
                     opt.zero_grad()
 
-                epoch_loss += loss.item()
+                epoch_loss += total_loss.item()
+                batch_losses.append(
+                    {
+                        "data_loss": loss.item(),
+                        "constraint_loss": soft_constraint_loss.item(),
+                        "total_loss": total_loss.item(),
+                    }
+                )
 
             for sch in self.schedulers.values():
                 if isinstance(sch, torch.optim.lr_scheduler.ReduceLROnPlateau):
@@ -322,10 +276,24 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
             self._epoch_losses.append(epoch_loss)
             self._epoch_recon_types.append(f"{self.obj_model.name}-{self.probe_model.name}")
             if self.store_iterations and (a0 % self.store_iterations_every == 0):
-                # if self.store_iterations and ((a0 + 1) % self.store_iterations_every == 0 or a0 == 0):
                 self.append_recon_iteration(self.obj_model.obj, self.probe_model.probe)
 
             pbar.set_description(f"Loss: {epoch_loss:.3e}, ")
+
+            if self.logger is not None:
+                current_lrs = {
+                    param_name: optimizer.param_groups[0]["lr"]
+                    for param_name, optimizer in self.optimizers.items()
+                    if optimizer is not None
+                }
+
+                self.logger.log_epoch(
+                    ptychography_instance=self,
+                    epoch=a0,
+                    epoch_loss=epoch_loss,
+                    batch_losses=batch_losses,
+                    learning_rates=current_lrs,
+                )
 
         return self
 

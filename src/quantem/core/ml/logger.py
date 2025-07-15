@@ -20,9 +20,9 @@ class LoggerBase(AutoSerialize):
         self,
         base_log_dir: Path | str,
         run_prefix: str,
-        run_suffix: str = None,
+        run_suffix: str = "",
         log_images_every: int = 10,
-    ):
+    ) -> None:
         self._timestamp = datetime.datetime.now().strftime(
             "%Y%m%d_%H%M%S"
         )  # This should never be reinstantiated.
@@ -32,30 +32,40 @@ class LoggerBase(AutoSerialize):
         self.log_images_every = log_images_every
         self.writer = SummaryWriter(str(self.log_dir))
 
-    def log_scalar(self, tag: str, value: float, step: int):
+    def log_scalar(self, tag: str, value: float, step: int) -> None:
         self.writer.add_scalar(tag=tag, scalar_value=value, global_step=step)
 
-    def log_image(self, tag: str, image: NDArray | Tensor, step: int, cmap: str = "turbo"):
+    def log_image(self, tag: str, image: NDArray | Tensor, step: int, cmap: str = "turbo") -> None:
         cmap_image = self.apply_colormap(image, cmap_name=cmap)
         self.writer.add_image(tag, cmap_image, step)
 
-    def log_figure(self, tag: str, fig: Figure, step: int):
+    def log_figure(self, tag: str, fig: Figure, step: int) -> None:
         self.writer.add_figure(tag, fig, step)
 
-    def flush(self):
+    def log_histogram(self, tag: str, values: NDArray | Tensor, step: int) -> None:
+        """Log histogram of values for monitoring distributions."""
+        if isinstance(values, Tensor):
+            values = values.detach().cpu().numpy()
+        self.writer.add_histogram(tag, values, step)
+
+    def log_text(self, tag: str, text: str, step: int) -> None:
+        """Log text for configuration, hyperparameters, or notes."""
+        self.writer.add_text(tag, text, step)
+
+    def flush(self) -> None:
         self.writer.flush()
 
-    def close(self):
+    def close(self) -> None:
         self.writer.close()
 
     # --- Properties ---
 
     @property
-    def log_dir(self):
+    def log_dir(self) -> Path:
         return self._log_dir
 
     @log_dir.setter
-    def log_dir(self, dir: str | Path):
+    def log_dir(self, dir: str | Path) -> None:
         if not isinstance(dir, (str, Path)):
             raise TypeError("Log directory must be a str or Path.")
 
@@ -70,33 +80,33 @@ class LoggerBase(AutoSerialize):
         self._log_dir = full_path
 
     @property
-    def run_prefix(self):
+    def run_prefix(self) -> str:
         return self._run_prefix
 
     @run_prefix.setter
-    def run_prefix(self, prefix: str):
+    def run_prefix(self, prefix: str) -> None:
         if not isinstance(prefix, str):
             raise TypeError("Prefix must be a string")
 
         self._run_prefix = prefix
 
     @property
-    def run_suffix(self):
+    def run_suffix(self) -> str:
         return self._run_suffix
 
     @run_suffix.setter
-    def run_suffix(self, suffix: str):
+    def run_suffix(self, suffix: str) -> None:
         if not isinstance(suffix, str):
             raise TypeError("Suffix must be a string")
 
         self._run_suffix = suffix
 
     @property
-    def log_images_every(self):
+    def log_images_every(self) -> int:
         return self._log_images_every
 
     @log_images_every.setter
-    def log_images_every(self, value: int):
+    def log_images_every(self, value: int) -> None:
         if not isinstance(value, int):
             raise TypeError("Log images every must be an integer")
         if value < 1:
@@ -115,5 +125,5 @@ class LoggerBase(AutoSerialize):
 
         tensor_2d = (tensor_2d - np.min(tensor_2d)) / (np.ptp(tensor_2d) + 1e-8)
         cmap = plt.get_cmap(cmap_name)
-        colored = cmap(tensor_2d)[..., :3].transpose(2, 0, 1)  # [3, H, W]
+        colored = cmap(tensor_2d)[..., :3].transpose(2, 0, 1)  # type: ignore # [3, H, W]
         return colored.astype(np.float32)
