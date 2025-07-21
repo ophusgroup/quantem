@@ -115,7 +115,9 @@ def read_2d(
     return dataset
 
 
-def read_emdfile_to_4dstem(file_path: str) -> Dataset4dstem:
+def read_emdfile_to_4dstem(
+    file_path: str, data_keys: list[str] | None = None, calibration_keys: list[str] | None = None
+) -> Dataset4dstem:
     """
     File reader for legacy `emdFile` / `py4DSTEM` files.
 
@@ -130,10 +132,27 @@ def read_emdfile_to_4dstem(file_path: str) -> Dataset4dstem:
     """
     with h5py.File(file_path, "r") as file:
         # Access the data directly
-        data = file["datacube_root"]["datacube"]["data"]  # type: ignore
+        data_keys = ["datacube_root", "datacube", "data"] if data_keys is None else data_keys
+        print("keys: ", data_keys)
+        try:
+            data = file
+            for key in data_keys:
+                data = data[key]  # type: ignore
+        except KeyError:
+            raise KeyError(f"Could not find key {data_keys} in {file_path}")
 
         # Access calibration values directly
-        calibration = file["datacube_root"]["metadatabundle"]["calibration"]  # type: ignore
+        calibration_keys = (
+            ["datacube_root", "metadatabundle", "calibration"]
+            if calibration_keys is None
+            else calibration_keys
+        )
+        try:
+            calibration = file
+            for key in calibration_keys:
+                calibration = calibration[key]  # type: ignore
+        except KeyError:
+            raise KeyError(f"Could not find calibration key {calibration_keys} in {file_path}")
         r_pixel_size = calibration["R_pixel_size"][()]  # type: ignore
         q_pixel_size = calibration["Q_pixel_size"][()]  # type: ignore
         r_pixel_units = calibration["R_pixel_units"][()]  # type: ignore
