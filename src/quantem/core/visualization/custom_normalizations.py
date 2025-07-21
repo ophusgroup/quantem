@@ -609,6 +609,7 @@ class NormalizationConfig:
 
 NORMALIZATION_PRESETS = {
     "linear_auto": lambda: NormalizationConfig(),
+    "quantile": lambda: NormalizationConfig(),
     "linear_minmax": lambda: NormalizationConfig(interval_type="manual"),
     "minmax": lambda: NormalizationConfig(interval_type="manual"),
     "linear_centered": lambda: NormalizationConfig(interval_type="centered"),

@@ -212,13 +212,24 @@ class PtychographyVisualizations(PtychographyBase):
             nx = ax.twinx()
             nx.spines["left"].set_visible(False)
 
-            # Directly plot learning rates for each optimizer type
             color_idx = 0
-            for lr_type, lr_values in self.epoch_lrs.items():
+
+            # Sort optimizers: object first, then probe, then the rest
+            sorted_items = sorted(
+                self.epoch_lrs.items(),
+                key=lambda x: (0 if x[0] == "object" else 1 if x[0] == "probe" else 2, x[0]),
+            )
+            for lr_type, lr_values in sorted_items:
                 if len(lr_values) > 0:
                     # Create epochs array that matches lr_values length
                     lr_epochs = np.arange(len(lr_values))
                     linestyle = "--" if lr_type == "probe" else "-"
+                    if lr_type == "probe":
+                        zorder = 3
+                    elif lr_type == "object":
+                        zorder = 2
+                    else:
+                        zorder = 1
                     lines.extend(
                         nx.semilogy(
                             lr_epochs,
@@ -226,6 +237,7 @@ class PtychographyVisualizations(PtychographyBase):
                             c=colors[color_idx % len(colors)],
                             label=f"{lr_type} LR",
                             linestyle=linestyle,
+                            zorder=zorder,
                         )
                     )
                     color_idx += 1

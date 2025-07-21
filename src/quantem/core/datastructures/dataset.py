@@ -1,5 +1,5 @@
 from types import ModuleType
-from typing import Any, Literal, Self, overload
+from typing import Any, Literal, Self, cast, overload
 
 import numpy as np
 from numpy.typing import DTypeLike, NDArray
@@ -543,9 +543,19 @@ class Dataset(AutoSerialize):
                 dataset.array[tuple(slices)].reshape(reshape_dims),
                 axis=tuple(reduce_axes),
             )
+            # Update sampling for binned axes # TODO improve this implementation
+            for axis, factor in axis_to_factor.items():
+                axis = cast(int, axis)
+                if axis < len(dataset.sampling):
+                    dataset.sampling[axis] *= factor
             return dataset
         else:
             self.array = np.sum(
                 self.array[tuple(slices)].reshape(reshape_dims), axis=tuple(reduce_axes)
             )
+            # Update sampling for binned axes
+            for axis, factor in axis_to_factor.items():
+                axis = cast(int, axis)
+                if axis < len(self.sampling):
+                    self.sampling[axis] *= factor
             return None

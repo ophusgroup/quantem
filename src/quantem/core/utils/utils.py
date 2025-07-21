@@ -72,6 +72,12 @@ def to_numpy(array: "np.ndarray | cp.ndarray | torch.Tensor") -> np.ndarray:
 
 
 def to_cpu(arrs: Any) -> np.ndarray | Sequence:
+    """
+    Similar to to_numpy but also allows lists and handles Datasets, only called in show_2d
+    so could likely be replaced with a more specific function.
+    """
+    from quantem.core.datastructures import Dataset2d
+
     if config.get("has_cupy"):
         if isinstance(arrs, cp.ndarray):
             return cp.asnumpy(arrs)
@@ -84,6 +90,8 @@ def to_cpu(arrs: Any) -> np.ndarray | Sequence:
         return [to_cpu(i) for i in arrs]
     elif isinstance(arrs, tuple):
         return tuple([to_cpu(i) for i in arrs])
+    elif isinstance(arrs, Dataset2d):
+        return to_cpu(arrs.array)
     else:
         raise NotImplementedError(f"Unkown type: {type(arrs)}")
 
@@ -413,7 +421,7 @@ def fit_probe_ellipse(
     # Solve the generalized eigenvalue problem to find ellipse coefficients
     eigvals, eigvecs = np.linalg.eig(np.linalg.inv(S).dot(C))
     cond = np.logical_and(np.isreal(eigvals), eigvals > 0)
-    a = eigvecs[:, cond][:, 0].real
+    a = eigvecs[:, cond][:, 0].real  # type: ignore
 
     # Extract coefficients from the conic equation
     # General form: a0*x² + a1*xy + a2*y² + a3*x + a4*y + a5 = 0

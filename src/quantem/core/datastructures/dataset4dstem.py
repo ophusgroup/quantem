@@ -9,6 +9,7 @@ from quantem.core.datastructures.dataset2d import Dataset2d
 from quantem.core.datastructures.dataset4d import Dataset4d
 from quantem.core.utils.validators import ensure_valid_array
 from quantem.core.visualization import show_2d
+from quantem.core.visualization.visualization_utils import ScalebarConfig
 
 
 class Dataset4dstem(Dataset4d):
@@ -559,6 +560,13 @@ class Dataset4dstem(Dataset4d):
                 n_cols = min(n_images, 4)
                 figsize = (4 * n_cols, 4 * n_rows)
 
+        # Add scalebar to first image if available
+        if arrays_organized and hasattr(self, "sampling") and len(self.sampling) >= 2:
+            scalebar = ScalebarConfig(
+                sampling=self.sampling[0],
+                units=self.units[0],
+            )
+            kwargs.setdefault("scalebar", [scalebar] + [False] * (len(arrays) - 1))
         fig, axs = show_2d(arrays_organized, title=titles_organized, figsize=figsize, **kwargs)
 
         return fig, axs
@@ -572,7 +580,6 @@ class Dataset4dstem(Dataset4d):
         if not self._virtual_detectors:
             return
 
-        # Clear existing virtual images
         self._virtual_images.clear()
 
         # Regenerate each virtual image

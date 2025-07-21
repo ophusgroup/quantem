@@ -192,6 +192,7 @@ class AutoSerialize:
                 subgroup = group.require_group(attr_name)
                 subgroup.attrs["_torch_whole_module"] = True
                 buffer = io.BytesIO()
+                print("attr_value", attr_value)
                 torch.save(attr_value, buffer)
                 buffer.seek(0)
                 byte_arr = np.frombuffer(buffer.read(), dtype="uint8")

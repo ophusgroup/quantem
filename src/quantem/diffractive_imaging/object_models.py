@@ -32,6 +32,11 @@ which will not be used for implicit NNs, which leads to an inconsistency. Leavin
 sure if this would lead to other issues, so a bit of testing will be needed.
 """
 
+# TODO -- class method and protect object inits
+# - DIP from_model,
+# - pixelated doesn't make much sense, from_array works, but doesn't make sense
+# as the default would be random/uniform init, so not necessary to actually pass an array
+
 
 class ObjectBase(OptimizerMixin, AutoSerialize):
     """
@@ -383,7 +388,6 @@ class ObjectPixelated(ObjectConstraints):
     Object model for pixelized objects.
     """
 
-    # TODO -- class method for object inits? not sure if necessary
     def __init__(
         self,
         num_slices: int = 1,
@@ -501,8 +505,12 @@ class ObjectDIP(ObjectConstraints):
 
         if model_input is None:
             # Create default model input - will be set properly in set_initial_obj
-            self.model_input = torch.zeros(
-                (1, num_slices, 1, 1), dtype=self.dtype, device=self.device
+            if shape is not None:
+                input_shape = (1, *shape)
+            else:
+                input_shape = (1, num_slices, 1, 1)
+            self.model_input = torch.randn(
+                input_shape, dtype=self.dtype, device=self.device, generator=self._rng_torch
             )
         else:
             self.model_input = model_input.clone().detach()

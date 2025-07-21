@@ -35,6 +35,10 @@ from quantem.diffractive_imaging.ptycho_utils import (
     shift_array,
 )
 
+# TODO class methods for probe models
+# - pixelated should have from_params and from_array
+# - DIP should have from_model
+
 
 class ProbeBase(OptimizerMixin, AutoSerialize):
     DEFAULT_PROBE_PARAMS = {
@@ -53,6 +57,7 @@ class ProbeBase(OptimizerMixin, AutoSerialize):
         num_probes: int = 1,
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
+        roi_shape: tuple[int, int] | np.ndarray | None = None,
         device: str = "cpu",
         rng: np.random.Generator | int | None = None,
         *args,
@@ -67,6 +72,8 @@ class ProbeBase(OptimizerMixin, AutoSerialize):
         self.vacuum_probe_intensity = vacuum_probe_intensity
         self._constraints = {}
         self.rng = rng
+        if roi_shape is not None:
+            self.roi_shape = roi_shape
 
     def get_optimization_parameters(self):
         """Get the parameters that should be optimized for this model."""
@@ -406,6 +413,7 @@ class ProbePixelated(ProbeConstraints):
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
         initial_probe_array: np.ndarray | None = None,
+        roi_shape: tuple[int, int] | np.ndarray | None = None,
         dtype: torch.dtype = torch.complex64,
         device: str = "cpu",
         rng: np.random.Generator = np.random.default_rng(),
@@ -415,13 +423,25 @@ class ProbePixelated(ProbeConstraints):
             num_probes=num_probes,
             probe_params=probe_params,
             vacuum_probe_intensity=vacuum_probe_intensity,
+            roi_shape=roi_shape,
             dtype=dtype,
             device=device,
             rng=rng,
         )
         self.initial_probe_array = initial_probe_array
+
+        # Handle roi_shape setting priority: initial_probe_array > roi_shape parameter > unset
         if initial_probe_array is not None:
-            self.roi_shape = np.array(initial_probe_array.shape)
+            probe_shape = np.array(initial_probe_array.shape)
+            if roi_shape is not None and not np.array_equal(probe_shape, np.array(roi_shape)):
+                warn(
+                    f"roi_shape {roi_shape} conflicts with initial_probe_array shape {probe_shape}. Using probe array shape."
+                )
+            self.roi_shape = probe_shape
+        elif roi_shape is not None:
+            # roi_shape was already set in parent __init__
+            pass
+        # If neither is provided, roi_shape will be set later in set_initial_probe
 
     # TODO write classmethods for from_params and from_array
     # from_params should accept vacuum probe as well
@@ -484,7 +504,17 @@ class ProbePixelated(ProbeConstraints):
     ):
         if device is not None:
             self._device = device
-        self.roi_shape = np.array(roi_shape)
+
+        # Only update roi_shape if it wasn't already set during initialization
+        if not hasattr(self, "_roi_shape"):
+            self.roi_shape = np.array(roi_shape)
+        else:
+            # Verify that the provided roi_shape matches the initialized one
+            if not np.array_equal(self.roi_shape, np.array(roi_shape)):
+                warn(
+                    f"roi_shape {roi_shape} conflicts with initialized roi_shape {self.roi_shape}. Using initialized value."
+                )
+
         self.reciprocal_sampling = reciprocal_sampling
         self.mean_diffraction_intensity = mean_diffraction_intensity
 
@@ -561,6 +591,7 @@ class ProbeDIP(ProbeConstraints):
         num_probes: int = 1,
         probe_params: dict = {},
         vacuum_probe_intensity: Dataset4dstem | np.ndarray | None = None,
+        roi_shape: tuple[int, int] | np.ndarray | None = None,
         input_noise_std: float = 0.025,
         device: str = "cpu",
         rng: np.random.Generator | int | None = None,
@@ -569,15 +600,20 @@ class ProbeDIP(ProbeConstraints):
             num_probes=num_probes,
             probe_params=probe_params,
             vacuum_probe_intensity=vacuum_probe_intensity,
+            roi_shape=roi_shape,
             device=device,
         )
         self.rng = rng
         self.model = model
 
         if model_input is None:
-            # Create default model input - will be set properly in set_initial_probe
-            self.model_input = torch.zeros(
-                (1, num_probes, 1, 1), dtype=torch.complex64, device=self.device
+            # Create default model input - use roi_shape if provided, otherwise placeholder
+            if roi_shape is not None:
+                input_shape = (1, num_probes, *np.array(roi_shape))
+            else:
+                input_shape = (1, num_probes, 1, 1)  # will be set properly in set_initial_probe
+            self.model_input = torch.randn(
+                input_shape, dtype=torch.complex64, device=self.device, generator=self._rng_torch
             )
         else:
             self.model_input = model_input.clone().detach()
@@ -728,15 +764,26 @@ class ProbeDIP(ProbeConstraints):
         """Set initial probe and create appropriate model input"""
         if device is not None:
             self._device = device
-        self.roi_shape = np.array(roi_shape)
+
+        # Only update roi_shape if it wasn't already set during initialization
+        if not hasattr(self, "_roi_shape"):
+            self.roi_shape = np.array(roi_shape)
+        else:
+            # Verify that the provided roi_shape matches the initialized one
+            if not np.array_equal(self.roi_shape, np.array(roi_shape)):
+                warn(
+                    f"roi_shape {roi_shape} conflicts with initialized roi_shape {self.roi_shape}. Using initialized value."
+                )
+
         self.reciprocal_sampling = reciprocal_sampling
         self.mean_diffraction_intensity = mean_diffraction_intensity
 
         # could check if num_probes corresponds to out_channels of model
 
-        if not torch.any(self.model_input):
+        # Only create new model_input if it's still the placeholder (shape [1, num_probes, 1, 1])
+        if self.model_input.shape[-2:] == (1, 1):
             self.model_input = torch.randn(
-                (1, self.num_probes, *roi_shape),
+                (1, self.num_probes, *self.roi_shape),
                 dtype=self.dtype,
                 device=self.device,
                 generator=self._rng_torch,

@@ -117,6 +117,7 @@ class PtychographyBase(AutoSerialize):
         plot_com: str | bool = True,
         plot_probe_overlap: bool = False,
         vectorized: bool = True,
+        batch_size: int | None = None,
     ):
         """
         Rather than passing 100 flags here, I'm going to suggest that if users want to run very
@@ -141,7 +142,7 @@ class PtychographyBase(AutoSerialize):
             self.dset._set_patch_indices(self.obj_padding_px)
 
         self._compute_propagator_arrays()
-        self._set_obj_fov_mask()
+        self._set_obj_fov_mask(batch_size=batch_size)
         self._preprocessed = True
         self.reset_recon()  # force clear losses and everything
         return self
@@ -848,14 +849,21 @@ class PtychographyBase(AutoSerialize):
         if isinstance(skip, (str, type)):
             skip = [skip]
         skip = list(skip)
-        skips = skip + [torch.optim.Optimizer, torch.optim.lr_scheduler.LRScheduler]
+        skips = skip + [
+            torch.optim.Optimizer,
+            torch.optim.lr_scheduler.LRScheduler,
+            DatasetModelType,
+            "_probe_model",
+            "_obj_model",
+            "_detector_model",
+        ]
         super().save(
             path,
             mode=mode,
             store=store,
             compression_level=compression_level,
             # skip=["optimizers", "_optimizers"],
-            # skip=torch.optim.Optimizer,
+            # skip=torch.optim.Optimizer,'
             skip=skips,
         )
 

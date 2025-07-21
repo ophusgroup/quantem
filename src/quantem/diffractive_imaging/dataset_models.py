@@ -30,6 +30,7 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
     _token = object()
     _patch_indices: torch.Tensor
 
+    # TODO update optimizers and such to allow for different lrs for different parameters
     DEFAULT_LRS = {
         "descan": 1e-3,
         "scan_positions": 1e-3,
@@ -79,10 +80,10 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
         self._initial_descan_shifts = torch.zeros_like(self._descan_shifts)
 
         # Initialize other attributes
-        self.register_buffer("_intensities", torch.zeros(num_positions, *self.roi_shape))
-        self.register_buffer("_centered_intensities", torch.zeros(num_positions, *self.roi_shape))
+        # self.register_buffer("_intensities", torch.zeros(num_positions, *self.roi_shape))
+        # self.register_buffer("_centered_intensities", torch.zeros(num_positions, *self.roi_shape))
         self.register_buffer("_amplitudes", torch.zeros(num_positions, *self.roi_shape))
-        self.register_buffer("_centered_amplitudes", torch.zeros(num_positions, *self.roi_shape))
+        # self.register_buffer("_centered_amplitudes", torch.zeros(num_positions, *self.roi_shape))
         self.register_buffer(
             "_patch_indices", torch.zeros(num_positions, *self.roi_shape, dtype=torch.int64)
         )
@@ -427,6 +428,10 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
         return self._preprocessed
 
     @property
+    def shape(self) -> np.ndarray:
+        return np.array(self.dset.shape)
+
+    @property
     def roi_shape(self) -> np.ndarray:
         return np.array(self.dset.shape[2:])
 
@@ -555,16 +560,33 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
 
     def _set_patch_indices(self, obj_padding_px: np.ndarray | tuple) -> None:
         """Set the _patch_indices based on self.scan_positions_px"""
+        try:
+            del self._patch_indices
+        except Exception:
+            pass
         obj_shape = self._obj_shape_full_2d(obj_padding_px)
         r0 = torch.round(self.scan_positions_px[:, 0]).type(torch.int32)
         c0 = torch.round(self.scan_positions_px[:, 1]).type(torch.int32)
 
         x_ind = torch.fft.fftfreq(self.roi_shape[0], d=1 / self.roi_shape[0]).to(self.device)
         y_ind = torch.fft.fftfreq(self.roi_shape[1], d=1 / self.roi_shape[1]).to(self.device)
-        row = (r0[:, None, None] + x_ind[None, :, None]) % obj_shape[-2]
-        col = (c0[:, None, None] + y_ind[None, None, :]) % obj_shape[-1]
 
-        self._patch_indices = (row * obj_shape[-1] + col).type(torch.int32)
+        # Process positions in chunks to reduce memory usage
+        chunk_size = min(1000, len(r0))
+        patch_indices_list = []
+
+        for i in range(0, len(r0), chunk_size):
+            end_idx = min(i + chunk_size, len(r0))
+            r0_chunk = r0[i:end_idx]
+            c0_chunk = c0[i:end_idx]
+
+            row_chunk = (r0_chunk[:, None, None] + x_ind[None, :, None]) % obj_shape[-2]
+            col_chunk = (c0_chunk[:, None, None] + y_ind[None, None, :]) % obj_shape[-1]
+
+            patch_indices_chunk = (row_chunk * obj_shape[-1] + col_chunk).type(torch.int32)
+            patch_indices_list.append(patch_indices_chunk)
+
+        self._patch_indices = torch.cat(patch_indices_list, dim=0)
         self._last_patch_positions_px = self.scan_positions_px.clone()
 
     def patch_indices_need_update(self) -> bool:
