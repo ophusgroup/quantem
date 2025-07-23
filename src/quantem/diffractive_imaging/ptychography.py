@@ -213,7 +213,6 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
         """
         # TODO maybe make an "process args" method that handles things like:
         # mode, store_iterations, device,
-        print(f"start GPU memory allocated: {torch.cuda.memory_allocated() / 1024**3:.2f} GB")
         self._check_preprocessed()
         self.set_obj_type(obj_type, force=reset)  # TODO update this or remove, DIPs...
         if device is not None:
@@ -262,7 +261,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                 )
                 pred_intensities = self.detector_model.forward(overlap)
 
-                loss, targets = self.error_estimate(
+                consistency_loss, targets = self.error_estimate(
                     pred_intensities,
                     batch_indices,
                     amplitude_error=True,
@@ -271,7 +270,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                 )
 
                 soft_constraint_loss, _constraint_losses = self._soft_constraints()
-                total_loss = loss + soft_constraint_loss
+                total_loss = consistency_loss + soft_constraint_loss
 
                 self._accumulate_constraints()
 

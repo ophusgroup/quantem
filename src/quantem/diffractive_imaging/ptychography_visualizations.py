@@ -75,7 +75,7 @@ class PtychographyVisualizations(PtychographyBase):
                 probe = probe[None, ...]
 
         probes = [np.fft.fftshift(probe[i]) for i in range(len(probe))]
-        scalebar = {"sampling": self.reciprocal_sampling[0], "units": r"$\mathrm{A^{-1}}$"}
+        scalebar = [{"sampling": self.sampling[0], "units": "Å"}] + [None] * (len(probes) - 1)
         if len(probes) > 1:
             titles = self.get_probe_intensities(probe)
             titles = [f"Probe {i + 1}/{len(titles)}: {t * 100:.1f}%" for i, t in enumerate(titles)]
@@ -92,6 +92,9 @@ class PtychographyVisualizations(PtychographyBase):
                 probe = probe[None, ...]
 
         probes = [np.fft.fftshift(np.fft.fft2(probe[i])) for i in range(len(probe))]
+        scalebar = [{"sampling": self.reciprocal_sampling[0], "units": r"$\mathrm{A^{-1}}$"}] + [
+            None
+        ] * (len(probes) - 1)
         if len(probes) > 1:
             titles = self.get_probe_intensities(probe)
             titles = [
@@ -100,7 +103,7 @@ class PtychographyVisualizations(PtychographyBase):
             ]
         else:
             titles = "Fourier Probe"
-        show_2d(probes, title=titles)
+        show_2d(probes, title=titles, scalebar=scalebar)
 
     def show_obj_and_probe(self, cbar: bool = False, figax=None):
         """shows the summed object and summed probe"""

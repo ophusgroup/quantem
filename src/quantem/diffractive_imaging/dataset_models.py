@@ -79,11 +79,11 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
         self._initial_scan_positions_px = torch.zeros_like(self._scan_positions_px)
         self._initial_descan_shifts = torch.zeros_like(self._descan_shifts)
 
-        # Initialize other attributes
+        # Initialize other attributes # TODO allow for only the needed dset to be moved to gpu
         # self.register_buffer("_intensities", torch.zeros(num_positions, *self.roi_shape))
         # self.register_buffer("_centered_intensities", torch.zeros(num_positions, *self.roi_shape))
         self.register_buffer("_amplitudes", torch.zeros(num_positions, *self.roi_shape))
-        # self.register_buffer("_centered_amplitudes", torch.zeros(num_positions, *self.roi_shape))
+        self.register_buffer("_centered_amplitudes", torch.zeros(num_positions, *self.roi_shape))
         self.register_buffer(
             "_patch_indices", torch.zeros(num_positions, *self.roi_shape, dtype=torch.int64)
         )
@@ -560,10 +560,6 @@ class PtychographyDatasetBase(AutoSerialize, OptimizerMixin, torch.nn.Module):
 
     def _set_patch_indices(self, obj_padding_px: np.ndarray | tuple) -> None:
         """Set the _patch_indices based on self.scan_positions_px"""
-        try:
-            del self._patch_indices
-        except Exception:
-            pass
         obj_shape = self._obj_shape_full_2d(obj_padding_px)
         r0 = torch.round(self.scan_positions_px[:, 0]).type(torch.int32)
         c0 = torch.round(self.scan_positions_px[:, 1]).type(torch.int32)

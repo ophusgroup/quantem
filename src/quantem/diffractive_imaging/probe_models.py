@@ -346,7 +346,7 @@ class ProbeBase(OptimizerMixin, AutoSerialize):
 class ProbeConstraints(BaseConstraints, ProbeBase):
     DEFAULT_CONSTRAINTS = {
         "fix_probe": False,
-        "orthogonalize_probe": False,
+        "orthogonalize_probe": True,
         "center_probe": False,
     }
 
@@ -369,7 +369,7 @@ class ProbeConstraints(BaseConstraints, ProbeBase):
         probe_int_com = self._to_torch(
             np.array(
                 [
-                    center_of_mass(probe_int[i].detach().cpu().numpy())
+                    center_of_mass(torch.fft.fftshift(probe_int[i]).detach().cpu().numpy())
                     for i in range(self.num_probes)
                 ]
             )
@@ -380,30 +380,31 @@ class ProbeConstraints(BaseConstraints, ProbeBase):
         return fourier_shift_expand(start_probe, -probe_int_com, expand_dim=False)
 
     def _probe_orthogonalization_constraint(self, start_probe: torch.Tensor) -> torch.Tensor:
-        if self.num_probes == 1:
-            return start_probe
-        probe_flat = start_probe.flatten(start_dim=1)
-        probe_conj_flat = torch.conj(probe_flat)
-        overlap_matrix = torch.zeros(
-            (self.num_probes, self.num_probes),
-            dtype=probe_flat.dtype,
-            device=probe_flat.device,
-        )
-        for i in range(self.num_probes):
-            for j in range(self.num_probes):
-                overlap_matrix[i, j] = torch.sum(probe_conj_flat[i] * probe_flat[j])
-        try:
-            eigvals, eigvecs = torch.linalg.eigh(overlap_matrix)
-        except Exception as e:
-            warn(f"Probe orthogonalization failed, skipping: {e}")
-            return start_probe
-        eigvals = eigvals.real
-        eigvecs = eigvecs.real
-        eigvals = torch.clamp(eigvals, min=1e-12)
-        sqrt_inv_eigvals = torch.diag(1.0 / torch.sqrt(eigvals))
-        orthogonalization_matrix = eigvecs @ sqrt_inv_eigvals @ eigvecs.T
-        orthogonalized_probe_flat = orthogonalization_matrix @ probe_flat
-        return orthogonalized_probe_flat.reshape(start_probe.shape)
+        n_probes = start_probe.shape[0]
+        orthogonal_probes = []
+        original_norms = torch.norm(start_probe.view(n_probes, -1), dim=1, keepdim=True)
+
+        # Apply Gram-Schmidt process
+        for i in range(n_probes):
+            probe_i = start_probe[i]
+
+            # Subtract projections onto previously computed orthogonal probes
+            for j in range(len(orthogonal_probes)):
+                projection = (
+                    torch.sum(orthogonal_probes[j].conj() * probe_i) * orthogonal_probes[j]
+                )
+                probe_i = probe_i - projection
+
+            orthogonal_probes.append(probe_i / torch.norm(probe_i))
+
+        orthogonal_probes = torch.stack(orthogonal_probes)
+        orthogonal_probes = orthogonal_probes * original_norms.view(-1, 1, 1)
+
+        # Sort probes by real-space intensity
+        intensities = torch.sum(torch.abs(orthogonal_probes) ** 2, dim=(-2, -1))
+        intensities_order = torch.argsort(intensities, descending=True)
+
+        return orthogonal_probes[intensities_order]
 
 
 class ProbePixelated(ProbeConstraints):
@@ -547,10 +548,10 @@ class ProbePixelated(ProbeConstraints):
         # apply random phase shifts for initializing mixed state
         for a0 in range(1, self.num_probes):
             shift_y = np.exp(
-                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[0])
+                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[0])
             ).astype(config.get("dtype_complex"))
             shift_x = np.exp(
-                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[1])
+                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[1])
             ).astype(config.get("dtype_complex"))
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
