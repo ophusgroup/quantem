@@ -418,6 +418,7 @@ class ProbePixelated(ProbeConstraints):
         dtype: torch.dtype = torch.complex64,
         device: str = "cpu",
         rng: np.random.Generator = np.random.default_rng(),
+        initial_probe_weights: list[float] | np.ndarray | None = None,
         *args,
     ):
         super().__init__(
@@ -430,7 +431,7 @@ class ProbePixelated(ProbeConstraints):
             rng=rng,
         )
         self.initial_probe_array = initial_probe_array
-
+        self.initial_probe_weights = initial_probe_weights
         # Handle roi_shape setting priority: initial_probe_array > roi_shape parameter > unset
         if initial_probe_array is not None:
             probe_shape = np.array(initial_probe_array.shape)
@@ -463,6 +464,23 @@ class ProbePixelated(ProbeConstraints):
             expand_dims=True,
         )
         self._probe = self._to_torch(prb)
+
+    @property
+    def initial_probe_weights(self) -> np.ndarray:
+        return self._initial_probe_weights
+
+    @initial_probe_weights.setter
+    def initial_probe_weights(self, weights: list[float] | np.ndarray | None):
+        if weights is None:
+            self._initial_probe_weights = np.array(
+                [1 - 0.02 * (self.num_probes - 1)] + [0.02] * (self.num_probes - 1)
+            )
+        else:
+            if len(weights) != self.num_probes:
+                raise ValueError(
+                    f"initial_probe_weights must be a list of length {self.num_probes}"
+                )
+            self._initial_probe_weights = np.array(weights) / np.sum(weights)
 
     @property
     def params(self):
@@ -548,16 +566,23 @@ class ProbePixelated(ProbeConstraints):
         # apply random phase shifts for initializing mixed state
         for a0 in range(1, self.num_probes):
             shift_y = np.exp(
-                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[0])
+                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[0])
             ).astype(config.get("dtype_complex"))
             shift_x = np.exp(
-                -2j * np.pi * self.rng.random() * np.fft.fftfreq(self.roi_shape[1])
+                -2j * np.pi * (self.rng.random() - 0.5) * np.fft.fftfreq(self.roi_shape[1])
             ).astype(config.get("dtype_complex"))
             probes[a0] = probes[a0] * shift_y[:, None] * shift_x[None]
 
+        # apply weights
         probe_intensity = np.sum(np.abs(np.fft.fft2(probes, norm="ortho")) ** 2)
         intensity_norm = np.sqrt(mean_diffraction_intensity / probe_intensity)
         probes *= intensity_norm
+
+        current_weights = np.sum(np.abs(probes) ** 2, axis=(1, 2))
+        current_weights = current_weights / np.sum(current_weights)
+        weight_scaling = np.sqrt(self.initial_probe_weights / current_weights)
+        probes = probes * weight_scaling[:, None, None]
+
         self._initial_probe = self._to_torch(probes)
         self._probe = self._initial_probe.clone()
         return

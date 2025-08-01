@@ -37,6 +37,8 @@ sure if this would lead to other issues, so a bit of testing will be needed.
 # - pixelated doesn't make much sense, from_array works, but doesn't make sense
 # as the default would be random/uniform init, so not necessary to actually pass an array
 
+# TODO - clean up how shape and num_slices are handled, redundant and allows for errors
+
 
 class ObjectBase(OptimizerMixin, AutoSerialize):
     """
@@ -63,7 +65,7 @@ class ObjectBase(OptimizerMixin, AutoSerialize):
         super().__init__(*args, **kwargs)
         self._slice_thicknesses = None
         self._rng = None
-        self._shape = shape or (1, 1, 1)
+        self._shape = shape if shape is not None else (1, 1, 1)
         self._mask = None
         self.device = device
         self.obj_type = obj_type
@@ -257,6 +259,7 @@ class ObjectBase(OptimizerMixin, AutoSerialize):
 class ObjectConstraints(BaseConstraints, ObjectBase):
     DEFAULT_CONSTRAINTS = {
         "fix_potential_baseline": False,
+        "fix_potential_baseline_factor": 1.0,
         "identical_slices": False,
         "apply_fov_mask": False,
         "tv_weight_z": 0,
@@ -279,11 +282,12 @@ class ObjectConstraints(BaseConstraints, ObjectBase):
                 obj2 = amp * torch.exp(1.0j * phase)
         else:
             if self.constraints["fix_potential_baseline"]:
+                print("fixing baseline")
                 if mask is not None:
                     offset = obj[mask < 0.5 * mask.max()].mean()
                 else:
                     offset = torch.min(obj)
-
+                offset *= self.constraints["fix_potential_baseline_factor"]
             else:
                 offset = 0
 
@@ -627,7 +631,7 @@ class ObjectDIP(ObjectConstraints):
         if self.obj_type == "pure_phase" and "complex" not in str(self.dtype):
             # using a real-valued model for a pure-phase (complex) object
             obj = torch.ones_like(obj) * torch.exp(1j * obj)
-        return self.apply_hard_constraints(obj)
+        return self.apply_hard_constraints(obj, mask=self.mask)
 
     @property
     def _obj(self):

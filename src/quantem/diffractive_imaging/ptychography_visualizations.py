@@ -3,6 +3,7 @@ from typing import Any, Literal, cast
 import matplotlib.gridspec as gridspec
 import matplotlib.pyplot as plt
 import numpy as np
+from scipy.signal.windows import tukey
 
 from quantem.core import config
 from quantem.core.visualization import show_2d
@@ -15,7 +16,7 @@ class PtychographyVisualizations(PtychographyBase):
         self,
         obj: np.ndarray | None = None,
         cbar: bool = False,
-        norm: Literal["quantile", "manual", "minmax", "abs"] = "quantile",
+        # norm: Literal["quantile", "manual", "minmax", "abs"] = "quantile",
         **kwargs,
     ):
         if obj is None:
@@ -25,12 +26,12 @@ class PtychographyVisualizations(PtychographyBase):
             if obj.ndim == 2:
                 obj = obj[None, ...]
 
-        if norm == "quantile":
-            norm_dict = {"interval_type": "quantile"}
-        elif norm in ["manual", "minmax", "abs"]:
-            norm_dict = {"interval_type": "manual"}
-        else:
-            raise ValueError(f"Unknown norm type: {norm}")
+        # if norm == "quantile":
+        #     norm_dict = {"interval_type": "quantile"}
+        # elif norm in ["manual", "minmax", "abs"]:
+        #     norm_dict = {"interval_type": "manual"}
+        # else:
+        #     raise ValueError(f"Unknown norm type: {norm}")
 
         ph_cmap = config.get("viz.phase_cmap")
         if obj.shape[0] > 1:
@@ -60,11 +61,70 @@ class PtychographyVisualizations(PtychographyBase):
             ims,
             title=titles,
             cmap=cmaps,
-            norm=norm_dict,
+            # norm=norm_dict,
             cbar=cbar,
             scalebar=scalebar,
             **kwargs,
         )
+
+    def show_obj_fft(
+        self,
+        obj: np.ndarray | None = None,
+        tukey_alpha: float = 0.5,
+        pad: int = 0,
+        show_obj: bool = False,
+        return_fft: bool = False,
+        **kwargs,
+    ):
+        if obj is None:
+            obj_np = self.obj_cropped.sum(0)
+        else:
+            obj_np = self._to_numpy(obj)
+            if obj_np.ndim == 3:
+                obj_np = obj.sum(0)
+            else:
+                if obj_np.ndim != 2:
+                    raise ValueError(f"obj must be 2D, got {obj_np.ndim}D")
+
+        window_2d = (
+            tukey(obj_np.shape[0], tukey_alpha)[:, None]
+            * tukey(obj_np.shape[1], tukey_alpha)[None, :]
+        )
+        if self.obj_type == "potential":
+            windowed_obj = obj_np * window_2d
+        else:
+            windowed_obj = np.abs(obj_np) * window_2d * np.exp(1j * np.angle(obj_np) * window_2d)
+        obj_pad = np.pad(windowed_obj, pad, mode="constant", constant_values=0)
+
+        obj_fft = np.fft.fftshift(np.fft.fft2(obj_pad))
+
+        fft_sampling = 1 / (self.sampling[0] * obj_pad.shape[0])
+        fft_scalebar = {"sampling": fft_sampling, "units": r"$\mathrm{A^{-1}}$"}
+
+        if show_obj:
+            obj_scalebar = {"sampling": self.sampling[0], "units": "Å"}
+            if self.obj_type == "potential" or self.obj_type == "complex":
+                obj_show = obj_pad
+            else:  # self.obj_type == "pure_phase":
+                obj_show = np.angle(obj_pad)
+            stitle = kwargs.pop("title", "")
+            if len(stitle) > 0:
+                stitle = stitle + " "
+            show_2d(
+                [
+                    obj_show,
+                    np.abs(obj_fft),
+                ],
+                title=[stitle + "Object", stitle + "Fourier Transform"],
+                scalebar=[obj_scalebar, fft_scalebar],
+                **kwargs,
+            )
+        else:
+            show_2d(np.abs(obj_fft), scalebar=fft_scalebar, **kwargs)
+        if return_fft:
+            return obj_fft
+        else:
+            return
 
     def show_probe(self, probe: np.ndarray | None = None):
         if probe is None:
