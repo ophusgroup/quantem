@@ -182,7 +182,7 @@ class PtychographyVisualizations(PtychographyBase):
         probe_plot = np.abs(np.fft.fft2(probe[0]))
 
         if amplitudes is None:
-            amplitudes = self._to_numpy(self.dset.amplitudes.sum(0))
+            amplitudes = self._to_numpy(self.dset.centered_amplitudes.sum(0))
         else:
             amplitudes = self._to_numpy(amplitudes.sum(0))
 
