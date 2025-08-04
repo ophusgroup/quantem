@@ -37,6 +37,7 @@ def _show_2d_array(
     figax: Optional[tuple[Any, Any]] = None,
     figsize: tuple[int, int] = (8, 8),
     title: Optional[str] = None,
+    show_ticks: bool = False,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Display a 2D array as an image with optional colorbar and scalebar.
@@ -65,6 +66,8 @@ def _show_2d_array(
         Figure size in inches, used only if figax is None.
     title : str, optional
         Title for the plot.
+    show_ticks : bool, default=False
+        Whether to show axis ticks and labels.
 
     **kwargs : dict
         Additional keyword arguments passed to the plotting functions.
@@ -113,7 +116,11 @@ def _show_2d_array(
         fig, ax = figax
 
     ax.imshow(rgba, interpolation=config.get("viz.interpolation"))
-    ax.set(xticks=[], yticks=[], title=title)
+
+    if show_ticks:
+        ax.set(title=title)
+    else:
+        ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:
         divider = make_axes_locatable(ax)
@@ -156,6 +163,7 @@ def _show_2d_combined(
     figax: Optional[tuple[Any, Any]] = None,
     figsize: tuple[int, int] = (8, 8),
     title: Optional[str] = None,
+    show_ticks: bool = False,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Display multiple 2D arrays as a single combined image.
@@ -185,6 +193,8 @@ def _show_2d_combined(
         Figure size in inches, used only if figax is None.
     title : str, optional
         Title for the plot.
+    show_ticks : bool, default=False
+        Whether to show axis ticks and labels.
 
     Returns
     -------
@@ -229,7 +239,11 @@ def _show_2d_combined(
         fig, ax = figax
 
     ax.imshow(rgba, interpolation=config.get("viz.interpolation"))
-    ax.set(xticks=[], yticks=[], title=title)
+
+    if show_ticks:
+        ax.set(title=title)
+    else:
+        ax.set(xticks=[], yticks=[], title=title)
 
     if cbar:
         raise NotImplementedError()
@@ -373,6 +387,7 @@ def _normalize_show_args_to_grid(
     cbar: bool | Sequence[bool] | Sequence[Sequence[bool]] = False,
     title: str | Sequence[str] | Sequence[Sequence[str]] | None = None,
     chroma_boost: float | Sequence[float] = 1.0,
+    show_ticks: bool | Sequence[bool] | Sequence[Sequence[bool]] = False,
 ) -> list[list[dict]]:
     """Normalize all show arguments to grid format and return as list of dicts."""
     norms = _norm_show_args(norm, shape)
@@ -381,6 +396,7 @@ def _normalize_show_args_to_grid(
     chroma_boosts = _norm_show_args(chroma_boost, shape)
     cbars = _norm_show_args(cbar, shape)
     titles = _norm_show_args(title, shape)
+    show_ticks_list = _norm_show_args(show_ticks, shape)
 
     args = [
         [
@@ -391,6 +407,7 @@ def _normalize_show_args_to_grid(
                 "chroma_boost": chroma_boosts[i][j],
                 "cbar": cbars[i][j],
                 "title": titles[i][j],
+                "show_ticks": show_ticks_list[i][j],
             }
             for j in range(shape[1])
         ]
@@ -409,6 +426,7 @@ def show_2d(
     title: str | Sequence[str] | Sequence[Sequence[str]] | None = None,
     figax: tuple[Any, Any] | None = None,
     axsize: tuple[int, int] = (4, 4),
+    show_ticks: bool | Sequence[bool] | Sequence[Sequence[bool]] = False,
     **kwargs: Any,
 ) -> tuple[Any, Any]:
     """Display one or more 2D arrays in a grid layout.
@@ -442,6 +460,8 @@ def show_2d(
         (fig, axs) tuple to use for plotting. If None, a new figure and axes are created.
     axsize : tuple, default=(4, 4)
         Size of each subplot in inches.
+    show_ticks : bool, default=False
+        Whether to show axis ticks and labels.
     tight_layout : bool, default=True
         Whether to apply tight_layout to the figure.
     combine_images : bool, default=False
@@ -493,6 +513,7 @@ def show_2d(
         cbar=cbar,
         title=kwargs.pop("titles", None) if title is None else title,
         chroma_boost=kwargs.pop("chroma_boost", 1.0),
+        show_ticks=show_ticks,
     )
 
     if figax is not None:
