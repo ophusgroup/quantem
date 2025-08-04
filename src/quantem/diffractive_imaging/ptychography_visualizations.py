@@ -165,6 +165,39 @@ class PtychographyVisualizations(PtychographyBase):
             titles = "Fourier Probe"
         show_2d(probes, title=titles, scalebar=scalebar)
 
+    def show_fourier_probe_and_amplitudes(
+        self,
+        probe: np.ndarray | None = None,
+        amplitudes: np.ndarray | None = None,
+        fft_shift: bool = False,
+        **kwargs,
+    ):
+        if probe is None:
+            probe = self.probe
+        else:
+            probe = self._to_numpy(probe)
+            if probe.ndim == 2:
+                probe = probe[None, ...]
+
+        probe_plot = np.abs(np.fft.fft2(probe[0]))
+
+        if amplitudes is None:
+            amplitudes = self._to_numpy(self.dset.amplitudes.sum(0))
+        else:
+            amplitudes = self._to_numpy(amplitudes.sum(0))
+
+        scalebar = [{"sampling": self.reciprocal_sampling[0], "units": r"$\mathrm{A^{-1}}$"}]
+
+        if fft_shift:
+            probe_plot = np.fft.fftshift(probe_plot)
+        else:
+            amplitudes = np.fft.fftshift(amplitudes)
+
+        figsize = kwargs.pop("figsize", (10, 5))
+        fig, ax = plt.subplots(1, 2, figsize=figsize)
+        show_2d(probe_plot, title="fourier probe", scalebar=scalebar, figax=(fig, ax[0]), **kwargs)
+        show_2d(amplitudes, title="amplitudes", figax=(fig, ax[1]), **kwargs)
+
     def show_obj_and_probe(self, cbar: bool = False, figax=None):
         """shows the summed object and summed probe"""
         ims = []
