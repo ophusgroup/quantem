@@ -23,6 +23,7 @@ from quantem.core.utils.validators import (
 from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.constraints import BaseConstraints
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
+from quantem.diffractive_imaging.rng_mixin import RNGMixin
 
 """
 Currently all object models.obj are complex valued for "complex" or "pure_phase" object types,
@@ -40,7 +41,7 @@ sure if this would lead to other issues, so a bit of testing will be needed.
 # TODO - clean up how shape and num_slices are handled, redundant and allows for errors
 
 
-class ObjectBase(OptimizerMixin, AutoSerialize):
+class ObjectBase(RNGMixin, OptimizerMixin, AutoSerialize):
     """
     Base class for all ObjectModels to inherit from.
     """
@@ -201,7 +202,7 @@ class ObjectBase(OptimizerMixin, AutoSerialize):
 
     def to(self, device: str | torch.device):
         self.device = device
-        self._rng_torch = torch.Generator(device=device).manual_seed(self._rng_seed % 2**32)
+        self._rng_to_device(device)
 
     @property
     @abstractmethod
@@ -238,22 +239,6 @@ class ObjectBase(OptimizerMixin, AutoSerialize):
         raise NotImplementedError(
             f"Analytical gradients are not implemented for {Self}, use autograd=True"
         )
-
-    @property
-    def rng(self) -> np.random.Generator | None:
-        return self._rng
-
-    @rng.setter
-    def rng(self, rng: np.random.Generator | int | None):
-        if rng is None:
-            rng = np.random.default_rng()
-        elif isinstance(rng, (int, float)):
-            rng = np.random.default_rng(rng)
-        elif not isinstance(rng, np.random.Generator):
-            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
-        self._rng = rng
-        self._rng_seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(self._rng_seed % 2**32)
 
 
 class ObjectConstraints(BaseConstraints, ObjectBase):

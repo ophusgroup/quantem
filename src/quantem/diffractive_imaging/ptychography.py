@@ -21,73 +21,6 @@ else:
         import torch
 
 
-class MemoryProfiler:
-    """Utility class for profiling GPU memory usage during reconstruction."""
-
-    def __init__(self, device: str):
-        self.device = device
-        self.is_cuda = "cuda" in str(device) or device == "gpu"
-        self.memory_log = []
-        self.peak_memory = 0
-
-    def log_memory(self, step_name: str, additional_info: str = ""):
-        if not self.is_cuda:
-            return
-
-        try:
-            allocated = torch.cuda.memory_allocated(self.device) / 1024**3  # GB
-            reserved = torch.cuda.memory_reserved(self.device) / 1024**3  # GB
-            max_allocated = torch.cuda.max_memory_allocated(self.device) / 1024**3
-
-            self.peak_memory = max(self.peak_memory, allocated)
-
-            log_entry = {
-                "step": step_name,
-                "allocated_gb": allocated,
-                "reserved_gb": reserved,
-                "max_allocated_gb": max_allocated,
-                "info": additional_info,
-            }
-            self.memory_log.append(log_entry)
-
-            print(
-                f"[MEMORY] {step_name}: {allocated:.2f}GB allocated, {reserved:.2f}GB reserved {additional_info}"
-            )
-
-        except Exception as e:
-            print(f"Memory profiling error: {e}")
-
-    def get_memory_summary(self):
-        if not self.memory_log:
-            return "No memory data collected"
-
-        summary = "\n=== MEMORY PROFILING SUMMARY ===\n"
-        summary += f"Peak allocated memory: {self.peak_memory:.2f}GB\n"
-        summary += f"Final allocated memory: {self.memory_log[-1]['allocated_gb']:.2f}GB\n\n"
-
-        # Find largest memory jumps
-        summary += "Largest memory increases:\n"
-        max_increases = []
-        for i in range(1, len(self.memory_log)):
-            prev = self.memory_log[i - 1]["allocated_gb"]
-            curr = self.memory_log[i]["allocated_gb"]
-            increase = curr - prev
-            if increase > 0.1:  # Only show increases > 100MB
-                max_increases.append(
-                    (increase, self.memory_log[i]["step"], self.memory_log[i]["info"])
-                )
-
-        max_increases.sort(reverse=True)
-        for increase, step, info in max_increases[:5]:
-            summary += f"  +{increase:.2f}GB at {step} {info}\n"
-
-        return summary
-
-    def reset_peak_memory(self):
-        if self.is_cuda:
-            torch.cuda.reset_peak_memory_stats(self.device)
-
-
 class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase):
     """
     A class for performing phase retrieval using the Ptychography algorithm.
@@ -130,7 +63,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
     # endregion --- explicit properties and setters ---
 
     # region --- methods ---
-
+    # TODO reset RNG as well
     def reset_recon(self) -> None:
         super().reset_recon()
         self.obj_model.reset_optimizer()
@@ -251,6 +184,7 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
             self._reset_epoch_constraints()
 
             for batch_indices in batcher:
+                self.zero_grad_all()
                 patch_indices, _positions_px, positions_px_fractional, descan_shifts = (
                     self.dset.forward(batch_indices, self.obj_padding_px, learn_descan)
                 )
@@ -284,7 +218,6 @@ class Ptychography(PtychographyOpt, PtychographyVisualizations, PtychographyBase
                     targets,
                 )
                 self.step_optimizers()
-                self.zero_grad_all()
 
                 batch_losses.append(total_loss.item())
 

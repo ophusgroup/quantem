@@ -35,6 +35,7 @@ from quantem.diffractive_imaging.ptycho_utils import (
     fourier_translation_operator,
     sum_patches,
 )
+from quantem.diffractive_imaging.rng_mixin import RNGMixin
 
 """
 design patterns:
@@ -46,7 +47,7 @@ design patterns:
 """
 
 
-class PtychographyBase(AutoSerialize):
+class PtychographyBase(RNGMixin, AutoSerialize):
     """
     A base class for performing phase retrieval using the Ptychography algorithm.
 
@@ -400,22 +401,6 @@ class PtychographyBase(AutoSerialize):
         return self._to_numpy(self.probe_model.probe)
 
     @property
-    def rng(self) -> np.random.Generator:
-        return self._rng
-
-    @rng.setter
-    def rng(self, rng: np.random.Generator | int | None):
-        if rng is None:
-            rng = np.random.default_rng()
-        elif isinstance(rng, (int, float)):
-            rng = np.random.default_rng(rng)
-        elif not isinstance(rng, np.random.Generator):
-            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
-        self._rng = rng
-        seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed from the generator
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(seed % 2**32)
-
-    @property
     def store_iterations(self) -> bool:
         return self._store_iterations
 
@@ -444,6 +429,7 @@ class PtychographyBase(AutoSerialize):
                 return snapshot
         raise ValueError(f"No snapshot found at iteration: {iteration}")
 
+    # TODO overload this to type hint proper object model type
     @property
     def obj_model(self) -> ObjectModelType:
         return self._obj_model
@@ -794,6 +780,7 @@ class PtychographyBase(AutoSerialize):
         return np.repeat(arr, repeats, axis=axis)
 
     def reset_recon(self) -> None:
+        self._reset_rng()
         self.obj_model.reset()
         self.probe_model.reset()
         self.dset.reset()
@@ -876,6 +863,7 @@ class PtychographyBase(AutoSerialize):
         self.dset.to(dev)
         self._obj_fov_mask = self._to_torch(self._obj_fov_mask)
         self._propagators = self._to_torch(self._propagators)
+        self._rng_to_device(dev)
 
     # endregion
 

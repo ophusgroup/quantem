@@ -21,6 +21,7 @@ from quantem.core.utils.validators import (
     validate_array,
     validate_dict_keys,
     validate_gt,
+    validate_np_len,
     validate_tensor,
 )
 from quantem.core.visualization import show_2d
@@ -34,13 +35,14 @@ from quantem.diffractive_imaging.ptycho_utils import (
     fourier_shift_expand,
     shift_array,
 )
+from quantem.diffractive_imaging.rng_mixin import RNGMixin
 
 # TODO class methods for probe models
 # - pixelated should have from_params and from_array
 # - DIP should have from_model
 
 
-class ProbeBase(OptimizerMixin, AutoSerialize):
+class ProbeBase(RNGMixin, OptimizerMixin, AutoSerialize):
     DEFAULT_PROBE_PARAMS = {
         "energy": None,
         "defocus": None,
@@ -192,37 +194,19 @@ class ProbeBase(OptimizerMixin, AutoSerialize):
         self._mean_diffraction_intensity = m
 
     @property
-    def rng(self) -> np.random.Generator:
-        return self._rng
-
-    @rng.setter
-    def rng(self, rng: np.random.Generator | int | None):
-        if rng is None:
-            rng = np.random.default_rng()
-        elif isinstance(rng, (int, float)):
-            rng = np.random.default_rng(rng)
-        elif not isinstance(rng, np.random.Generator):
-            raise TypeError(f"rng should be a np.random.Generator or a seed, got {type(rng)}")
-        self._rng = rng
-        self._rng_seed = rng.bit_generator._seed_seq.entropy  # type:ignore ## get the seed
-        self._rng_torch = torch.Generator(device=self.device).manual_seed(self._rng_seed % 2**32)
-
-    @property
     def reciprocal_sampling(self) -> np.ndarray:
         """reciprocal sampling of the probe"""
         return to_numpy(self._reciprocal_sampling)
 
     @reciprocal_sampling.setter
     def reciprocal_sampling(self, sampling: np.ndarray | list | tuple):
-        sampling = validate_array(
-            sampling,
-            name="reciprocal_sampling",
+        val = validate_array(
+            validate_np_len(sampling, 2, name="reciprocal_sampling"),
             dtype=config.get("dtype_real"),
-            shape=(2,),
-            expand_dims=True,
+            ndim=1,
+            name="reciprocal_sampling",
         )
-        validate_arr_gt(sampling, 0.0, "reciprocal_sampling")
-        self._reciprocal_sampling = sampling
+        self._reciprocal_sampling = self._to_torch(val)
 
     @property
     def num_probes(self) -> int:
@@ -329,7 +313,7 @@ class ProbeBase(OptimizerMixin, AutoSerialize):
     def to(self, device: str | torch.device):
         """Move all relevant tensors to a different device."""
         self.device = device
-        self._rng_torch = torch.Generator(device=device).manual_seed(self._rng_seed % 2**32)
+        self._rng_to_device(device)
 
     @property
     @abstractmethod
