@@ -15,7 +15,7 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.ml.blocks import reset_weights
 from quantem.core.ml.loss_functions import get_loss_function
 from quantem.core.ml.optimizer_mixin import OptimizerMixin
-from quantem.core.utils.utils import to_numpy
+from quantem.core.utils.utils import RNGMixin, to_numpy
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
@@ -35,7 +35,6 @@ from quantem.diffractive_imaging.ptycho_utils import (
     fourier_shift_expand,
     shift_array,
 )
-from quantem.diffractive_imaging.rng_mixin import RNGMixin
 
 # TODO class methods for probe models
 # - pixelated should have from_params and from_array

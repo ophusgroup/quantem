@@ -13,6 +13,7 @@ from quantem.core.io.serialize import AutoSerialize
 from quantem.core.ml.blocks import reset_weights
 from quantem.core.ml.loss_functions import get_loss_function
 from quantem.core.ml.optimizer_mixin import OptimizerMixin
+from quantem.core.utils.utils import RNGMixin
 from quantem.core.utils.validators import (
     validate_arr_gt,
     validate_array,
@@ -23,7 +24,6 @@ from quantem.core.utils.validators import (
 from quantem.core.visualization import show_2d
 from quantem.diffractive_imaging.constraints import BaseConstraints
 from quantem.diffractive_imaging.ptycho_utils import sum_patches
-from quantem.diffractive_imaging.rng_mixin import RNGMixin
 
 """
 Currently all object models.obj are complex valued for "complex" or "pure_phase" object types,
