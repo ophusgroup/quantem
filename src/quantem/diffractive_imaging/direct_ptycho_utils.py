@@ -1,4 +1,5 @@
 from collections import defaultdict
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal
 
 from quantem.core import config
@@ -23,6 +24,9 @@ from quantem.diffractive_imaging.complex_probe import (
 
 # bilinear corner offsets: (row offset, col offset)
 _BILINEAR_CORNERS = ((0, 0), (1, 0), (0, 1), (1, 1))
+
+#: rows x taps to hold at once when broadcasting an event list over a stencil
+_MAX_TAP_ELEMENTS = 4_194_304
 
 # fmt: off
 ABERRATION_PRESETS = {
@@ -917,6 +921,7 @@ def scatter_add_convolve(
     stencil_offsets: torch.Tensor,
     stencil_weights: torch.Tensor,
     *,
+    stencil_index: torch.Tensor | None = None,
     boundary: Literal["wrap", "pad"] = "wrap",
     interpolation: Literal["bilinear", "nearest"] = "bilinear",
     out: torch.Tensor | None = None,
@@ -938,15 +943,21 @@ def scatter_add_convolve(
     Parameters
     ----------
     values : torch.Tensor
-        ``(B, T)`` values to deposit.
+        ``(B, T)`` values to deposit, or ``(E,)`` when ``stencil_index`` is given.
     coords : torch.Tensor
-        ``(B, T, 2)`` canvas coordinates in pixels, ordered ``(row, col)``.
+        ``(B, T, 2)`` canvas coordinates in pixels, ordered ``(row, col)``, or ``(E, 2)``
+        when ``stencil_index`` is given.
     canvas_shape : tuple of int
         ``(n_rows, n_cols)`` of the output canvas.
     stencil_offsets : torch.Tensor
         ``(S, 2)`` integer pixel offsets of the stencil taps.
     stencil_weights : torch.Tensor
         ``(B, S)`` complex weight of each tap, per batch element.
+    stencil_index : torch.Tensor, optional
+        ``(E,)`` row of ``stencil_weights`` to use for each value, which turns the dense
+        ``(B, T)`` grid into a flat list of ``E`` deposits. Sparse frames arrive in this form,
+        with one entry per occupied (detector pixel, scan position) cell rather than one per
+        cell of the full grid.
     out : torch.Tensor, optional
         Flat complex ``(n_rows * n_cols,)`` accumulator to add into.
 
@@ -980,14 +991,37 @@ def scatter_add_convolve(
             w_col = frac[..., 1] if d_col else 1 - frac[..., 1]
             corner_weight = (w_row * w_col).to(out.dtype)
 
-        for tap, (s_row, s_col) in enumerate(stencil_offsets.tolist()):
-            contribution = values * stencil_weights[:, tap : tap + 1]
+        if stencil_index is None:
+            for tap, (s_row, s_col) in enumerate(stencil_offsets.tolist()):
+                contribution = values * stencil_weights[:, tap : tap + 1]
+                if corner_weight is not None:
+                    contribution = contribution * corner_weight
+
+                flat_indices, contribution = _resolve_indices(
+                    base_row + d_row + int(s_row),
+                    base_col + d_col + int(s_col),
+                    contribution,
+                    n_rows,
+                    n_cols,
+                    boundary,
+                )
+                out.index_add_(0, flat_indices, contribution.reshape(-1))
+            continue
+
+        # A flat event list is short enough to broadcast the taps rather than loop them. Each
+        # tap is one `index_add_` over comparatively few rows, so a loop over a few hundred of
+        # them is dominated by launch overhead rather than by arithmetic.
+        taps = int(stencil_offsets.shape[0])
+        chunk = max(1, _MAX_TAP_ELEMENTS // max(taps, 1))
+        for lo in range(0, int(values.shape[0]), chunk):
+            window = slice(lo, lo + chunk)
+            contribution = values[window, None] * stencil_weights[stencil_index[window]]
             if corner_weight is not None:
-                contribution = contribution * corner_weight
+                contribution = contribution * corner_weight[window, None]
 
             flat_indices, contribution = _resolve_indices(
-                base_row + d_row + int(s_row),
-                base_col + d_col + int(s_col),
+                base_row[window, None] + d_row + stencil_offsets[None, :, 0],
+                base_col[window, None] + d_col + stencil_offsets[None, :, 1],
                 contribution,
                 n_rows,
                 n_cols,
@@ -1133,6 +1167,444 @@ def build_vbf_stack_from_dataset3d(
 
     return (
         vbf_stack,
+        positions_px,
+        bf_mask_dataset,
+        scan_gpts,
+        scan_sampling,
+        rotation_angle,
+        tuple(float(v) for v in scan_origin),
+    )
+
+
+@dataclass
+class EventStack:
+    """
+    Detected electrons as a flat table, sorted by bright-field pixel.
+
+    The sparse counterpart of the ``(N_bf, N_pos)`` vBF stack. That array holds one entry per
+    (bright-field pixel, scan position) pair whatever was detected there, so its size follows
+    the acquisition geometry rather than the dose. This holds one row per occupied cell
+    instead, which is smaller whenever most cells are empty.
+
+    Rows are sorted by ``bf_index`` so that a contiguous batch of bright-field pixels is a
+    contiguous slice, which is the order ``reconstruct`` iterates the detector in.
+
+    Attributes
+    ----------
+    position_index : torch.Tensor
+        ``(E,)`` row of ``positions_px`` each electron was detected at.
+    bf_index : torch.Tensor
+        ``(E,)`` row of the vBF stack, equivalently which bright-field pixel it landed on.
+    weights : torch.Tensor
+        ``(E,)`` measured intensity of each cell. Ones unless a pixel was struck more than
+        once, the ``Vector`` carried an intensity field, or a bilinear origin shift split rows
+        across neighbouring detector pixels.
+    bf_offsets : torch.Tensor
+        ``(N_bf + 1,)`` start of each bright-field pixel's slice of the sorted table.
+    mean_per_bf : torch.Tensor
+        ``(N_bf,)`` scan-mean of each bright-field image, the quantity ``_preprocess``
+        subtracts from a dense stack.
+    counts_per_position : torch.Tensor
+        ``(N_pos,)`` total intensity at each scan position, for ``subtract_frame_mean``.
+    """
+
+    position_index: "torch.Tensor"
+    bf_index: "torch.Tensor"
+    weights: "torch.Tensor"
+    bf_offsets: "torch.Tensor"
+    mean_per_bf: "torch.Tensor"
+    counts_per_position: "torch.Tensor"
+    num_bf: int
+    num_positions: int
+
+    def slice_for(self, bf_lo: int, bf_hi: int):
+        """``(position_index, bf_index, weights)`` for bright-field pixels ``[bf_lo, bf_hi)``."""
+        start = int(self.bf_offsets[bf_lo])
+        stop = int(self.bf_offsets[bf_hi])
+        window = slice(start, stop)
+        return self.position_index[window], self.bf_index[window], self.weights[window]
+
+    def to(self, device):
+        """Move every table to ``device``, leaving the counts alone."""
+        return EventStack(
+            position_index=self.position_index.to(device),
+            bf_index=self.bf_index.to(device),
+            weights=self.weights.to(device),
+            bf_offsets=self.bf_offsets.to(device),
+            mean_per_bf=self.mean_per_bf.to(device),
+            counts_per_position=self.counts_per_position.to(device),
+            num_bf=self.num_bf,
+            num_positions=self.num_positions,
+        )
+
+
+def vector_from_frames(frames, fields=("kx", "ky"), name="events", aggregate=True):
+    """
+    A ragged ``Vector`` of detected electrons from a stack of counted diffraction patterns.
+
+    The inverse of histogramming an event list, for turning a simulated or already-counted
+    acquisition into the form :meth:`DirectPtychographyMontage.from_vector` takes. A raster
+    ``(Rx, Ry, Qx, Qy)`` stack keeps its scan grid, which pairs with
+    :meth:`Dataset4dstem.probe_positions`. A flat ``(N, Qx, Qy)`` one gives ``(N,)`` cells.
+
+    Parameters
+    ----------
+    frames : ndarray, torch.Tensor or Dataset
+        ``(..., Qx, Qy)`` counts. Values need not be integers, but they are intensities of a
+        detector pixel rather than a continuous signal, and zeros are dropped.
+    fields : sequence of str
+        Names for the two detector-coordinate columns, and optionally a third for the count.
+        With two names each detected electron becomes its own row. With three the count rides
+        in the third column instead, which is smaller wherever a pixel caught more than one.
+    aggregate : bool
+        Ignored unless three ``fields`` are given, where ``False`` would expand the counts
+        anyway. Kept so the two forms can be compared.
+
+    Returns
+    -------
+    Vector
+        Fixed grid matching ``frames.shape[:-2]``, one cell per pattern.
+    """
+    from quantem.core.datastructures import Dataset, Vector
+
+    if isinstance(frames, Dataset):
+        frames = frames.array
+    if hasattr(frames, "detach"):
+        frames = frames.detach().cpu().numpy()
+    frames = np.asarray(frames)
+    if frames.ndim < 3:
+        raise ValueError(f"`frames` must be (..., Qx, Qy), got shape {frames.shape}.")
+
+    fields = list(fields)
+    if len(fields) not in (2, 3):
+        raise ValueError(f"`fields` must name two or three columns, got {fields}.")
+    weighted = len(fields) == 3 and aggregate
+
+    grid = frames.shape[:-2]
+    flat = frames.reshape(-1, *frames.shape[-2:])
+
+    cells = []
+    for frame in flat:
+        kx, ky = np.nonzero(frame)
+        counts = frame[kx, ky]
+        pixels = np.stack((kx, ky), axis=-1).astype(np.float64)
+        if weighted:
+            cells.append(np.concatenate((pixels, counts[:, None].astype(np.float64)), axis=-1))
+        else:
+            repeats = np.rint(counts).astype(np.int64)
+            cells.append(np.repeat(pixels, repeats, axis=0))
+
+    # `Vector.from_data` reads the fixed grid off the outer nesting, so rebuild it
+    nested = cells
+    for size in reversed(grid[1:]):
+        nested = [nested[i : i + size] for i in range(0, len(nested), size)]
+
+    return Vector.from_data(
+        nested,
+        fields=fields,
+        units=["px", "px", "counts"][: len(fields)],
+        name=name,
+    )
+
+
+def _event_table_from_vector(vector, weight_field: str | None):
+    """``(position_index, coords, weights)`` for every row of a ragged Vector.
+
+    A fixed grid of more than one dimension is flattened row-major, which is the order
+    :meth:`Dataset4dstem.probe_positions` lists a raster scan in.
+    """
+    if tuple(vector.shape) == ():
+        raise ValueError("`vector` must have a fixed grid of diffraction patterns, not a cell.")
+
+    missing = [f for f in ("kx", "ky") if f not in vector.fields]
+    if missing:
+        raise ValueError(
+            f"`vector` must carry 'kx' and 'ky' fields of detector pixel coordinates, missing "
+            f"{missing}. Its fields are {vector.fields}."
+        )
+
+    coords = np.asarray(vector.select_fields("kx", "ky").flatten(), dtype=np.float64)
+    row_counts = np.asarray(vector.row_counts(), dtype=np.int64)
+    position_index = np.repeat(np.arange(row_counts.size, dtype=np.int64), row_counts)
+
+    if weight_field is None:
+        weights = np.ones(coords.shape[0], dtype=np.float64)
+    else:
+        if weight_field not in vector.fields:
+            raise ValueError(
+                f"`weight_field={weight_field!r}` is not a field of `vector`, whose fields are "
+                f"{vector.fields}."
+            )
+        weights = np.asarray(
+            vector.select_fields(weight_field).flatten(), dtype=np.float64
+        ).reshape(-1)
+
+    return position_index, coords, weights
+
+
+def _measure_event_origins(position_index, coords, weights, num_positions, device):
+    """Per-frame intensity-weighted center of mass, in detector pixels.
+
+    The same quantity :meth:`CenterOfMassOriginModel.calculate_origin` takes as a moment of
+    each diffraction pattern, computed here as a weighted mean over that frame's rows. The two
+    agree exactly for events at integer pixel coordinates, and this one never builds the
+    patterns.
+    """
+    totals = np.bincount(position_index, weights=weights, minlength=num_positions)
+    # a frame with no counts has no measurable origin; leave it at the global one so the
+    # plane fit sees a finite value rather than a nan that would poison the covariance
+    safe = np.where(totals > 0, totals, 1.0)
+    measured = np.stack(
+        [
+            np.bincount(position_index, weights=weights * coords[:, axis], minlength=num_positions)
+            / safe
+            for axis in (0, 1)
+        ],
+        axis=-1,
+    )
+    global_com = (weights[:, None] * coords).sum(0) / max(weights.sum(), 1e-12)
+    measured[totals == 0] = global_com
+
+    return torch.as_tensor(measured, dtype=torch.float, device=device)
+
+
+def build_event_stack_from_vector(
+    vector,
+    positions,
+    scan_sampling,
+    gpts,
+    reciprocal_sampling,
+    detector_units=("A^-1", "A^-1"),
+    device: str | int = "cpu",
+    fit_method: str = "plane",
+    mode: str = "nearest",
+    force_measured_origin=None,
+    force_fitted_origin=None,
+    rotation_angle: float | None = None,
+    intensity_threshold: float = 0.5,
+    weight_field: str | None = None,
+    normalization_order: int = 0,
+    bf_mask=None,
+):
+    """
+    Origin-correct and mask a ragged event list into an :class:`EventStack`.
+
+    The sparse counterpart of :func:`build_vbf_stack_from_dataset3d`, returning the same tuple
+    with the vBF stack replaced by an event table. Position bookkeeping,
+    ``scan_sampling="auto"`` inference and the bright-field threshold are shared with that
+    function, so the two entry points cannot drift apart.
+
+    Parameters
+    ----------
+    vector : Vector
+        ``(N,)`` ragged cells, one per diffraction pattern, with fields ``"kx"`` and ``"ky"``
+        holding detector pixel coordinates.
+    positions : Dataset2d, torch.Tensor or ndarray
+        ``(N, 2)`` probe positions in Angstrom.
+    gpts : tuple of int
+        ``(Qx, Qy)`` detector shape, which a ``Vector`` does not carry.
+    reciprocal_sampling : tuple of float
+        Detector pixel size, also absent from a ``Vector``. Units are ``detector_units``.
+    detector_units : tuple of str
+        ``("A^-1", "A^-1")`` or ``("mrad", "mrad")``.
+    mode : {"nearest", "bilinear"}
+        How the fitted origin shift is applied. ``"nearest"`` rounds each corrected coordinate
+        onto the detector grid, leaving one integer-weighted row per pixel that was actually
+        struck. ``"bilinear"`` instead splits each row across its four neighbours with the
+        weights the dense resample uses, which reproduces that path to float precision.
+
+        ``"nearest"`` is the default because a detection is a discrete event. Splitting it
+        fractionally invents counts that were never measured and correlates the shot noise of
+        neighbouring detector pixels, and it costs the sparsity that the event list exists for:
+        on apoferritin at 4 mrad the occupancy goes from 41% to 87%. Use ``"bilinear"`` when
+        the point is to reproduce ``from_dataset3d`` exactly on a sub-pixel origin.
+
+    Returns
+    -------
+    events, positions_px, bf_mask_dataset, scan_gpts, scan_sampling, rotation_angle, scan_origin
+    """
+    from quantem.core.datastructures import Dataset2d
+    from quantem.diffractive_imaging.origin_models import fit_origin_from_measured
+
+    gpts = tuple(int(n) for n in gpts)
+    if len(gpts) != 2:
+        raise ValueError(f"`gpts` must be a (Qx, Qy) pair, got {gpts}.")
+    if rotation_angle is None:
+        raise ValueError(
+            "`rotation_angle` must be given for an event list, in degrees: rotation is "
+            "otherwise estimated from the curl of the center of mass over a 2D scan grid, "
+            "which an ungridded acquisition lacks."
+        )
+    if mode not in ("nearest", "bilinear"):
+        raise ValueError(f"`mode` must be 'nearest' or 'bilinear', got {mode!r}")
+    if normalization_order != 0:
+        raise ValueError(
+            "`normalization_order=1` fits a 2D linear background per bright-field image "
+            "and needs a scan grid, which an event list does not have; use "
+            "`normalization_order=0`."
+        )
+
+    positions_ang = validate_probe_positions(positions)
+    position_index, coords, weights = _event_table_from_vector(vector, weight_field)
+    num_positions = int(positions_ang.shape[0])
+    if int(np.prod(vector.shape)) != num_positions:
+        raise ValueError(
+            f"`positions` has {num_positions} rows but `vector` has "
+            f"{int(np.prod(vector.shape))} diffraction patterns, over a fixed grid of "
+            f"{tuple(vector.shape)}."
+        )
+
+    if isinstance(scan_sampling, str):
+        if scan_sampling != "auto":
+            raise ValueError(f"`scan_sampling` must be a pair or 'auto', got {scan_sampling!r}")
+        scan_sampling = infer_scan_sampling(positions_ang)
+        warnings.warn(
+            f"Inferred scan_sampling={scan_sampling} Angstrom from the median "
+            "nearest-neighbour position spacing.",
+            stacklevel=3,
+        )
+    scan_sampling = tuple(float(s) for s in scan_sampling)
+
+    # measure and fit the origin, mirroring `fit_and_shift_diffraction_origin`
+    if force_fitted_origin is not None:
+        origin_fitted = validate_tensor(
+            force_fitted_origin, "fitted origin", dtype=torch.float
+        ).view((-1, 2))
+    else:
+        if force_measured_origin is None:
+            origin_measured = _measure_event_origins(
+                position_index, coords, weights, num_positions, device
+            )
+        else:
+            origin_measured = (
+                validate_tensor(force_measured_origin, "measured origin", dtype=torch.float)
+                .to(device)
+                .view((-1, 2))
+                .expand((num_positions, 2))
+            )
+        origin_fitted = fit_origin_from_measured(
+            origin_measured,
+            torch.as_tensor(positions_ang, dtype=torch.float, device=device),
+            fit_method=fit_method,
+            device=device,
+        )
+    origin_fitted = np.asarray(origin_fitted.detach().cpu().numpy(), dtype=np.float64).reshape(
+        -1, 2
+    )
+    if origin_fitted.shape[0] == 1:
+        origin_fitted = np.broadcast_to(origin_fitted, (num_positions, 2))
+
+    # shift by moving the coordinates rather than resampling an image
+    shifted = coords - origin_fitted[position_index]
+    if mode == "nearest":
+        detector_index = np.rint(shifted).astype(np.int64)
+    else:
+        base = np.floor(shifted)
+        frac = shifted - base
+        base = base.astype(np.int64)
+        detector_index = np.concatenate(
+            [base + np.array(corner, dtype=np.int64) for corner in _BILINEAR_CORNERS]
+        )
+        corner_weights = np.concatenate(
+            [
+                (frac[:, 0] if d_row else 1 - frac[:, 0])
+                * (frac[:, 1] if d_col else 1 - frac[:, 1])
+                for d_row, d_col in _BILINEAR_CORNERS
+            ]
+        )
+        weights = np.tile(weights, len(_BILINEAR_CORNERS)) * corner_weights
+        position_index = np.tile(position_index, len(_BILINEAR_CORNERS))
+
+    # corner-center the detector, matching `shift_origin_to`
+    detector_index = np.stack(
+        [detector_index[:, 0] % gpts[0], detector_index[:, 1] % gpts[1]], axis=-1
+    )
+
+    mean_pattern = np.bincount(
+        detector_index[:, 0] * gpts[1] + detector_index[:, 1],
+        weights=weights,
+        minlength=gpts[0] * gpts[1],
+    ).reshape(gpts) / max(num_positions, 1)
+    mean_pattern_t = torch.as_tensor(mean_pattern, dtype=torch.float, device=device)
+
+    if bf_mask is None:
+        bf_mask = mean_pattern_t > mean_pattern_t.max() * intensity_threshold
+    else:
+        bf_mask = validate_tensor(bf_mask, "bf_mask", dtype=torch.bool).to(device)
+        if tuple(bf_mask.shape) != gpts:
+            raise ValueError(
+                f"`bf_mask` has shape {tuple(bf_mask.shape)} but the detector is {gpts}."
+            )
+
+    # row-major enumeration of the true pixels, which is the order `torch.nonzero` gives and
+    # therefore the order `vbf_index_mapping` indexes the stack in
+    mask_flat = bf_mask.reshape(-1).cpu().numpy()
+    lookup = np.full(mask_flat.size, -1, dtype=np.int64)
+    lookup[mask_flat] = np.arange(int(mask_flat.sum()), dtype=np.int64)
+    num_bf = int(mask_flat.sum())
+
+    bf_index = lookup[detector_index[:, 0] * gpts[1] + detector_index[:, 1]]
+    keep = bf_index >= 0
+    bf_index = bf_index[keep]
+    position_index = position_index[keep]
+    weights = weights[keep]
+
+    # Collapse rows that share a (bright-field pixel, position) cell, so a weight holds that
+    # cell's measured intensity rather than one electron's contribution to it. Two electrons in
+    # one cell are not the same as one electron of twice the weight wherever the value is
+    # squared, which is what `variance_loss` accumulates. Sorting the key also sorts by
+    # bright-field pixel, so a contiguous batch of the detector stays a contiguous slice.
+    cell = bf_index * num_positions + position_index
+    occupied, inverse = np.unique(cell, return_inverse=True)
+    weights = np.bincount(inverse, weights=weights, minlength=occupied.size)
+    bf_index = occupied // num_positions
+    position_index = occupied % num_positions
+
+    bf_offsets = np.concatenate(([0], np.cumsum(np.bincount(bf_index, minlength=num_bf)))).astype(
+        np.int64
+    )
+
+    mean_per_bf = np.bincount(bf_index, weights=weights, minlength=num_bf) / max(num_positions, 1)
+    if normalization_order == 0:
+        # `normalize_vbf_stack` scales each bright-field image to unity mean over the scan,
+        # which for an event list is a per-row division by that pixel's mean. A pixel inside
+        # the mask that caught nothing has no scale, so its empty rows are left alone.
+        scale = np.where(mean_per_bf > 0, mean_per_bf, 1.0)
+        weights = weights / scale[bf_index]
+        mean_per_bf = np.where(mean_per_bf > 0, 1.0, 0.0)
+    elif normalization_order != 1:
+        raise ValueError(f"`normalization_order` must be 0 or 1, got {normalization_order!r}")
+
+    counts_per_position = np.bincount(position_index, weights=weights, minlength=num_positions)
+
+    def _tensor(array, dtype):
+        return torch.as_tensor(array, dtype=dtype, device=device)
+
+    events = EventStack(
+        position_index=_tensor(position_index, torch.int64),
+        bf_index=_tensor(bf_index, torch.int64),
+        weights=_tensor(weights, torch.float),
+        bf_offsets=_tensor(bf_offsets, torch.int64),
+        mean_per_bf=_tensor(mean_per_bf, torch.float),
+        counts_per_position=_tensor(counts_per_position, torch.float),
+        num_bf=num_bf,
+        num_positions=num_positions,
+    )
+
+    bf_mask_dataset = Dataset2d.from_array(
+        bf_mask.cpu().numpy(),
+        name="BF mask",
+        units=tuple(str(u) for u in detector_units),
+        sampling=tuple(float(s) for s in reciprocal_sampling),
+    )
+
+    # anchor to the position bounding box, then convert to canvas pixels
+    scan_origin = positions_ang.min(axis=0)
+    positions_px = (positions_ang - scan_origin) / np.asarray(scan_sampling)
+    scan_gpts = tuple(int(math.ceil(v)) + 1 for v in positions_px.max(axis=0))
+
+    return (
+        events,
         positions_px,
         bf_mask_dataset,
         scan_gpts,

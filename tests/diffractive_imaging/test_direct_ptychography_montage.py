@@ -750,14 +750,422 @@ class TestHyperparameterSearch:
         assert abs(best - true_defocus) <= step
 
 
+class TestSparseEvents:
+    """`from_vector` must reproduce `from_dataset3d` on the counts it was expanded from.
+
+    The comparison is exact rather than approximate: the event list is built by expanding an
+    integer-count stack, so the two constructors see identical data and every difference is a
+    difference of algorithm.
+    """
+
+    @staticmethod
+    def _counts(dataset4d, scale=40.0):
+        """Integer counts, in the ``(N_pos, N, N)`` layout `from_dataset3d` takes."""
+        frames = to_numpy(dataset4d.array).reshape(-1, N, N)
+        frames = frames - frames.min()
+        return np.rint(frames * (scale / frames.mean())).astype(np.int64)
+
+    @staticmethod
+    def _vector(counts, intensity_field=False):
+        from quantem.core.datastructures import Vector
+
+        cells = []
+        for frame in counts:
+            kx, ky = np.nonzero(frame)
+            weights = frame[kx, ky]
+            pixels = np.stack((kx, ky), axis=-1).astype(np.float64)
+            if intensity_field:
+                cells.append(np.concatenate((pixels, weights[:, None]), axis=-1))
+            else:
+                cells.append(np.repeat(pixels, weights, axis=0))
+        fields = ["kx", "ky", "intensity"] if intensity_field else ["kx", "ky"]
+        return Vector.from_data(cells, fields=fields, name="events")
+
+    @classmethod
+    def _pair(cls, dataset4d, defocus, *, intensity_field=False, boundary="wrap", **kwargs):
+        counts = cls._counts(dataset4d)
+        positions = scan_positions_px()[: counts.shape[0]] * SCAN_SAMPLING
+        common = dict(
+            scan_sampling=(SCAN_SAMPLING, SCAN_SAMPLING),
+            boundary=boundary,
+            **_common_kwargs(defocus),
+            **kwargs,
+        )
+
+        dataset3d = Dataset3d.from_array(
+            counts.astype(np.float64),
+            name="counts",
+            units=("index", "A^-1", "A^-1"),
+            sampling=(1, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+        )
+        dense = DirectPtychographyMontage.from_dataset3d(dataset3d, positions, **common)
+        sparse = DirectPtychographyMontage.from_vector(
+            cls._vector(counts, intensity_field),
+            positions,
+            (N, N),
+            (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            weight_field="intensity" if intensity_field else None,
+            **common,
+        )
+        return dense, sparse
+
+    @staticmethod
+    def _both(dense, sparse, **kwargs):
+        return (
+            dense.reconstruct(verbose=False, **kwargs).obj,
+            sparse.reconstruct(verbose=False, **kwargs).obj,
+        )
+
+    def test_prlx_matches_dense(self, dataset4d):
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        a, b = self._both(dense, sparse, deconvolution_kernel="prlx", parallax_flip_phase=False)
+        assert _relative_error(b, a) < 1e-5
+
+    @pytest.mark.parametrize("kernel", ["ssb", "obf", "mf"])
+    def test_deconvolution_stencils_match_dense(self, dataset4d, kernel):
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        a, b = self._both(
+            dense,
+            sparse,
+            deconvolution_kernel=kernel,
+            convolution_mode="stencil",
+            stencil_radius=4,
+        )
+        assert _relative_error(b, a) < 1e-4
+
+    @pytest.mark.parametrize("convolution_mode", ["fft", "stencil"])
+    def test_icom_matches_dense(self, dataset4d, convolution_mode):
+        """The riCOM collapse reads only the center of mass, which is linear in the counts."""
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        extra = {"stencil_radius": 4} if convolution_mode == "stencil" else {}
+        a, b = self._both(
+            dense,
+            sparse,
+            deconvolution_kernel="icom",
+            convolution_mode=convolution_mode,
+            **extra,
+        )
+        assert _relative_error(b, a) < 1e-4
+
+    @pytest.mark.parametrize("boundary", ["wrap", "pad"])
+    @pytest.mark.parametrize("interpolation", ["nearest", "bilinear"])
+    def test_boundaries_and_interpolation_match_dense(self, dataset4d, boundary, interpolation):
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1), boundary=boundary)
+        a, b = self._both(
+            dense,
+            sparse,
+            deconvolution_kernel="ssb",
+            convolution_mode="stencil",
+            stencil_radius=4,
+            interpolation=interpolation,
+        )
+        assert _relative_error(b, a) < 1e-4
+
+    def test_scattered_positions_match_dense(self, dataset4d):
+        """An ungridded scan, where the coverage the scan mean rides on is not constant."""
+        counts = self._counts(dataset4d)
+        rng = np.random.default_rng(0)
+        positions = scan_positions_px()[: counts.shape[0]] * SCAN_SAMPLING
+        positions = positions + rng.normal(0.0, 0.3 * SCAN_SAMPLING, positions.shape)
+
+        defocus = integer_shift_defocus(1)
+        common = dict(
+            scan_sampling=(SCAN_SAMPLING, SCAN_SAMPLING),
+            boundary="pad",
+            **_common_kwargs(defocus),
+        )
+        dataset3d = Dataset3d.from_array(
+            counts.astype(np.float64),
+            name="counts",
+            units=("index", "A^-1", "A^-1"),
+            sampling=(1, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+        )
+        dense = DirectPtychographyMontage.from_dataset3d(dataset3d, positions, **common)
+        sparse = DirectPtychographyMontage.from_vector(
+            self._vector(counts),
+            positions,
+            (N, N),
+            (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            **common,
+        )
+        a, b = self._both(
+            dense,
+            sparse,
+            deconvolution_kernel="prlx",
+            parallax_flip_phase=False,
+            weight_normalize=True,
+        )
+        assert _relative_error(b, a) < 1e-5
+
+    def test_subtract_frame_mean_matches_dense(self, dataset4d):
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1), subtract_frame_mean=True)
+        a, b = self._both(dense, sparse, deconvolution_kernel="prlx", parallax_flip_phase=False)
+        assert _relative_error(b, a) < 1e-5
+
+    def test_variance_loss_matches_dense(self, dataset4d):
+        """The sum of squares is quadratic, so it takes the three-term expansion."""
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        self._both(dense, sparse, deconvolution_kernel="prlx", parallax_flip_phase=False)
+        assert float(sparse.variance_loss()) == pytest.approx(
+            float(dense.variance_loss()), rel=1e-5
+        )
+
+    def test_bright_field_subset_matches_dense(self, dataset4d):
+        """`reconstruct(bf_mask=...)` re-indexes the event table onto the subset."""
+        dense, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        subset = to_numpy(dense.bf_mask).copy()
+        subset[:, ::2] = False
+
+        a, b = self._both(
+            dense,
+            sparse,
+            bf_mask=subset,
+            deconvolution_kernel="ssb",
+            convolution_mode="stencil",
+            stencil_radius=4,
+        )
+        assert _relative_error(b, a) < 1e-4
+
+    def test_intensity_field_weights_rows(self, dataset4d):
+        """One row carrying a count must equal that many repeated unit rows."""
+        _, expanded = self._pair(dataset4d, integer_shift_defocus(1))
+        _, weighted = self._pair(dataset4d, integer_shift_defocus(1), intensity_field=True)
+
+        kwargs = dict(deconvolution_kernel="prlx", parallax_flip_phase=False, verbose=False)
+        assert (
+            _relative_error(weighted.reconstruct(**kwargs).obj, expanded.reconstruct(**kwargs).obj)
+            < 1e-6
+        )
+
+    def test_measured_origin_matches_the_dense_center_of_mass(self, dataset4d):
+        """The per-frame event center of mass is the moment the dense model computes."""
+        from quantem.diffractive_imaging.direct_ptycho_utils import (
+            _event_table_from_vector,
+            _measure_event_origins,
+        )
+        from quantem.diffractive_imaging.origin_models import CenterOfMassOriginModel
+
+        counts = self._counts(dataset4d)
+        dataset3d = Dataset3d.from_array(
+            counts.astype(np.float64),
+            name="counts",
+            units=("index", "A^-1", "A^-1"),
+            sampling=(1, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+        )
+        expected = CenterOfMassOriginModel.from_dataset(dataset3d).calculate_origin()
+
+        position_index, coords, weights = _event_table_from_vector(self._vector(counts), None)
+        measured = _measure_event_origins(position_index, coords, weights, counts.shape[0], "cpu")
+        assert torch.allclose(measured, expected.origin_measured, atol=1e-4)
+
+    def test_fourier_route_is_refused(self, dataset4d):
+        """...but only for the kernels that would need a canvas per bright-field pixel."""
+        _, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+
+        with pytest.raises(ValueError, match="unavailable for the 'ssb' kernel on sparse"):
+            sparse.reconstruct(deconvolution_kernel="ssb", convolution_mode="fft", verbose=False)
+
+        for kernel in ("prlx", "icom"):
+            sparse.reconstruct(deconvolution_kernel=kernel, convolution_mode="fft", verbose=False)
+            assert sparse.obj is not None
+
+    def test_defocus_gradient_is_refused(self, dataset4d):
+        """A per-position defocus breaks the factorization the scan mean relies on."""
+        _, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+
+        with pytest.raises(NotImplementedError, match="not supported for sparse frames"):
+            sparse.reconstruct(
+                deconvolution_kernel="ssb",
+                convolution_mode="stencil",
+                stencil_radius=4,
+                defocus_gradient=(1e-3, 0.0),
+                verbose=False,
+            )
+
+    def test_defocus_map_is_refused(self, dataset4d):
+        """`_patch_variance_loss` reads the dense stack, so it must say so rather than fail."""
+        _, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+
+        with pytest.raises(NotImplementedError, match="not supported for sparse frames"):
+            sparse.fit_defocus_gradient(
+                c10_values=np.linspace(0.0, 2.0, 3), patch_grid=(2, 2), verbose=False
+            )
+
+    def test_raster_vector_matches_the_flat_one(self, dataset4d):
+        """A raster acquisition may keep its scan grid, flattened row-major to the positions."""
+        from quantem.core.datastructures import Dataset4dstem
+        from quantem.diffractive_imaging.direct_ptycho_utils import vector_from_frames
+
+        counts = self._counts(dataset4d)
+        side = int(round(np.sqrt(counts.shape[0])))
+        dataset = Dataset4dstem.from_array(
+            counts.reshape(side, side, N, N).astype(np.float64),
+            name="counts",
+            sampling=(SCAN_SAMPLING, SCAN_SAMPLING, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            units=["A", "A", "A^-1", "A^-1"],
+        )
+        common = dict(
+            scan_sampling=(SCAN_SAMPLING, SCAN_SAMPLING),
+            boundary="wrap",
+            **_common_kwargs(integer_shift_defocus(1)),
+        )
+        detector = ((N, N), (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING))
+
+        raster = DirectPtychographyMontage.from_vector(
+            vector_from_frames(np.asarray(dataset.array)),
+            dataset.probe_positions(),
+            *detector,
+            **common,
+        )
+        flat = DirectPtychographyMontage.from_vector(
+            vector_from_frames(counts),
+            scan_positions_px()[: counts.shape[0]] * SCAN_SAMPLING,
+            *detector,
+            **common,
+        )
+
+        kwargs = dict(deconvolution_kernel="prlx", parallax_flip_phase=False, verbose=False)
+        assert np.array_equal(raster.reconstruct(**kwargs).obj, flat.reconstruct(**kwargs).obj)
+
+    def test_an_intensity_column_round_trips_like_repeated_rows(self, dataset4d):
+        """`vector_from_frames` may carry the count rather than repeat the row."""
+        from quantem.diffractive_imaging.direct_ptycho_utils import (
+            _event_table_from_vector,
+            vector_from_frames,
+        )
+
+        counts = self._counts(dataset4d)[:8]
+        expanded = vector_from_frames(counts)
+        weighted = vector_from_frames(counts, fields=("kx", "ky", "intensity"))
+
+        assert expanded.total_rows == int(counts.sum())
+        assert weighted.total_rows == int((counts > 0).sum())
+
+        for vector, field in ((expanded, None), (weighted, "intensity")):
+            index, coords, weights = _event_table_from_vector(vector, field)
+            frames = np.zeros_like(counts, dtype=np.float64)
+            np.add.at(
+                frames,
+                (index, coords[:, 0].astype(int), coords[:, 1].astype(int)),
+                weights,
+            )
+            assert np.allclose(frames, counts)
+
+    def test_detector_dataset_supplies_the_reciprocal_calibration(self, dataset4d):
+        """`dataset.dp_mean` states shape, sampling and units together, so they cannot drift."""
+        from quantem.core.datastructures import Dataset4dstem
+        from quantem.diffractive_imaging.direct_ptycho_utils import vector_from_frames
+
+        counts = self._counts(dataset4d)
+        side = int(round(np.sqrt(counts.shape[0])))
+        dataset = Dataset4dstem.from_array(
+            counts.reshape(side, side, N, N).astype(np.float64),
+            name="counts",
+            sampling=(SCAN_SAMPLING, SCAN_SAMPLING, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            units=["A", "A", "A^-1", "A^-1"],
+        )
+        common = dict(
+            scan_sampling=(SCAN_SAMPLING, SCAN_SAMPLING),
+            boundary="wrap",
+            **_common_kwargs(integer_shift_defocus(1)),
+        )
+        vector = vector_from_frames(np.asarray(dataset.array))
+
+        from_dataset = DirectPtychographyMontage.from_vector(
+            vector, dataset.probe_positions(), dataset.dp_mean, **common
+        )
+        spelled_out = DirectPtychographyMontage.from_vector(
+            vector,
+            dataset.probe_positions(),
+            (N, N),
+            (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            detector_units=("A^-1", "A^-1"),
+            **common,
+        )
+        assert np.allclose(from_dataset.reciprocal_sampling, spelled_out.reciprocal_sampling)
+
+        kwargs = dict(deconvolution_kernel="prlx", parallax_flip_phase=False, verbose=False)
+        assert np.array_equal(
+            from_dataset.reconstruct(**kwargs).obj, spelled_out.reconstruct(**kwargs).obj
+        )
+
+    def test_detector_calibration_must_not_be_given_twice(self, dataset4d):
+        from quantem.core.datastructures import Dataset4dstem
+        from quantem.diffractive_imaging.direct_ptycho_utils import vector_from_frames
+
+        counts = self._counts(dataset4d)
+        side = int(round(np.sqrt(counts.shape[0])))
+        dataset = Dataset4dstem.from_array(
+            counts.reshape(side, side, N, N).astype(np.float64),
+            name="counts",
+            sampling=(SCAN_SAMPLING, SCAN_SAMPLING, RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+            units=["A", "A", "A^-1", "A^-1"],
+        )
+        with pytest.raises(ValueError, match="come from `detector`"):
+            DirectPtychographyMontage.from_vector(
+                vector_from_frames(np.asarray(dataset.array)),
+                dataset.probe_positions(),
+                dataset.dp_mean,
+                (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+                **_common_kwargs(0.0),
+            )
+
+        with pytest.raises(ValueError, match="`reciprocal_sampling` is required"):
+            DirectPtychographyMontage.from_vector(
+                vector_from_frames(np.asarray(dataset.array)),
+                dataset.probe_positions(),
+                (N, N),
+                **_common_kwargs(0.0),
+            )
+
+    def test_rejects_a_position_count_mismatch(self):
+        from quantem.core.datastructures import Vector
+
+        gridded = Vector.from_shape((2, 2), fields=["kx", "ky"])
+        with pytest.raises(ValueError, match="diffraction patterns"):
+            DirectPtychographyMontage.from_vector(
+                gridded,
+                np.zeros((3, 2)),
+                (N, N),
+                (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+                **_common_kwargs(0.0),
+            )
+
+    def test_rejects_a_vector_without_detector_fields(self):
+        from quantem.core.datastructures import Vector
+
+        vector = Vector.from_shape((4,), fields=["qx", "qy"])
+        with pytest.raises(ValueError, match="must carry 'kx' and 'ky'"):
+            DirectPtychographyMontage.from_vector(
+                vector,
+                np.zeros((4, 2)),
+                (N, N),
+                (RECIPROCAL_SAMPLING, RECIPROCAL_SAMPLING),
+                **_common_kwargs(0.0),
+            )
+
+    def test_dense_and_sparse_are_mutually_exclusive(self, dataset4d):
+        _, sparse = self._pair(dataset4d, integer_shift_defocus(1))
+        assert sparse.sparse_frames
+        assert sparse.vbf_stack is None
+        assert sparse.events.num_positions == sparse.num_positions
+
+        dense, _ = self._pair(dataset4d, integer_shift_defocus(1))
+        assert not dense.sparse_frames
+        assert dense.events is None
+
+
 class TestSerialization:
     """Both classes must survive a save/load round-trip and stay usable afterwards."""
 
-    @pytest.mark.parametrize("cls_name", ["fourier", "montage"])
+    @pytest.mark.parametrize("cls_name", ["fourier", "montage", "sparse"])
     def test_round_trip(self, dataset4d, tmp_path, cls_name):
         defocus = integer_shift_defocus(1)
-        fourier, montage = _build_pair(dataset4d, defocus)
-        recon = fourier if cls_name == "fourier" else montage
+        if cls_name == "sparse":
+            recon = TestSparseEvents._pair(dataset4d, defocus)[1]
+        else:
+            fourier, montage = _build_pair(dataset4d, defocus)
+            recon = fourier if cls_name == "fourier" else montage
 
         recon.hyperparameter_state.optimized_aberrations = {"C10": 123.0}
         recon.hyperparameter_state.optimized_rotation_angle = 7.5

@@ -31,13 +31,16 @@ else:
         import torch
 
 from quantem.diffractive_imaging.direct_ptycho_utils import (
+    EventStack,
     _crop_corner_centered_mask,
     _rotation_degrees_to_radians,
     allocate_splat_buffers,
+    build_event_stack_from_vector,
     build_vbf_stack_from_dataset3d,
     build_vbf_stack_from_dataset4d,
     convolve_stack_fourier,
     preferred_float_dtype,
+    scatter_add_convolve,
     scatter_add_splat,
     splat_and_convolve,
     splat_stack,
@@ -109,6 +112,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
     scan both masked and upsampled      here -- ``hole_fill`` cannot serve filled
                                         holes and deliberate gaps at once
     position-dependent defocus          here only
+    sparse, event-driven frames         here only -- see :meth:`from_vector`
     large bright-field mask             here -- see below
     ==================================  ==========================================
 
@@ -117,8 +121,45 @@ class DirectPtychographyMontage(DirectPtychographyBase):
     bright-field pixels on a 128x170 canvas -- where this class streams over detector pixels
     into one canvas for roughly 800 MB.
 
-    Instantiate with :meth:`from_dataset4d`, :meth:`from_virtual_bfs` or
-    :meth:`from_dataset3d`.
+    Sparse frames
+    -------------
+    :meth:`from_vector` takes the detected electrons rather than the frames they would
+    histogram into, and deposits one truncated kernel per occupied (bright-field pixel, scan
+    position) cell rather than one per pixel of every bright-field canvas.
+
+    The dense accumulation is a grouped convolution over ``num_bf * canvas_pixels``, whatever
+    those pixels hold. The sparse one visits the detected electrons and does not grow with the
+    canvas, so it is faster when ``events < num_bf * canvas_pixels / 7``. The constant is how
+    much more efficient a blocked convolution is per element than a scatter-add. A wrapped
+    canvas has one pixel per scan position, which makes that an occupancy of about
+    ``upsampling_factor**2 / 7``, or roughly 15% unupsampled.
+
+    Measured on apoferritin at 4 mrad and 1.5 um defocus, 2114 bright-field pixels over 5329
+    positions, at 10 e/A^2 over a 10 Ang step. Only the accumulation is timed, since the kernel
+    stencil either path builds first is the same work.
+
+    ====================  ==========  ==========
+    upsampling            dense       sparse
+    ====================  ==========  ==========
+    1 (73x73 canvas)      1.1 s       2.1 s
+    2 (146x146)           3.4 s       2.2 s
+    4 (292x292)           9.8 s       2.3 s
+    ====================  ==========  ==========
+
+    Occupancy is counted after the diffraction origin has been removed, so ``from_vector``'s
+    ``mode`` feeds into it. The default rounds the correction onto the detector grid and leaves
+    the list as sparse as the counts are. ``mode="bilinear"`` instead spreads each row over
+    four detector pixels to match the dense resample, which takes the 41% occupancy above to
+    87% and roughly halves the margin.
+
+    Two kernels sit outside that trade. ``icom`` reads only the per-position centre of mass,
+    which is one weighted sum over that position's rows, so the collapse is exact and cheap at
+    any occupancy. ``prlx`` saves memory and nothing else, since its deposit lands at every
+    (bright-field pixel, position) pair whatever the value, leaving the weight map and the scan
+    mean dense however few electrons arrived.
+
+    Instantiate with :meth:`from_dataset4d`, :meth:`from_virtual_bfs`, :meth:`from_dataset3d`
+    or :meth:`from_vector`.
 
     References
     ----------
@@ -163,18 +204,26 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         scan_origin: Tuple[float, float] | None = None,
         wavelength: float | None = None,
         fourier_probe: "FourierProbe | None" = None,
+        events: "EventStack | None" = None,
         _token: object | None = None,
     ):
         """ """
         if _token is not self._token:
             raise RuntimeError(
-                "Use DirectPtychographyMontage.from_dataset4d(), .from_virtual_bfs() or "
-                ".from_dataset3d() to instantiate this class."
+                "Use DirectPtychographyMontage.from_dataset4d(), .from_virtual_bfs(), "
+                ".from_dataset3d() or .from_vector() to instantiate this class."
             )
 
         self.device = device
         self.verbose = verbose
-        self.vbf_stack = vbf_stack
+        if (vbf_stack is None) == (events is None):
+            raise ValueError(
+                "Pass exactly one of `vbf_stack` (dense frames) or `events` (sparse)."
+            )
+        self._events = None if events is None else events.to(device)
+        self._vbf_stack = None
+        if vbf_stack is not None:
+            self.vbf_stack = vbf_stack
         self.positions_px = positions_px
         self.bf_mask = bf_mask_dataset.array  # ty:ignore[invalid-assignment]
         if crop_bf_mask:
@@ -196,8 +245,12 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         self.reciprocal_sampling = bf_mask_dataset.sampling
         self.angular_sampling = tuple(d * 1e3 * self.wavelength for d in self.reciprocal_sampling)
 
-        self.num_bf = int(self.vbf_stack.shape[0])
-        self.num_positions = int(self.vbf_stack.shape[1])
+        if self._events is None:
+            self.num_bf = int(self.vbf_stack.shape[0])
+            self.num_positions = int(self.vbf_stack.shape[1])
+        else:
+            self.num_bf = self._events.num_bf
+            self.num_positions = self._events.num_positions
         self.gpts = tuple(int(n) for n in self.bf_mask.shape[:2])
         self.sampling = tuple(1 / s / n for n, s in zip(self.reciprocal_sampling, self.gpts))
 
@@ -213,8 +266,9 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         self.rng = rng
 
         if self.positions_px.shape[0] != self.num_positions:
+            source = "`events`" if self._events is not None else "`vbf_stack`"
             raise ValueError(
-                f"`positions_px` has {self.positions_px.shape[0]} rows but `vbf_stack` has "
+                f"`positions_px` has {self.positions_px.shape[0]} rows but {source} has "
                 f"{self.num_positions} scan positions."
             )
 
@@ -466,6 +520,187 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             _token=cls._token,
         )
 
+    @classmethod
+    def from_vector(
+        cls,
+        vector,
+        positions: Dataset2d | torch.Tensor | NDArray,
+        detector: Dataset2d | Tuple[int, int],
+        reciprocal_sampling: Tuple[float, float] | None = None,
+        energy: float | None = None,
+        semiangle_cutoff: float | None = None,
+        rotation_angle: float | None = None,
+        scan_sampling: Tuple[float, float] | Literal["auto"] = "auto",
+        aberration_coefs: dict = {},
+        wavelength: float | None = None,
+        fourier_probe: "FourierProbe | None" = None,
+        detector_units: Tuple[str, str] | None = None,
+        bf_mask: torch.Tensor | NDArray | None = None,
+        weight_field: str | None = None,
+        fit_method: str = "plane",
+        mode: str = "nearest",
+        force_measured_origin: Tuple[float, float] | torch.Tensor | NDArray | None = None,
+        force_fitted_origin: Tuple[float, float] | torch.Tensor | NDArray | None = None,
+        intensity_threshold: float = 0.5,
+        boundary: Literal["wrap", "pad"] = "pad",
+        defocus_gradient: Tuple[float, float] | None = None,
+        subtract_frame_mean: bool = False,
+        soft_edges: bool = True,
+        crop_bf_mask: bool = True,
+        bf_mask_padding_px: int = 1,
+        rng: np.random.Generator | int | None = None,
+        device: str | int = "cpu",
+        verbose: int | bool = True,
+    ):
+        """
+        Build from a sparse, event-driven acquisition.
+
+        Takes the detected electrons themselves rather than the frames they would histogram
+        into, so the accumulation follows the dose rather than the canvas. The class docstring
+        has the measured crossover, which moves with ``upsampling_factor``.
+
+        Parameters
+        ----------
+        vector : Vector
+            Ragged cells, one per diffraction pattern, in the same order as ``positions``.
+            Fields ``"kx"`` and ``"ky"`` hold detector pixel coordinates, one row per detected
+            electron. A raster acquisition may keep its ``(Rx, Ry)`` grid, which is flattened
+            row-major to match :meth:`~quantem.core.datastructures.Dataset4dstem.probe_positions`.
+        positions : Dataset2d, torch.Tensor or ndarray
+            ``(N, 2)`` probe positions in Angstrom, ordered ``(row, col)``. A ``Dataset2d``
+            must carry units ``"A"``. For a raster scan,
+            :meth:`~quantem.core.datastructures.Dataset4dstem.probe_positions` builds them
+            from the dataset's own ``origin`` and ``sampling``::
+
+                events = vector_from_frames(counts)          # (Rx, Ry) ragged cells
+                montage = DirectPtychographyMontage.from_vector(
+                    events, dataset.probe_positions(), dataset.dp_mean, ...
+                )
+        detector : Dataset2d or tuple of int
+            The detector geometry, which a ``Vector`` does not carry. Any 2D dataset in
+            detector space works, ``dataset.dp_mean`` being the obvious one, and its shape,
+            sampling and units are all read off it. A bare ``(Qx, Qy)`` shape is also accepted,
+            with ``reciprocal_sampling`` and ``detector_units`` given alongside.
+        reciprocal_sampling : tuple of float, optional
+            Detector pixel size, in ``detector_units``. Required with a bare shape, and
+            rejected with a ``Dataset2d``, which already states it.
+        detector_units : tuple of str, optional
+            ``("A^-1", "A^-1")`` or ``("mrad", "mrad")``, defaulting to the former.
+        rotation_angle : float
+            Detector rotation in degrees. Required, as it is for :meth:`from_dataset3d`.
+        weight_field : str, optional
+            Field holding a per-row intensity. Left out, every row weighs one, which is the
+            usual case for single-electron events.
+        mode : {"nearest", "bilinear"}
+            How the fitted origin shift is applied to the event coordinates. ``"nearest"``
+            rounds onto the detector grid and keeps one integer-weighted row per pixel that was
+            struck. It is the default because a detection is discrete, and splitting one across
+            four pixels would invent counts that were never measured. ``"bilinear"`` does that
+            split with the weights the dense resample uses, and reproduces ``from_dataset3d``
+            to float precision when the fitted origin is sub-pixel.
+
+        Notes
+        -----
+        Which kernels exploit the sparsity, and which merely tolerate it:
+
+        - ``"ssb"``, ``"obf"`` and ``"mf"`` require ``convolution_mode="stencil"``, which
+          deposits one truncated kernel per occupied cell. The Fourier route is refused, since
+          it transforms one canvas per bright-field pixel at a cost independent of the counts,
+          and would histogram the events back into dense frames.
+        - ``"icom"`` reads only the per-position centre of mass, a weighted sum over that
+          position's rows, so the riCOM collapse is exact and cheap either way.
+        - ``"prlx"`` gains memory and nothing else. Its deposit lands at every (bright-field
+          pixel, position) pair whatever the value, leaving the weight map
+          ``weight_normalize`` divides by and the scan mean ``_preprocess`` removes dense
+          however few electrons arrived.
+
+        Rows sharing a (bright-field pixel, position) cell are summed on construction, so a
+        stored row holds that cell's measured intensity. Two electrons in one cell are not the
+        same as one electron of twice the weight wherever the value is squared, which is what
+        :meth:`variance_loss` accumulates.
+
+        ``defocus_gradient`` is unavailable here. The scan mean only factors out of the event
+        sum when every bright-field pixel deposits at the same integer shift, which a
+        per-position defocus breaks.
+
+        References
+        ----------
+        .. [1] Lalandec Robert et al., *Ultramicroscopy* 285, 114411 (2026), for the
+               count-wise formulation. https://doi.org/10.1016/j.ultramic.2026.114411
+        """
+        if isinstance(detector, Dataset2d):
+            if reciprocal_sampling is not None or detector_units is not None:
+                raise ValueError(
+                    "`reciprocal_sampling` and `detector_units` come from `detector` when it "
+                    "is a Dataset2d; pass a (Qx, Qy) shape instead to state them yourself."
+                )
+            gpts = tuple(int(n) for n in detector.shape)
+            reciprocal_sampling = tuple(float(s) for s in detector.sampling)
+            detector_units = tuple(str(u) for u in detector.units)
+        else:
+            gpts = tuple(int(n) for n in detector)
+            if reciprocal_sampling is None:
+                raise ValueError(
+                    "`reciprocal_sampling` is required alongside a bare detector shape. Pass "
+                    "a Dataset2d in detector space -- `dataset.dp_mean` -- to take the shape, "
+                    "sampling and units from it instead."
+                )
+            detector_units = tuple(detector_units or ("A^-1", "A^-1"))
+
+        (
+            events,
+            positions_px,
+            bf_mask_dataset,
+            scan_gpts,
+            scan_sampling,
+            rotation_angle,
+            scan_origin,
+        ) = build_event_stack_from_vector(
+            vector,
+            positions,
+            scan_sampling,
+            gpts,
+            reciprocal_sampling,
+            detector_units=detector_units,
+            device=device,
+            fit_method=fit_method,
+            mode=mode,
+            force_measured_origin=force_measured_origin,
+            force_fitted_origin=force_fitted_origin,
+            rotation_angle=rotation_angle,
+            intensity_threshold=intensity_threshold,
+            weight_field=weight_field,
+            bf_mask=bf_mask,
+        )
+
+        return cls(
+            vbf_stack=None,
+            events=events,
+            positions_px=positions_px,
+            bf_mask_dataset=bf_mask_dataset,
+            energy=energy,
+            wavelength=wavelength,
+            rotation_angle=rotation_angle,
+            aberration_coefs=aberration_coefs,
+            semiangle_cutoff=semiangle_cutoff,
+            scan_sampling=scan_sampling,
+            scan_units=("A", "A"),
+            scan_gpts=scan_gpts,
+            scan_origin=scan_origin,
+            fourier_probe=fourier_probe,
+            boundary=boundary,
+            gridded_scan=False,
+            defocus_gradient=defocus_gradient,
+            subtract_frame_mean=subtract_frame_mean,
+            soft_edges=soft_edges,
+            crop_bf_mask=crop_bf_mask,
+            bf_mask_padding_px=bf_mask_padding_px,
+            rng=rng,
+            device=device,
+            verbose=verbose,
+            _token=cls._token,
+        )
+
     @staticmethod
     def _raster_positions_px(scan_gpts: Tuple[int, int]) -> NDArray:
         """Integer ``(Rx*Ry, 2)`` raster positions in scan pixels, "ij" ordered."""
@@ -478,8 +713,22 @@ class DirectPtychographyMontage(DirectPtychographyBase):
 
     @property
     def vbf_stack(self) -> torch.Tensor:
-        """``(N_bf, N_pos)`` virtual bright-field stack, flattened over scan positions."""
+        """``(N_bf, N_pos)`` virtual bright-field stack, flattened over scan positions.
+
+        ``None`` when the montage was built from sparse frames, which store :attr:`events`
+        instead.
+        """
         return self._vbf_stack
+
+    @property
+    def events(self) -> "EventStack | None":
+        """Detected electrons, or ``None`` when the montage was built from dense frames."""
+        return getattr(self, "_events", None)
+
+    @property
+    def sparse_frames(self) -> bool:
+        """Whether this montage accumulates one deposit per electron rather than per pixel."""
+        return self.events is not None
 
     @vbf_stack.setter
     def vbf_stack(self, value):
@@ -619,12 +868,21 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         Fourier transform, which is what ``DirectPtychography._preprocess`` does. It also
         centers the accumulated values on zero, which keeps the ``E[v^2] - E[v]^2`` variance
         accumulation well conditioned.
-        """
-        self._dc_per_image = self._vbf_stack.mean(dim=1)
-        self._vbf_stack = self._vbf_stack - self._dc_per_image[:, None]
 
-        if self.subtract_frame_mean:
-            self._vbf_stack = self._vbf_stack - self._vbf_stack.mean(dim=0, keepdim=True)
+        Sparse frames only record the mean. Subtracting it per event would restore the
+        ``N_bf * N_pos`` cost the event list exists to avoid, since every position picks up a
+        ``-<V_m>`` contribution whether or not an electron landed there. ``reconstruct``
+        applies it once instead, as a convolution of the position comb with a single summed
+        stencil. See :meth:`_dc_background`.
+        """
+        if self.sparse_frames:
+            self._dc_per_image = self._events.mean_per_bf
+        else:
+            self._dc_per_image = self._vbf_stack.mean(dim=1)
+            self._vbf_stack = self._vbf_stack - self._dc_per_image[:, None]
+
+            if self.subtract_frame_mean:
+                self._vbf_stack = self._vbf_stack - self._vbf_stack.mean(dim=0, keepdim=True)
 
         self._reset_reconstruction()
         return self
@@ -777,12 +1035,18 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         return -1.0j * gamma.conj() / (1.0 if norm is None else norm), gamma
 
     @staticmethod
-    def _resolve_convolution_mode(convolution_mode, kernel, stencil_radius):
+    def _resolve_convolution_mode(convolution_mode, kernel, stencil_radius, sparse=False):
         """Which convolution route to take for a non-parallax kernel.
 
         ``"auto"`` reads ``stencil_radius``: naming one is a request to truncate, so it takes
         the stencil; leaving it at ``"auto"`` takes the exact FFT. That is cheap to decide,
         where actually measuring which is faster would cost a full pass over the kernels.
+
+        Sparse frames have no Fourier route. It transforms one canvas per bright-field pixel
+        at a cost set by the canvas rather than by the counts, so it would histogram the events
+        back into dense frames. ``"auto"`` therefore resolves to the stencil, and an explicit
+        ``"fft"`` is refused. The riCOM collapse is the exception, transforming two canvases
+        whatever the detector holds, and is handled before this point.
         """
         if kernel == "prlx":
             return "splat"
@@ -790,6 +1054,16 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             raise ValueError(
                 f"`convolution_mode` must be 'auto', 'fft' or 'stencil', got {convolution_mode!r}"
             )
+        if sparse:
+            if convolution_mode == "fft":
+                raise ValueError(
+                    f"`convolution_mode='fft'` is unavailable for the {kernel!r} kernel on sparse "
+                    "frames: it transforms one canvas per bright-field pixel at a cost "
+                    "independent of the counts, so it would histogram the events back into "
+                    "dense frames. Use `convolution_mode='stencil'`, or build the montage with "
+                    "`from_dataset3d` if you want the exact, untruncated kernel."
+                )
+            return "stencil"
         if convolution_mode != "auto":
             return convolution_mode
         return "stencil" if stencil_radius != "auto" else "fft"
@@ -840,8 +1114,206 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         """
         kxa, kya, _, _ = self._return_k_grid(rotation_angle)
         k_vectors = torch.stack((kxa[bf.bf_mask], kya[bf.bf_mask]), dim=-1).to(self._float_dtype)
+
+        if self.sparse_frames:
+            # sum_m (c_m(R) - <V_m>) k_m. The first sum runs over that position's electrons
+            # and the second is a constant vector, so the whole collapse is one index_add.
+            events = self._events_for_bf(bf)
+            com = torch.zeros((2, self.num_positions), device=self.device, dtype=self._float_dtype)
+            contribution = (
+                events.weights[:, None].to(self._float_dtype) * k_vectors[events.bf_index]
+            )
+            com.index_add_(1, events.position_index, contribution.T)
+            return (
+                com
+                - (events.mean_per_bf[:, None] * k_vectors).sum(0).to(self._float_dtype)[:, None]
+            )
+
         values = self._vbf_stack[bf.vbf_index_mapping].to(self._float_dtype)
         return torch.einsum("mn,md->dn", values, k_vectors)
+
+    def _events_for_bf(self, bf) -> EventStack:
+        """The event table restricted and re-indexed to the bright-field subset ``bf``.
+
+        ``bf_index`` is stored against the full construction mask, while ``reconstruct``
+        batches over the subset ``bf_mask`` selects. Rows stay sorted through the filter,
+        since ``vbf_index_mapping`` is ascending, so the offsets are still a valid slice
+        table afterwards.
+        """
+        events = self._events
+        if bf.num_bf == events.num_bf and bool(
+            torch.equal(
+                bf.vbf_index_mapping,
+                torch.arange(events.num_bf, device=bf.vbf_index_mapping.device),
+            )
+        ):
+            return events
+
+        lookup = torch.full((events.num_bf,), -1, dtype=torch.int64, device=self.device)
+        lookup[bf.vbf_index_mapping] = torch.arange(bf.num_bf, device=self.device)
+        subset_index = lookup[events.bf_index]
+        keep = subset_index >= 0
+        subset_index = subset_index[keep]
+
+        offsets = torch.cat(
+            (
+                torch.zeros(1, dtype=torch.int64, device=self.device),
+                torch.cumsum(torch.bincount(subset_index, minlength=bf.num_bf), 0),
+            )
+        )
+        return EventStack(
+            position_index=events.position_index[keep],
+            bf_index=subset_index,
+            weights=events.weights[keep],
+            bf_offsets=offsets,
+            mean_per_bf=events.mean_per_bf[bf.vbf_index_mapping],
+            counts_per_position=events.counts_per_position,
+            num_bf=bf.num_bf,
+            num_positions=events.num_positions,
+        )
+
+    def _frame_mean_per_position(self) -> torch.Tensor:
+        """``(N_pos,)`` the per-position offset ``subtract_frame_mean`` removes.
+
+        The dense path subtracts ``mean over m`` of the already scan-mean-subtracted stack,
+        which is ``n(R) / N_bf`` less the mean of the per-image means.
+        """
+        events = self._events
+        return events.counts_per_position / max(events.num_bf, 1) - events.mean_per_bf.mean()
+
+    def _accumulate_sparse_parallax(
+        self,
+        *,
+        events,
+        batch_idx,
+        event_bf,
+        position_index,
+        event_weights,
+        event_coords,
+        coords_base,
+        deposit_shifts,
+        canvas_shape,
+        buffers,
+        boundary,
+        interpolation,
+        compute_variance,
+    ):
+        """One batch of bright-field pixels for ``prlx``, accumulated from an event list.
+
+        Sparsity does not make parallax cheaper. Its deposit lands at every (bright-field
+        pixel, scan position) pair whatever the value, so the weight map ``weight_normalize``
+        divides by and the scan mean ``_preprocess`` removes both stay dense however few
+        electrons arrived. Those two read no data, so the pass below splats the constant
+        ``-<V_m>`` and picks up ``sum_w`` and the ``<V_m>**2`` term of the variance along the
+        way. Only the counts come from the events.
+
+        The factorization the stencil branch uses does not apply here, because
+        ``deposit_shifts`` is the un-rounded parallax shift, and neither nearest nor bilinear
+        deposition commutes with a non-integer translation.
+        """
+        means = events.mean_per_bf[batch_idx]
+
+        # everything `_preprocess` subtracts, as one dense value per (pixel, position). The
+        # frame mean varies with the position, so it joins the geometry pass rather than
+        # factoring out the way the scan mean does.
+        offsets = (-means)[:, None].expand(-1, self.num_positions)
+        if self.subtract_frame_mean:
+            offsets = offsets - self._frame_mean_per_position()[None]
+
+        # geometry: gives sum_w, sum_w * offset and sum_w * offset**2 in one pass
+        scatter_add_splat(
+            offsets,
+            coords_base[None] + deposit_shifts[batch_idx][:, None],
+            canvas_shape,
+            boundary=boundary,
+            interpolation=interpolation,
+            out=buffers,
+        )
+
+        sum_w, sum_wv, sum_wv2 = buffers
+        _, event_wv, event_wv2 = scatter_add_splat(
+            event_weights,
+            event_coords,
+            canvas_shape,
+            boundary=boundary,
+            interpolation=interpolation,
+            out=allocate_splat_buffers(
+                canvas_shape, self.device, accumulate_squares=compute_variance
+            ),
+        )
+        sum_wv += event_wv
+
+        if compute_variance:
+            # the cross term of (c - offset)**2, which no single rank-one splat gives
+            cross_offsets = events.mean_per_bf[event_bf]
+            if self.subtract_frame_mean:
+                cross_offsets = cross_offsets + self._frame_mean_per_position()[position_index]
+            _, cross_wv, _ = scatter_add_splat(
+                event_weights * cross_offsets,
+                event_coords,
+                canvas_shape,
+                boundary=boundary,
+                interpolation=interpolation,
+                out=allocate_splat_buffers(canvas_shape, self.device, accumulate_squares=False),
+            )
+            sum_wv2 += event_wv2 - 2 * cross_wv
+
+    def _dc_background(
+        self,
+        *,
+        detector_weights,
+        comb_values,
+        deposit_shifts,
+        stencil_offsets,
+        stencil_weights,
+        canvas_shape,
+        coords_base,
+        boundary,
+        interpolation,
+    ):
+        """``sum_m w_m (comb * kappa_m)``, the term ``_preprocess`` removes from a dense stack.
+
+        Subtracting the scan mean per event would put back the ``N_bf * N_pos`` cost the event
+        list exists to avoid, since every position picks up a ``-<V_m>`` contribution whether
+        or not an electron landed there. It factorizes instead, because the subtracted value
+        does not depend on the scan position. The sum over positions is then the same comb for
+        every detector pixel, and the sum over the detector is a single summed stencil.
+
+        The factorization needs the deposit shifts to be integers, which is exactly what the
+        stencil branch arranges (``deposit_shifts = shifts_px.round()``, with the residual left
+        in the stencil phase). A per-position defocus breaks it, since the shift then varies
+        with the position too.
+
+        Returns the background on ``canvas_shape``, already cropped.
+        """
+        # a circular convolution is right for "wrap". Doubling and cropping makes it linear,
+        # which is what "pad" asks for, and is the same trick the Fourier route uses.
+        shape = (
+            canvas_shape
+            if boundary == "wrap"
+            else (int(canvas_shape[0]) * 2, int(canvas_shape[1]) * 2)
+        )
+
+        summed_stencil = scatter_add_convolve(
+            detector_weights[:, None],
+            deposit_shifts[:, None, :],
+            shape,
+            stencil_offsets,
+            stencil_weights,
+            boundary="wrap",
+            interpolation="nearest",
+        ).reshape(shape)
+
+        comb = splat_stack(
+            comb_values[None],
+            coords_base[None],
+            shape,
+            boundary="pad" if shape != canvas_shape else boundary,
+            interpolation=interpolation,
+        )[0]
+
+        background = torch.fft.ifft2(torch.fft.fft2(comb) * torch.fft.fft2(summed_stencil))
+        return background[: canvas_shape[0], : canvas_shape[1]]
 
     def _return_icom_operators(self, qxa, qya):
         """``(2, Ny, Nx)`` complex ``-i q / |q|**2``, the two halves of the iCoM kernel."""
@@ -1332,6 +1804,12 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             ``"auto"`` takes the FFT. Measuring which is faster would cost a full pass over
             the kernels, so this reads intent rather than benchmarking.
 
+            Sparse frames have only the stencil. Its cost follows the number of detected
+            electrons, where the Fourier route transforms one canvas per bright-field pixel
+            however few counts there are, so ``"auto"`` resolves to ``"stencil"`` and an
+            explicit ``"fft"`` raises. ``prlx`` and riCOM are unaffected, since neither builds
+            a canvas per bright-field pixel.
+
             With ``boundary="pad"`` the FFT route doubles the canvas and crops back, since a
             Fourier convolution is otherwise circular. That costs four times the transform
             area; ``boundary="wrap"`` wants the circular one anyway and pays nothing.
@@ -1451,15 +1929,30 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         self._reset_reconstruction()
         self._kernel = kernel
 
-        mode = self._resolve_convolution_mode(convolution_mode, kernel, stencil_radius)
-        stencil_offsets = stencil_weights = kernel_args = norm = None
-        fft_shape = canvas_shape
-
         # riCOM: the iCoM kernel is linear in k, so summing the detector first turns the
         # whole reconstruction into two convolutions of the centre-of-mass shift. Needs
         # every bright-field pixel to deposit at the same place, which a per-position
         # defocus breaks.
         collapse_icom = kernel == "icom" and delta_c10 is None
+
+        # the collapse transforms two canvases whatever the detector holds, so it keeps the
+        # Fourier route even on sparse frames
+        mode = self._resolve_convolution_mode(
+            convolution_mode,
+            kernel,
+            stencil_radius,
+            sparse=self.sparse_frames and not collapse_icom,
+        )
+        stencil_offsets = stencil_weights = kernel_args = norm = None
+        fft_shape = canvas_shape
+
+        if self.sparse_frames and mode == "stencil" and delta_c10 is not None:
+            raise NotImplementedError(
+                "`defocus_gradient` is not supported for sparse frames: the scan mean that "
+                "`_preprocess` removes only factorizes out of the event sum when every "
+                "bright-field pixel deposits at the same integer shift, which a per-position "
+                "defocus breaks. Reconstruct from dense frames, or drop the gradient."
+            )
 
         if kernel == "prlx":
             deposit_shifts = shifts_px
@@ -1551,6 +2044,8 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             else torch.zeros(fft_shape, device=self.device, dtype=torch.complex64)
         )
 
+        events = self._events_for_bf(bf) if self.sparse_frames and not collapse_icom else None
+
         n_components = 0 if collapse_icom else bf.num_bf
         pbar = tqdm(range(n_components), disable=not verbose)
         batcher = SimpleBatcher(
@@ -1558,23 +2053,53 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         )
 
         for batch_idx in batcher:
-            mapped_idx = bf.vbf_index_mapping[batch_idx]
-            values = self._vbf_stack[mapped_idx]  # (B, N_pos)
-            coords = coords_base[None] + deposit_shifts[batch_idx][:, None]  # (B, N_pos, 2)
-            if delta_c10 is not None:
-                # each position gets its own defocus, hence its own shift; the shift is
-                # exactly linear in C10, so this is one broadcast add rather than a re-fit
-                coords = coords + defocus_rate_px[batch_idx][:, None, :] * delta_c10[None, :, None]
+            if events is not None:
+                position_index, event_bf, event_weights = events.slice_for(
+                    int(batch_idx[0]), int(batch_idx[-1]) + 1
+                )
+                # one row per occupied (detector pixel, scan position) cell, rather than one
+                # per cell of the full grid
+                values = event_weights
+                coords = coords_base[position_index] + deposit_shifts[event_bf]
+            else:
+                mapped_idx = bf.vbf_index_mapping[batch_idx]
+                values = self._vbf_stack[mapped_idx]  # (B, N_pos)
+                coords = coords_base[None] + deposit_shifts[batch_idx][:, None]  # (B, N_pos, 2)
+                if delta_c10 is not None:
+                    # each position gets its own defocus, hence its own shift; the shift is
+                    # exactly linear in C10, so this is one broadcast add rather than a re-fit
+                    coords = (
+                        coords + defocus_rate_px[batch_idx][:, None, :] * delta_c10[None, :, None]
+                    )
 
             if kernel == "prlx":
-                scatter_add_splat(
-                    values,
-                    coords,
-                    canvas_shape,
-                    boundary=boundary,
-                    interpolation=interpolation,
-                    out=buffers,
-                )
+                if events is not None:
+                    # the weight map and the scan mean stay dense here whatever the counts,
+                    # so this reads the geometry as well as the events
+                    self._accumulate_sparse_parallax(
+                        events=events,
+                        batch_idx=batch_idx,
+                        event_bf=event_bf,
+                        position_index=position_index,
+                        event_weights=values,
+                        event_coords=coords,
+                        coords_base=coords_base,
+                        deposit_shifts=deposit_shifts,
+                        canvas_shape=canvas_shape,
+                        buffers=buffers,
+                        boundary=boundary,
+                        interpolation=interpolation,
+                        compute_variance=compute_variance,
+                    )
+                else:
+                    scatter_add_splat(
+                        values,
+                        coords,
+                        canvas_shape,
+                        boundary=boundary,
+                        interpolation=interpolation,
+                        out=buffers,
+                    )
             elif collapse_icom:
                 pass  # handled in one shot below, outside the bright-field loop
             elif mode == "fft":
@@ -1587,6 +2112,38 @@ class DirectPtychographyMontage(DirectPtychographyBase):
                 )
                 kernel_fourier, _ = self._return_kernel_fourier(batch_idx, *kernel_args, norm)
                 accumulator += convolve_stack_fourier(stack, kernel_fourier)
+            elif events is not None:
+                radius = self._stencil_info["stencil_radius"]
+                if boundary == "wrap":
+                    scatter_add_convolve(
+                        values.to(torch.complex64),
+                        coords,
+                        canvas_shape,
+                        stencil_offsets,
+                        stencil_weights,
+                        stencil_index=event_bf,
+                        boundary="wrap",
+                        interpolation=interpolation,
+                        out=accumulator.view(-1),
+                    )
+                else:
+                    # under "pad", `splat_and_convolve` grows the canvas by the radius so that
+                    # a point just outside still contributes inward through the kernel.
+                    # Matching that here keeps the two paths identical rather than close.
+                    grown = (canvas_shape[0] + 2 * radius, canvas_shape[1] + 2 * radius)
+                    padded = scatter_add_convolve(
+                        values.to(torch.complex64),
+                        coords + radius,
+                        grown,
+                        stencil_offsets,
+                        stencil_weights,
+                        stencil_index=event_bf,
+                        boundary="pad",
+                        interpolation=interpolation,
+                    ).reshape(grown)
+                    accumulator += padded[
+                        radius : radius + canvas_shape[0], radius : radius + canvas_shape[1]
+                    ]
             else:
                 accumulator += splat_and_convolve(
                     values,
@@ -1599,6 +2156,36 @@ class DirectPtychographyMontage(DirectPtychographyBase):
                 ).sum(0)
             pbar.update(len(batch_idx))
         pbar.close()
+
+        if events is not None and kernel != "prlx":
+            # the scan mean `_preprocess` removes from a dense stack, applied once rather
+            # than per event. See `_dc_background`.
+            comb = torch.ones(self.num_positions, device=self.device, dtype=self._float_dtype)
+            accumulator -= self._dc_background(
+                detector_weights=events.mean_per_bf.to(torch.complex64),
+                comb_values=comb,
+                deposit_shifts=deposit_shifts,
+                stencil_offsets=stencil_offsets,
+                stencil_weights=stencil_weights,
+                canvas_shape=canvas_shape,
+                coords_base=coords_base,
+                boundary=boundary,
+                interpolation=interpolation,
+            )
+            if self.subtract_frame_mean:
+                accumulator -= self._dc_background(
+                    detector_weights=torch.ones(
+                        bf.num_bf, device=self.device, dtype=torch.complex64
+                    ),
+                    comb_values=self._frame_mean_per_position().to(self._float_dtype),
+                    deposit_shifts=deposit_shifts,
+                    stencil_offsets=stencil_offsets,
+                    stencil_weights=stencil_weights,
+                    canvas_shape=canvas_shape,
+                    coords_base=coords_base,
+                    boundary=boundary,
+                    interpolation=interpolation,
+                )
 
         if collapse_icom:
             coords = coords_base[None].expand(2, -1, -1)
@@ -1851,6 +2438,12 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         rather than have a minimum at the right one. Weighting by ``sum_w`` is what keeps
         those edges from dominating once the canvas is fixed.
         """
+        if self.sparse_frames:
+            raise NotImplementedError(
+                "The defocus-plane fit is not supported for sparse frames: it maps "
+                "`defocus_gradient`, which `reconstruct` also refuses here. Reconstruct from "
+                "dense frames to fit a tilted sample."
+            )
         shifts_px, _ = self._return_shifts_px(
             rotation_angle, aberration_coefs, bf.bf_mask, upsampling_factor
         )
