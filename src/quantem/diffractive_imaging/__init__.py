@@ -44,6 +44,7 @@ from quantem.diffractive_imaging.direct_ptychography_montage import (
 
 from quantem.diffractive_imaging.direct_ptycho_utils import (
     estimate_frame_drift as estimate_frame_drift,
+    fit_aberrations_from_probe as fit_aberrations_from_probe,
     vector_from_frames as vector_from_frames,
 )
 

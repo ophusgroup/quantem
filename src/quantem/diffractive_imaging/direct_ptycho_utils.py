@@ -19,6 +19,9 @@ from tqdm.auto import tqdm
 from quantem.core.utils.imaging_utils import cross_correlation_shift_torch, unwrap_phase_2d_torch
 from quantem.core.utils.validators import validate_tensor
 from quantem.diffractive_imaging.complex_probe import (
+    aberration_surface_cartesian_basis,
+    cartesian_to_polar_aberrations,
+    polar_coordinates,
     spatial_frequencies,
 )
 
@@ -555,6 +558,137 @@ def fit_aberrations_from_shifts(
         "phi12": phi12.item(),
         "rotation_angle": torch.rad2deg(rotation_rad).item(),
     }
+
+
+def fit_aberrations_from_probe(
+    fourier_probe: torch.Tensor,
+    bf_mask: torch.Tensor,
+    wavelength: float,
+    sampling: tuple[float, float],
+    cartesian_basis: str | list[str] = "low_order",
+    rotation_angle: float | None = None,
+) -> tuple[dict[str, float], dict[str, float]]:
+    """Fit aberrations to a measured ``psi(k)``, with a goodness-of-fit.
+
+    A measured probe carries whatever phase the optic actually has. The parallax kernel needs
+    that phase to be an aberration surface ``chi(k)``, so that each bright-field pixel sees the
+    object displaced by ``grad chi / 2pi``. Whether it is one is a property of the optic rather
+    than something to assume. A Fresnel zone plate is dominated by defocus and astigmatism,
+    while an optic built to produce structured illumination has no smooth surface at all. The
+    returned diagnostics say which case a probe is in.
+
+    The fit runs on nearest-neighbour phase *differences* rather than on the unwrapped phase.
+    Differences need no branch cuts, and they tolerate a pupil that a central stop or a
+    bad-pixel mask has split into disconnected pieces.
+
+    Parameters
+    ----------
+    fourier_probe : torch.Tensor
+        ``(Qx, Qy)`` complex probe in the detector plane, corner-centered.
+    bf_mask : torch.Tensor
+        ``(Qx, Qy)`` boolean, the pixels to fit over.
+    wavelength : float
+        Angstrom.
+    sampling : tuple of float
+        Real-space sampling per axis in Angstrom, as :func:`spatial_frequencies` and
+        :func:`fit_aberrations_from_shifts` take it. The detector step is
+        ``1 / (gpts * sampling)``.
+    cartesian_basis : str or list of str
+        An :data:`ABERRATION_PRESETS` key or an explicit list of cartesian labels.
+    rotation_angle : float, optional
+        Degrees, applied to the k-grid the same way :func:`spatial_frequencies` applies it.
+
+    Returns
+    -------
+    aberration_coefs : dict
+        Polar coefficients, ready to pass as ``aberration_coefs``.
+    diagnostics : dict
+        ``phase_rms_rad_px`` and ``residual_rms_rad_px``, the weighted phase step per detector
+        pixel before and after the fit; ``variance_explained``; and ``shift_error_ang``, the
+        residual converted into the parallax shift error it causes. Parallax is worth using
+        when that last one comes out below the canvas pixel size.
+    """
+    if isinstance(cartesian_basis, str):
+        if cartesian_basis not in ABERRATION_PRESETS:
+            raise ValueError(
+                f"Unknown basis preset {cartesian_basis!r}. "
+                f"Choose one of {sorted(ABERRATION_PRESETS)} or pass an explicit label list."
+            )
+        labels = list(ABERRATION_PRESETS[cartesian_basis])
+    else:
+        labels = list(cartesian_basis)
+
+    # a linear ramp across the pupil only translates the object, so it is fitted and discarded
+    nuisance = ["C01_a", "C01_b"]
+    fit_labels = labels + nuisance
+
+    probe = torch.as_tensor(fourier_probe)
+    device = probe.device
+    mask = torch.as_tensor(bf_mask, device=device).bool()
+    gpts = (int(probe.shape[-2]), int(probe.shape[-1]))
+
+    kxa, kya = spatial_frequencies(gpts, sampling, rotation_angle=rotation_angle, device=device)
+
+    rows, obs, weights, scales = [], [], [], []
+    # torch.roll keeps the pairing consistent with the corner-centered grid; pairs that would
+    # straddle the Nyquist wrap are dropped with the mask, which never reaches that far
+    for axis, axis_sampling in enumerate(sampling):
+        shifted = [torch.roll(t, -1, dims=axis) for t in (probe, mask, kxa, kya)]
+        probe_j, mask_j, kx_j, ky_j = shifted
+        pair = mask & mask_j
+        if not bool(pair.any()):
+            continue
+
+        k_i, phi_i = polar_coordinates(kxa[pair], kya[pair])
+        k_j, phi_j = polar_coordinates(kx_j[pair], ky_j[pair])
+        basis_i = aberration_surface_cartesian_basis(
+            k_i * wavelength, phi_i, wavelength, fit_labels
+        )
+        basis_j = aberration_surface_cartesian_basis(
+            k_j * wavelength, phi_j, wavelength, fit_labels
+        )
+        rows.append(basis_j - basis_i)
+
+        # the probe is `aperture * exp(-1j * chi)`, so the phase step is minus the chi step
+        obs.append(-torch.angle(probe_j[pair] * probe[pair].conj()))
+        weights.append((probe[pair].abs() * probe_j[pair].abs()).sqrt())
+        # radians per pixel along this axis -> Angstrom of parallax shift, using 1/dq
+        scales.append(torch.full_like(weights[-1], gpts[axis] * axis_sampling / (2 * math.pi)))
+
+    if not rows:
+        raise ValueError("`bf_mask` contains no adjacent pairs to fit.")
+
+    design = torch.cat(rows).to(torch.float64)
+    target = torch.cat(obs).to(torch.float64)
+    weight = torch.cat(weights).to(torch.float64)
+    scale = torch.cat(scales).to(torch.float64)
+
+    solution = torch.linalg.lstsq(
+        design * weight[:, None], (target * weight)[:, None], rcond=None
+    ).solution[:, 0]
+    residual = target - design @ solution
+
+    def _weighted_rms(values):
+        return float(torch.sqrt((weight.square() * values.square()).sum() / weight.square().sum()))
+
+    phase_rms = _weighted_rms(target)
+    residual_rms = _weighted_rms(residual)
+    diagnostics = {
+        "phase_rms_rad_px": phase_rms,
+        "residual_rms_rad_px": residual_rms,
+        "variance_explained": 1.0 - (residual_rms / phase_rms) ** 2 if phase_rms > 0 else 0.0,
+        "shift_error_ang": _weighted_rms(residual * scale),
+    }
+
+    cartesian = {
+        label: solution[i].to(torch.float32)
+        for i, label in enumerate(fit_labels)
+        if label not in nuisance
+    }
+    polar = cartesian_to_polar_aberrations(cartesian)
+    aberration_coefs = {k: float(v) for k, v in polar.items() if float(v) != 0.0}
+
+    return aberration_coefs, diagnostics
 
 
 def _torch_polar(m: torch.Tensor):
