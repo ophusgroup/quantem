@@ -665,7 +665,7 @@ class DirectPtychography(DirectPtychographyBase):
         deconvolution_kernel = self._normalize_kernel_name(deconvolution_kernel)
         if deconvolution_kernel == "prlx":
             # iCoM is exempt: `k . q / |q|**2` never reads the probe
-            self._require_analytic_probe("The prlx kernel")
+            self._require_analytic_probe("The prlx kernel", aberration_coefs)
 
         # Get upsampled q-space grid
         qxa, qya = self._return_upsampled_qgrid(upsampling_factor)

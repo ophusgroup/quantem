@@ -921,16 +921,19 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             dtype=self._float_dtype,
         )
 
-    def _return_defocus_rate_px(self, rotation_angle, bf_mask, upsampling_factor):
+    def _return_defocus_rate_px(
+        self, rotation_angle, bf_mask, upsampling_factor, aberration_coefs=None
+    ):
         """``(num_bf, 2)`` change in lateral shift per Angstrom of defocus, in canvas pixels.
 
         ``chi`` is linear in every aberration magnitude, so the rate is exactly the shift of
-        a unit ``C10`` and is *independent of all other aberrations* -- hence the absent
-        ``aberration_coefs`` argument. Evaluating it through
+        a unit ``C10`` and is *independent of all other aberrations*. ``aberration_coefs`` is
+        therefore read only by the guard, which uses it to tell a modelled empirical probe
+        from one with no aberration surface at all. Evaluating the rate through
         ``aberration_surface_cartesian_gradients`` rather than hand-coding the analytic
         ``wavelength * k`` keeps it tied to the same expression the Fourier class uses.
         """
-        self._require_analytic_probe("A defocus gradient")
+        self._require_analytic_probe("A defocus gradient", aberration_coefs)
         _, _, k, phi = self._return_k_grid(rotation_angle)
         dx, dy = aberration_surface_cartesian_gradients(
             k * self.wavelength, phi, aberration_coefs={"C10": 1.0}
@@ -942,7 +945,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             / self._upsampled_sampling(upsampling_factor)
         )
 
-    def _return_delta_c10(self, defocus_gradient) -> torch.Tensor | None:
+    def _return_delta_c10(self, defocus_gradient, aberration_coefs=None) -> torch.Tensor | None:
         """``(N_pos,)`` local defocus offset in Angstrom, or ``None`` for no gradient.
 
         The positions are taken in the unrotated scan frame: defocus varies with physical
@@ -951,7 +954,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         """
         if defocus_gradient is None or (defocus_gradient[0] == 0.0 and defocus_gradient[1] == 0.0):
             return None
-        self._require_analytic_probe("A defocus gradient")
+        self._require_analytic_probe("A defocus gradient", aberration_coefs)
 
         scan_sampling = torch.as_tensor(
             tuple(self.scan_sampling), device=self.device, dtype=self._float_dtype
@@ -1879,7 +1882,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         if kernel == "prlx":
             # zero aberrations would give zero shifts and quietly sum the bright-field stack
             # into a plain incoherent image, which is not a parallax reconstruction
-            self._require_analytic_probe("The parallax kernel")
+            self._require_analytic_probe("The parallax kernel", aberration_coefs)
         if upsampling_factor is None:
             upsampling_factor = 1
         upsampling_factor = math.ceil(upsampling_factor)
@@ -1903,12 +1906,12 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             rotation_angle, aberration_coefs, bf.bf_mask, upsampling_factor
         )
 
-        delta_c10 = self._return_delta_c10(defocus_gradient)
+        delta_c10 = self._return_delta_c10(defocus_gradient, aberration_coefs)
         if delta_c10 is None:
             defocus_rate_px = None
         else:
             defocus_rate_px = self._return_defocus_rate_px(
-                rotation_angle, bf.bf_mask, upsampling_factor
+                rotation_angle, bf.bf_mask, upsampling_factor, aberration_coefs
             )
 
         canvas_shape, canvas_origin, canvas_fov = self._return_canvas(

@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from itertools import product
-from typing import TYPE_CHECKING, Dict, Tuple
+from typing import TYPE_CHECKING, Dict, Mapping, Tuple
 
 import numpy as np
 import optuna
@@ -258,15 +258,31 @@ class DirectPtychographyBase(RNGMixin, AutoSerialize):
             )
         self._fourier_probe = value.to(self.device)
 
-    def _require_analytic_probe(self, what: str) -> None:
-        """Guard for everything that only means something for an aperture plus aberrations."""
-        if self.fourier_probe is not None:
-            raise NotImplementedError(
-                f"{what} is defined by the aberration surface chi(k), which an empirical "
-                "`fourier_probe` does not have. Use a deconvolution kernel that does not "
-                "need it -- 'ssb', 'obf' and 'mf' read only the probe itself, and 'icom' "
-                "does not read the probe at all."
-            )
+    def _require_analytic_probe(self, what: str, aberration_coefs: Mapping | None = None) -> None:
+        """Guard for everything that only means something for an aperture plus aberrations.
+
+        An empirical ``fourier_probe`` carries a phase but no aberration surface, so there is
+        nothing to differentiate. Passing ``aberration_coefs`` alongside one says the caller
+        has a model of that phase. The coefficients then supply the shift field, while the
+        measured probe still supplies the amplitude weighting and the bright-field mask.
+        :func:`~quantem.diffractive_imaging.direct_ptycho_utils.fit_aberrations_from_probe`
+        fits those coefficients and reports whether the probe justified fitting them.
+        """
+        if self.fourier_probe is None:
+            return
+        if aberration_coefs and any(
+            not key.startswith("phi") and float(value) != 0.0
+            for key, value in aberration_coefs.items()
+        ):
+            return
+        raise NotImplementedError(
+            f"{what} is defined by the aberration surface chi(k), which an empirical "
+            "`fourier_probe` does not have. Either pass `aberration_coefs` modelling its "
+            "phase -- `fit_aberrations_from_probe` fits them and reports whether the phase "
+            "is smooth enough to be worth modelling -- or use a deconvolution kernel that "
+            "does not need chi: 'ssb', 'obf' and 'mf' read only the probe itself, and "
+            "'icom' does not read the probe at all."
+        )
 
     def _return_probe(self, aberration_coefs) -> "FourierProbe":
         """The probe object the overlap function samples, empirical or analytic."""

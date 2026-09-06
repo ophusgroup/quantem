@@ -21,6 +21,7 @@ from quantem.diffractive_imaging.complex_probe import FourierProbe, spatial_freq
 from quantem.diffractive_imaging.direct_ptycho_utils import (
     allocate_splat_buffers,
     estimate_frame_drift,
+    fit_aberrations_from_probe,
     scatter_add_convolve,
     scatter_add_splat,
     splat_and_convolve,
@@ -1495,11 +1496,33 @@ class TestFourierProbe:
         ],
     )
     def test_aberration_only_features_raise(self, dataset4d, kwargs, match):
-        """Everything that reads chi(k) has no meaning without aberration coefficients."""
+        """Everything that reads chi(k) has no meaning without aberration coefficients.
+
+        Zeroing them is the case the guard exists for: a measured probe carries a phase but
+        no surface to differentiate, so the shifts would come out zero and quietly sum the
+        bright-field stack into a plain incoherent image.
+        """
         _, empirical = self._pair(dataset4d, DirectPtychographyMontage)
 
         with pytest.raises(NotImplementedError, match=match):
-            empirical.reconstruct(verbose=False, **kwargs)
+            empirical.reconstruct(verbose=False, override_aberration_coefs={"C10": 0.0}, **kwargs)
+
+    @pytest.mark.parametrize("cls", [DirectPtychography, DirectPtychographyMontage])
+    def test_prlx_runs_on_a_modelled_empirical_probe(self, dataset4d, cls):
+        """Coefficients modelling a measured probe's phase are enough to run parallax.
+
+        The probe here *is* the analytic one materialized as an array, so the model is exact
+        and the two paths must agree. Whether a real measured probe is this well modelled is
+        what ``fit_aberrations_from_probe`` is for.
+        """
+        analytic, empirical = self._pair(dataset4d, cls, normalize=False)
+        extra = {} if cls is DirectPtychography else {"boundary": "wrap"}
+
+        analytic.reconstruct(deconvolution_kernel="prlx", verbose=False, **extra)
+        expected = analytic.obj.copy()
+        empirical.reconstruct(deconvolution_kernel="prlx", verbose=False, **extra)
+
+        assert correlation(to_numpy(empirical.obj), to_numpy(expected)) > 0.999
 
     def test_semiangle_cutoff_becomes_optional(self, dataset4d):
         """The empirical probe carries its own aperture, whatever shape it is."""
@@ -2936,3 +2959,125 @@ def test_padded_canvas_shape_is_device_independent(dataset4d, device):
         return montage.reconstruct(verbose=False).obj.shape
 
     assert shape(device) == shape("cpu")
+
+
+class TestAberrationFitFromProbe:
+    """Fitting ``chi(k)`` to a measured ``psi(k)``, and knowing when not to trust it.
+
+    The parallax kernel needs the probe's phase to be an aberration surface. Whether it is
+    one is a property of the optic, so the fit has to report its own quality rather than
+    hand back coefficients unconditionally.
+    """
+
+    GPTS = (128, 128)
+    SAMPLING = (0.4, 0.4)
+    WAVELENGTH = 0.0251
+    CUTOFF = 25.0
+    TRUTH = {
+        "C10": -150.0,
+        "C12": 40.0,
+        "phi12": 0.3,
+        "C21": 2000.0,
+        "phi21": -0.7,
+        "C30": 1.0e5,
+    }
+
+    def _probe(self, aberration_coefs):
+        from quantem.diffractive_imaging.complex_probe import (
+            evaluate_probe,
+            polar_coordinates,
+        )
+
+        kxa, kya = spatial_frequencies(self.GPTS, self.SAMPLING)
+        k, phi = polar_coordinates(kxa, kya)
+        angular = tuple(self.WAVELENGTH * 1e3 / (n * s) for n, s in zip(self.GPTS, self.SAMPLING))
+        psi = evaluate_probe(
+            k * self.WAVELENGTH,
+            phi,
+            self.CUTOFF,
+            angular,
+            self.WAVELENGTH,
+            aberration_coefs=aberration_coefs,
+        )
+        return psi, (k * self.WAVELENGTH * 1e3) <= self.CUTOFF
+
+    def _fit(self, psi, bf_mask, **kwargs):
+        return fit_aberrations_from_probe(psi, bf_mask, self.WAVELENGTH, self.SAMPLING, **kwargs)
+
+    def test_round_trip_recovers_known_aberrations(self):
+        """An analytic probe must give its own coefficients back."""
+        psi, bf_mask = self._probe(self.TRUTH)
+        coefs, diagnostics = self._fit(psi, bf_mask, cartesian_basis="low_order")
+
+        assert diagnostics["variance_explained"] == pytest.approx(1.0, abs=1e-6)
+        assert diagnostics["shift_error_ang"] == pytest.approx(0.0, abs=1e-3)
+        for key, value in self.TRUTH.items():
+            assert coefs[key] == pytest.approx(value, rel=1e-3)
+
+    def test_defocus_only_probe_needs_only_the_defocus_basis(self):
+        psi, bf_mask = self._probe({"C10": -150.0})
+        coefs, diagnostics = self._fit(psi, bf_mask, cartesian_basis="defocus")
+
+        assert diagnostics["variance_explained"] == pytest.approx(1.0, abs=1e-6)
+        assert coefs["C10"] == pytest.approx(-150.0, rel=1e-3)
+
+    def test_a_truncated_basis_reports_what_it_missed(self):
+        """Fitting defocus alone to an aberrated probe must not claim a perfect fit."""
+        psi, bf_mask = self._probe(self.TRUTH)
+        _, diagnostics = self._fit(psi, bf_mask, cartesian_basis="defocus")
+
+        assert 0.5 < diagnostics["variance_explained"] < 0.99
+        assert diagnostics["shift_error_ang"] > 0.1
+
+    def test_random_phase_is_not_fittable(self):
+        """The failure case: no aberration surface exists, and the fit has to say so."""
+        psi, bf_mask = self._probe(self.TRUTH)
+        generator = torch.Generator().manual_seed(0)
+        scrambled = psi.abs() * torch.exp(2j * np.pi * torch.rand(self.GPTS, generator=generator))
+
+        _, diagnostics = self._fit(scrambled, bf_mask, cartesian_basis="all")
+
+        assert diagnostics["variance_explained"] < 0.05
+        # a uniform phase step has RMS pi/sqrt(3)
+        assert diagnostics["residual_rms_rad_px"] == pytest.approx(np.pi / np.sqrt(3), rel=0.1)
+
+    def test_unknown_preset_raises(self):
+        psi, bf_mask = self._probe(self.TRUTH)
+        with pytest.raises(ValueError, match="Unknown basis preset"):
+            self._fit(psi, bf_mask, cartesian_basis="not-a-preset")
+
+    def test_fitted_coefficients_drive_parallax(self, dataset4d):
+        """The whole point: fit a measured probe, then reconstruct with the fit.
+
+        A probe fitted from its own analytic form must reproduce the analytic parallax
+        reconstruction, which is what makes the relaxed guard safe to rely on.
+        """
+        defocus = integer_shift_defocus(1)
+        kwargs = dict(_common_kwargs(defocus), edge_blend_pixels=0, boundary="wrap")
+        analytic = DirectPtychographyMontage.from_dataset4d(dataset4d, **kwargs)
+
+        psi = analytic_probe_array(analytic, {"C10": defocus})
+        coefs, diagnostics = fit_aberrations_from_probe(
+            psi,
+            analytic.bf_mask,
+            analytic.wavelength,
+            analytic.sampling,
+            cartesian_basis="defocus",
+        )
+        assert diagnostics["variance_explained"] > 0.99
+        assert coefs["C10"] == pytest.approx(defocus, rel=1e-2)
+
+        probe = FourierProbe.from_array(
+            psi, analytic.reciprocal_sampling, analytic.wavelength, normalize=False
+        )
+        empirical = DirectPtychographyMontage.from_dataset4d(
+            dataset4d, fourier_probe=probe, **kwargs
+        )
+
+        analytic.reconstruct(deconvolution_kernel="prlx", verbose=False)
+        expected = analytic.obj.copy()
+        empirical.reconstruct(
+            deconvolution_kernel="prlx", override_aberration_coefs=coefs, verbose=False
+        )
+
+        assert correlation(to_numpy(empirical.obj), to_numpy(expected)) > 0.999
