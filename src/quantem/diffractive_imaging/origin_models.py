@@ -20,6 +20,69 @@ from quantem.core.utils.validators import (
 from quantem.diffractive_imaging.ptycho_utils import SimpleBatcher
 
 
+def fit_origin_from_measured(
+    origin_measured: torch.Tensor,
+    probe_positions: torch.Tensor,
+    fit_method: str = "plane",
+    device: str | int = "cpu",
+) -> torch.Tensor:
+    """
+    Smooth measured diffraction origins against the probe positions.
+
+    Split out of :meth:`CenterOfMassOriginModel.fit_origin_background` so that a caller
+    holding origins measured some other way fits them with the same code. An event list is one,
+    where the center of mass is a weighted mean rather than a moment of an image.
+
+    Parameters
+    ----------
+    origin_measured : torch.Tensor
+        ``(N, 2)`` measured origins in detector pixels.
+    probe_positions : torch.Tensor
+        ``(N, 2)`` positions the origins are fitted against.
+    fit_method : {"plane", "constant"}
+    device : str or int
+
+    Returns
+    -------
+    torch.Tensor
+        ``(N, 2)`` fitted origins for ``"plane"``, or the ``(2,)`` mean for ``"constant"``.
+    """
+    if fit_method == "plane":
+
+        def fit_linear_plane(points: torch.Tensor):
+            """ """
+            # Covariance matrix
+            centroid = points.mean(0)
+            centered_points = points - centroid
+            covariance_matrix = torch.cov(centered_points.T)
+
+            # Fall back to CPU (to support MPS)
+            eigenvectors = torch.linalg.eigh(covariance_matrix.cpu())[1].to(points.device)
+
+            # The normal vector to the plane is the eigenvector corresponding to the smallest eigenvalue
+            normal_vector = eigenvectors[:, 0]
+            a, b, c = normal_vector
+
+            # Calculate d using the centroid: d = -(ax_c + by_c + cz_c)
+            d = -torch.dot(normal_vector, centroid)
+            return a, b, c, d
+
+        com_x_pts = torch.concatenate((probe_positions, origin_measured[:, 0, None]), 1)
+        com_y_pts = torch.concatenate((probe_positions, origin_measured[:, 1, None]), 1)
+
+        ax, bx, cx, dx = fit_linear_plane(com_x_pts)
+        ay, by, cy, dy = fit_linear_plane(com_y_pts)
+
+        com_fitted_x = (probe_positions @ torch.tensor([-ax, -bx], device=device) - dx) / cx
+        com_fitted_y = (probe_positions @ torch.tensor([-ay, -by], device=device) - dy) / cy
+        return torch.stack([com_fitted_x, com_fitted_y], -1)
+
+    if fit_method == "constant":
+        return origin_measured.mean(0)
+
+    raise NotImplementedError("only fit_method='plane' and 'constant' are implemented for now.")
+
+
 class CenterOfMassOriginModel(AutoSerialize):
     """ """
 
@@ -170,49 +233,9 @@ class CenterOfMassOriginModel(AutoSerialize):
             if probe_positions.shape != self.origin_measured.shape:
                 raise ValueError("probe positions shape must match the measured origins.")
 
-        if fit_method == "plane":
-
-            def fit_linear_plane(points: torch.Tensor):
-                """ """
-                # Covariance matrix
-                centroid = points.mean(0)
-                centered_points = points - centroid
-                covariance_matrix = torch.cov(centered_points.T)
-
-                # Fall back to CPU (to support MPS)
-                eigenvectors = torch.linalg.eigh(covariance_matrix.cpu())[1].to(points.device)
-
-                # The normal vector to the plane is the eigenvector corresponding to the smallest eigenvalue
-                normal_vector = eigenvectors[:, 0]
-                a, b, c = normal_vector
-
-                # Calculate d using the centroid: d = -(ax_c + by_c + cz_c)
-                d = -torch.dot(normal_vector, centroid)
-                return a, b, c, d
-
-            com_x_pts = torch.concatenate((probe_positions, self.origin_measured[:, 0, None]), 1)
-            com_y_pts = torch.concatenate((probe_positions, self.origin_measured[:, 1, None]), 1)
-
-            ax, bx, cx, dx = fit_linear_plane(com_x_pts)
-            ay, by, cy, dy = fit_linear_plane(com_y_pts)
-
-            com_fitted_x = (
-                probe_positions @ torch.tensor([-ax, -bx], device=self.device) - dx
-            ) / cx
-            com_fitted_y = (
-                probe_positions @ torch.tensor([-ay, -by], device=self.device) - dy
-            ) / cy
-            com_fitted = torch.stack([com_fitted_x, com_fitted_y], -1)
-
-        elif fit_method == "constant":
-            com_fitted = self.origin_measured.mean(0)
-
-        else:
-            raise NotImplementedError(
-                "only fit_method='plane' and 'constant' are implemented for now."
-            )
-
-        self.origin_fitted = com_fitted
+        self.origin_fitted = fit_origin_from_measured(
+            self.origin_measured, probe_positions, fit_method=fit_method, device=self.device
+        )
         return self
 
     @property
