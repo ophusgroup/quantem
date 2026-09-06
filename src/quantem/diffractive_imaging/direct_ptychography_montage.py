@@ -1666,6 +1666,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
         q_highpass=None,
         q_lowpass=None,
         butterworth_order=12,
+        band_limit=True,
         parallax_flip_phase=True,
         verbose=None,
         use_initial_state=False,
@@ -1717,7 +1718,14 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             ``k``, it also collapses the detector sum into two convolutions of the
             centre-of-mass shift.
         q_highpass, q_lowpass : float, optional
-            Butterworth filter cutoffs, applied once to the finished image.
+            Butterworth filter cutoffs, applied once to the finished image. For ``"prlx"`` and
+            ``"icom"``, ``q_lowpass`` is clamped to at most ``2 * semiangle_cutoff /
+            wavelength``, past which ``G(k, q)`` holds no signal. A pure shift has unit
+            magnitude at every ``q``, so without that clamp upsampling the canvas past the
+            band limit would deposit noise there. ``"ssb"``, ``"obf"`` and ``"mf"`` impose the
+            same cutoff through ``gamma`` already.
+        band_limit : bool
+            Apply that clamp. Turn it off to inspect the raw kernel.
         parallax_flip_phase : bool
             Apply the ``sign(sin(chi(q)))`` phase-flip filter.
         boundary : {"wrap", "pad"}, optional
@@ -2236,7 +2244,7 @@ class DirectPtychographyMontage(DirectPtychographyBase):
             obj,
             aberration_coefs=aberration_coefs,
             upsampling_factor=upsampling_factor,
-            q_lowpass=q_lowpass,
+            q_lowpass=self._resolve_q_lowpass(q_lowpass, kernel, band_limit),
             q_highpass=q_highpass,
             butterworth_order=butterworth_order,
             # only `prlx` needs the phase flip -- the deconvolution kernels already invert

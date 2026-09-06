@@ -410,11 +410,18 @@ class TestLossFunctions:
         assert losses[1.0] < losses[1.5]
 
     def test_rms_gradient_follows_the_object_sampling(self, dataset4d):
-        """Per Angstrom, not per pixel, so upsampling does not rescale it."""
+        """Per Angstrom, not per pixel, so upsampling does not rescale it.
+
+        ``band_limit=False`` keeps the tiled replicas, so the two canvases hold the same
+        content and only the sampling differs, which is the property under test. With the
+        band limit on, upsampling a parallax reconstruction removes those replicas and the
+        image amplitude genuinely changes, so this would be measuring that instead.
+        """
         recon = _build(dataset4d)
-        recon.reconstruct(deconvolution_kernel="prlx", upsampling_factor=1, verbose=False)
+        kwargs = dict(deconvolution_kernel="prlx", band_limit=False, verbose=False)
+        recon.reconstruct(upsampling_factor=1, **kwargs)
         coarse = recon.rms_gradient_loss()
-        recon.reconstruct(deconvolution_kernel="prlx", upsampling_factor=2, verbose=False)
+        recon.reconstruct(upsampling_factor=2, **kwargs)
         fine = recon.rms_gradient_loss()
 
         # upsampling tiles the spectrum rather than adding detail, so the physical gradient

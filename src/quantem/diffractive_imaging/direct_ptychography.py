@@ -588,6 +588,7 @@ class DirectPtychography(DirectPtychographyBase):
         q_highpass=None,
         q_lowpass=None,
         butterworth_order=12,
+        band_limit=True,
         matched_filter_norm_epsilon=1e-1,
         parallax_flip_phase=True,
         verbose=None,
@@ -613,7 +614,11 @@ class DirectPtychography(DirectPtychographyBase):
         q_highpass : float, optional
             High-pass filter cutoff
         q_lowpass : float, optional
-            Low-pass filter cutoff
+            Low-pass filter cutoff. For ``"prlx"`` and ``"icom"`` it is clamped to at most
+            ``2 * semiangle_cutoff / wavelength``, past which ``G(k, q)`` holds no signal.
+            ``"ssb"``, ``"obf"`` and ``"mf"`` impose that cutoff through ``gamma`` already.
+        band_limit : bool
+            Apply that clamp. Turn it off to inspect the raw kernel.
         verbose : bool, optional
             If True, show progress bar
 
@@ -707,6 +712,7 @@ class DirectPtychography(DirectPtychographyBase):
         cmplx_probe_k = self._return_probe_on_grid(k, phi, aberration_coefs)
         BF_weights = cmplx_probe_k[bf_mask].abs().square().sum()
 
+        q_lowpass = self._resolve_q_lowpass(q_lowpass, deconvolution_kernel, band_limit)
         butterworth_env = torch.ones_like(q)
         if q_lowpass:
             butterworth_env *= 1 / (1 + (q / q_lowpass) ** (2 * butterworth_order))

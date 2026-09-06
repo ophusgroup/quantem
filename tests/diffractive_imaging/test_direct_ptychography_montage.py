@@ -328,10 +328,22 @@ class TestFourierEquivalence:
         assert _relative_error(rescaled, unnormalized) < 1e-4
 
     def test_variance_loss_tracks_the_fourier_one(self, dataset4d):
+        """The two accumulators agree per bright-field image, not just on the sum.
+
+        ``band_limit=False`` because the two classes filter at different stages. The Fourier
+        class multiplies the envelope into each bright-field image before its inverse
+        transform, while the montage applies it once to the finished canvas. Those agree on
+        the sum but not image by image, which is what the variance reads.
+        """
         defocus = integer_shift_defocus(1)
         fourier, montage = _build_pair(dataset4d, defocus)
 
-        recon_kwargs = dict(deconvolution_kernel="prlx", parallax_flip_phase=False, verbose=False)
+        recon_kwargs = dict(
+            deconvolution_kernel="prlx",
+            parallax_flip_phase=False,
+            band_limit=False,
+            verbose=False,
+        )
         fourier.reconstruct(**recon_kwargs)
         montage.reconstruct(weight_normalize=False, **recon_kwargs)
 
@@ -472,10 +484,14 @@ class TestPadBoundary:
         defocus = integer_shift_defocus(1)
         _, montage = _build_pair(dataset4d, defocus)
 
+        # the filter is an FFT over the whole canvas, and "pad" makes that canvas larger, so
+        # filtering then cropping is not the same operation as filtering the wrapped canvas.
+        # band_limit=False keeps this on the deposit and its boundary handling.
         recon_kwargs = dict(
             deconvolution_kernel="prlx",
             parallax_flip_phase=False,
             weight_normalize=False,
+            band_limit=False,
             verbose=False,
         )
         montage.reconstruct(boundary="wrap", **recon_kwargs)
@@ -3081,3 +3097,89 @@ class TestAberrationFitFromProbe:
         )
 
         assert correlation(to_numpy(empirical.obj), to_numpy(expected)) > 0.999
+
+
+class TestBandLimit:
+    """Kernels without a ``gamma`` factor are cut at ``2 alpha / lambda``.
+
+    Upsampling tiles the bright-field spectrum. ``ssb``, ``obf`` and ``mf`` use ``k`` to tell
+    a real high frequency from its alias, which is where resolution past the scan Nyquist
+    comes from. A pure shift cannot, so for ``prlx`` the replicas are only alias.
+    """
+
+    @staticmethod
+    def _recon(dataset4d):
+        defocus = integer_shift_defocus(1)
+        kwargs = dict(_common_kwargs(defocus), edge_blend_pixels=0, boundary="wrap")
+        return DirectPtychographyMontage.from_dataset4d(dataset4d, **kwargs)
+
+    def test_band_limit_is_twice_the_cutoff(self, dataset4d):
+        montage = self._recon(dataset4d)
+        expected = 2 * montage.semiangle_cutoff * 1e-3 / montage.wavelength
+        assert montage._return_band_limit() == pytest.approx(expected)
+
+    @pytest.mark.parametrize("kernel", ["ssb", "obf", "mf"])
+    def test_deconvolution_kernels_are_untouched(self, dataset4d, kernel):
+        """``gamma`` already vanishes past the band limit, so the clamp must be a no-op."""
+        montage = self._recon(dataset4d)
+        montage.reconstruct(deconvolution_kernel=kernel, stencil_radius=5, verbose=False)
+        limited = to_numpy(montage.obj).copy()
+        montage.reconstruct(
+            deconvolution_kernel=kernel, stencil_radius=5, band_limit=False, verbose=False
+        )
+        assert np.allclose(limited, to_numpy(montage.obj))
+
+    def test_parallax_amplitude_now_scales_like_ssb(self, dataset4d):
+        """Unfiltered ``prlx`` fell off as 1/U where every other kernel goes as 1/U**2,
+        and that gap was the retained replicas."""
+        montage = self._recon(dataset4d)
+
+        def spread(kernel, factor, **kwargs):
+            montage.reconstruct(
+                deconvolution_kernel=kernel, upsampling_factor=factor, verbose=False, **kwargs
+            )
+            return float(to_numpy(montage.obj).std())
+
+        # the exact SSB, not a truncated stencil, whose 50% truncation error would swamp the
+        # amplitude being compared
+        fft = {"convolution_mode": "fft"}
+        ssb_ratio = spread("ssb", 1, **fft) / spread("ssb", 2, **fft)
+        limited = spread("prlx", 1) / spread("prlx", 2)
+        unlimited = spread("prlx", 1, band_limit=False) / spread("prlx", 2, band_limit=False)
+
+        assert ssb_ratio == pytest.approx(4.0, rel=0.05)
+        assert limited == pytest.approx(4.0, rel=0.05)
+        assert unlimited == pytest.approx(2.0, rel=0.05)
+
+    def test_an_explicit_cutoff_below_the_band_limit_still_wins(self, dataset4d):
+        montage = self._recon(dataset4d)
+        band = montage._return_band_limit()
+
+        assert montage._resolve_q_lowpass(band / 4, "prlx") == pytest.approx(band / 4)
+        assert montage._resolve_q_lowpass(band * 4, "prlx") == pytest.approx(band)
+        assert montage._resolve_q_lowpass(None, "prlx") == pytest.approx(band)
+        assert montage._resolve_q_lowpass(band * 4, "ssb") == pytest.approx(band * 4)
+        assert montage._resolve_q_lowpass(band * 4, "prlx", band_limit=False) == pytest.approx(
+            band * 4
+        )
+
+    def test_an_empirical_probe_reads_its_extent_off_the_bf_mask(self, dataset4d):
+        """No ``semiangle_cutoff`` to read, so the mask supplies the probe's extent."""
+        defocus = integer_shift_defocus(1)
+        kwargs = dict(_common_kwargs(defocus), edge_blend_pixels=0, boundary="wrap")
+        analytic = DirectPtychographyMontage.from_dataset4d(dataset4d, **kwargs)
+        psi = analytic_probe_array(analytic, {"C10": defocus})
+        probe = FourierProbe.from_array(
+            psi, analytic.reciprocal_sampling, analytic.wavelength, normalize=False
+        )
+        kwargs.pop("semiangle_cutoff")
+        empirical = DirectPtychographyMontage.from_dataset4d(
+            dataset4d, fourier_probe=probe, semiangle_cutoff=None, **kwargs
+        )
+
+        assert empirical.semiangle_cutoff is None
+        # the mask is the aperture rounded onto the detector grid, so this lands near but
+        # not exactly on the analytic 2 * alpha / lambda
+        assert empirical._return_band_limit() == pytest.approx(
+            analytic._return_band_limit(), rel=0.25
+        )

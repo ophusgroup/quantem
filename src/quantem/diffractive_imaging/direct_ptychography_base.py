@@ -635,6 +635,46 @@ class DirectPtychographyBase(RNGMixin, AutoSerialize):
 
         return aliases[kernel]
 
+    #: kernels carrying a ``gamma`` factor, which is already zero past ``2 alpha / lambda``
+    _BAND_LIMITED_KERNELS = frozenset({"ssb", "obf", "mf"})
+
+    def _return_band_limit(self) -> float | None:
+        """``2 alpha / lambda``, the largest object frequency the data can carry.
+
+        Every kernel is a multiplier on ``G(k, q)``, which is an overlap of two probe disks
+        displaced by ``q`` and is empty once that displacement exceeds twice the probe's own
+        extent. An empirical probe has no ``semiangle_cutoff``, so its extent is read off the
+        bright-field mask instead.
+        """
+        if self.semiangle_cutoff is not None:
+            return 2 * self.semiangle_cutoff * 1e-3 / self.wavelength
+
+        bf_mask = self.bf_mask
+        if bf_mask is None or not bool(bf_mask.any()):
+            return None
+        kxa, kya = spatial_frequencies(self.gpts, self.sampling, device=self.device)
+        return 2 * float(torch.hypot(kxa[bf_mask], kya[bf_mask]).max())
+
+    def _resolve_q_lowpass(self, q_lowpass, deconvolution_kernel, band_limit=True) -> float | None:
+        """Clamp ``q_lowpass`` to the band limit for kernels that do not impose it themselves.
+
+        ``ssb``, ``obf`` and ``mf`` multiply by ``gamma``, so they are already zero beyond
+        ``2 alpha / lambda``. ``prlx`` is a pure shift of unit magnitude at every ``q`` and
+        ``icom`` only rolls off as ``1/|q|``, so both would otherwise pass whatever lies past
+        it.
+
+        Upsampling tiles the bright-field spectrum, which places the aliased replicas at those
+        frequencies. A ``gamma`` factor uses ``k`` to distinguish a real high frequency from
+        its alias, which is what gives resolution beyond the scan Nyquist. A pure shift
+        cannot, so for ``prlx`` the replicas are only alias.
+        """
+        if not band_limit or deconvolution_kernel in self._BAND_LIMITED_KERNELS:
+            return q_lowpass
+        cutoff = self._return_band_limit()
+        if cutoff is None:
+            return q_lowpass
+        return cutoff if q_lowpass is None else min(q_lowpass, cutoff)
+
     def _return_lateral_shifts(
         self,
         rotation_angle,
