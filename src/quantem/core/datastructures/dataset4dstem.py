@@ -204,6 +204,54 @@ class Dataset4dstem(Dataset4d):
             _token=cls._token,
         )
 
+    def probe_positions(self) -> Dataset2d:
+        """
+        The scan positions this dataset was acquired at, in calibrated units.
+
+        Reconstructions that do not assume a scan grid take the positions explicitly, as an
+        ``(N, 2)`` array ordered the same way the patterns are. A raster acquisition already
+        carries them implicitly in :attr:`origin` and :attr:`sampling`, so this builds them
+        rather than leaving every caller to rebuild the meshgrid and pick an axis order::
+
+            events = vector_from_frames(counts)          # (Rx, Ry) ragged cells
+            montage = DirectPtychographyMontage.from_vector(
+                events, dataset.probe_positions(), dataset.dp_mean, ...
+            )
+
+        Ordering is row-major over the two scan axes, matching a ``reshape(-1, ...)`` of the
+        patterns and the row-major flattening ``from_vector`` applies to a 2D ``Vector``.
+        Reshape to ``(Rx, Ry, 2)`` for the grid form.
+
+        Returns
+        -------
+        Dataset2d
+            ``(Rx * Ry, 2)`` positions carrying the scan units, so a consumer can check them.
+
+        Raises
+        ------
+        ValueError
+            If the two scan axes do not share one unit, which would leave the pair meaningless.
+        """
+        scan_units = [str(u) for u in self.units[:2]]
+        if scan_units[0] != scan_units[1]:
+            raise ValueError(
+                f"The scan axes must share a unit to form a position pair, got {scan_units}."
+            )
+
+        rows, cols = (int(n) for n in self.shape[:2])
+        origin = np.asarray(self.origin[:2], dtype=np.float64)
+        sampling = np.asarray(self.sampling[:2], dtype=np.float64)
+
+        ii, jj = np.meshgrid(np.arange(rows), np.arange(cols), indexing="ij")
+        positions = np.stack((ii, jj), axis=-1) * sampling + origin
+
+        return Dataset2d.from_array(
+            positions.reshape(-1, 2),
+            name=f"{self.name} probe positions",
+            units=[scan_units[0], scan_units[0]],
+            signal_units=scan_units[0],
+        )
+
     @property
     def virtual_images(self) -> dict[str, Dataset2d]:
         """
