@@ -1,0 +1,725 @@
+diff --git a/widget/js/diffsim-web/cif.ts b/widget/js/diffsim-web/cif.ts
+new file mode 100644
+index 00000000..8b2da47d
+--- /dev/null
++++ b/widget/js/diffsim-web/cif.ts
+@@ -0,0 +1,341 @@
++/**
++ * CIF reader for the browser simulator: cell, symmetry operations and atom
++ * sites from a CIF text, expanded to the full cell, with kinematical
++ * structure factors (Lobato & Van Dyck electron scattering factors) and
++ * Bloch couplings on the reciprocal lattice out to k_max. The absorptive
++ * part of the potential is not computed here: it is approximated as a fixed
++ * fraction of the elastic coupling (ABSORPTION_FRACTION), which damps the
++ * thickness fringes at a plausible rate; the preset structures carry the
++ * Weickenmeier-Kohl factors from quantem instead.
++ */
++
++import type { CrystalData } from "../diffsim/physics";
++import { relativisticGamma, electronWavelength } from "../diffsim/physics";
++import { LOBATO } from "./lobato";
++
++const ABSORPTION_FRACTION = 0.08;
++
++const SYMBOLS = ["", "H", "He", "Li", "Be", "B", "C", "N", "O", "F", "Ne", "Na", "Mg", "Al", "Si", "P", "S", "Cl", "Ar", "K", "Ca", "Sc", "Ti", "V", "Cr", "Mn", "Fe", "Co", "Ni", "Cu", "Zn", "Ga", "Ge", "As", "Se", "Br", "Kr", "Rb", "Sr", "Y", "Zr", "Nb", "Mo", "Tc", "Ru", "Rh", "Pd", "Ag", "Cd", "In", "Sn", "Sb", "Te", "I", "Xe", "Cs", "Ba", "La", "Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd", "Tb", "Dy", "Ho", "Er", "Tm", "Yb", "Lu", "Hf", "Ta", "W", "Re", "Os", "Ir", "Pt", "Au", "Hg", "Tl", "Pb", "Bi", "Po", "At", "Rn", "Fr", "Ra", "Ac", "Th", "Pa", "U", "Np", "Pu", "Am", "Cm", "Bk", "Cf", "Es", "Fm", "Md", "No", "Lr"];
++
++// jmol colors (fraction of 255) and covalent radii (A) for the drawn atoms
++const JMOL: Record<string, [number, number, number]> = {
++  H: [1, 1, 1], He: [0.85, 1, 1], Li: [0.8, 0.5, 1], Be: [0.76, 1, 0], B: [1, 0.71, 0.71], C: [0.56, 0.56, 0.56], N: [0.19, 0.31, 0.97], O: [1, 0.05, 0.05],
++  F: [0.56, 0.88, 0.31], Ne: [0.7, 0.89, 0.96], Na: [0.67, 0.36, 0.95], Mg: [0.54, 1, 0], Al: [0.75, 0.65, 0.65], Si: [0.94, 0.78, 0.63], P: [1, 0.5, 0], S: [1, 1, 0.19],
++  Cl: [0.12, 0.94, 0.12], Ar: [0.5, 0.82, 0.89], K: [0.56, 0.25, 0.83], Ca: [0.24, 1, 0], Sc: [0.9, 0.9, 0.9], Ti: [0.75, 0.76, 0.78], V: [0.65, 0.65, 0.67], Cr: [0.54, 0.6, 0.78],
++  Mn: [0.61, 0.48, 0.78], Fe: [0.88, 0.4, 0.2], Co: [0.94, 0.56, 0.63], Ni: [0.31, 0.82, 0.31], Cu: [0.78, 0.5, 0.2], Zn: [0.49, 0.5, 0.69], Ga: [0.76, 0.56, 0.56], Ge: [0.4, 0.56, 0.56],
++  As: [0.74, 0.5, 0.89], Se: [1, 0.63, 0], Br: [0.65, 0.16, 0.16], Kr: [0.36, 0.72, 0.82], Rb: [0.44, 0.18, 0.69], Sr: [0, 1, 0], Y: [0.58, 1, 1], Zr: [0.58, 0.88, 0.88],
++  Nb: [0.45, 0.76, 0.79], Mo: [0.33, 0.71, 0.71], Tc: [0.23, 0.62, 0.62], Ru: [0.14, 0.56, 0.56], Rh: [0.04, 0.49, 0.55], Pd: [0, 0.41, 0.52], Ag: [0.75, 0.75, 0.75], Cd: [1, 0.85, 0.56],
++  In: [0.65, 0.46, 0.45], Sn: [0.4, 0.5, 0.5], Sb: [0.62, 0.39, 0.71], Te: [0.83, 0.48, 0], I: [0.58, 0, 0.58], Xe: [0.26, 0.62, 0.69], Cs: [0.34, 0.09, 0.56], Ba: [0, 0.79, 0],
++  La: [0.44, 0.83, 1], Ce: [1, 1, 0.78], Pr: [0.85, 1, 0.78], Nd: [0.78, 1, 0.78], Sm: [0.56, 1, 0.78], Eu: [0.38, 1, 0.78], Gd: [0.27, 1, 0.78], Tb: [0.19, 1, 0.78], Dy: [0.12, 1, 0.78],
++  Ho: [0, 1, 0.61], Er: [0, 0.9, 0.46], Tm: [0, 0.83, 0.32], Yb: [0, 0.75, 0.22], Lu: [0, 0.67, 0.14], Hf: [0.3, 0.76, 1], Ta: [0.3, 0.65, 1], W: [0.13, 0.58, 0.84], Re: [0.15, 0.49, 0.67],
++  Os: [0.15, 0.4, 0.59], Ir: [0.09, 0.33, 0.53], Pt: [0.82, 0.82, 0.88], Au: [1, 0.82, 0.14], Hg: [0.72, 0.72, 0.82], Tl: [0.65, 0.33, 0.3], Pb: [0.34, 0.35, 0.38], Bi: [0.62, 0.31, 0.71],
++  Th: [0, 0.73, 1], U: [0, 0.56, 1],
++};
++const RADII: Record<string, number> = {
++  H: 0.31, He: 0.28, Li: 1.28, Be: 0.96, B: 0.84, C: 0.76, N: 0.71, O: 0.66, F: 0.57, Ne: 0.58, Na: 1.66, Mg: 1.41, Al: 1.21, Si: 1.11, P: 1.07, S: 1.05, Cl: 1.02, Ar: 1.06,
++  K: 2.03, Ca: 1.76, Sc: 1.7, Ti: 1.6, V: 1.53, Cr: 1.39, Mn: 1.39, Fe: 1.32, Co: 1.26, Ni: 1.24, Cu: 1.32, Zn: 1.22, Ga: 1.22, Ge: 1.2, As: 1.19, Se: 1.2, Br: 1.2, Kr: 1.16,
++  Rb: 2.2, Sr: 1.95, Y: 1.9, Zr: 1.75, Nb: 1.64, Mo: 1.54, Tc: 1.47, Ru: 1.46, Rh: 1.42, Pd: 1.39, Ag: 1.45, Cd: 1.44, In: 1.42, Sn: 1.39, Sb: 1.39, Te: 1.38, I: 1.39, Xe: 1.4,
++  Cs: 2.44, Ba: 2.15, La: 2.07, Ce: 2.04, Pr: 2.03, Nd: 2.01, Sm: 1.98, Eu: 1.98, Gd: 1.96, Tb: 1.94, Dy: 1.92, Ho: 1.92, Er: 1.89, Tm: 1.9, Yb: 1.87, Lu: 1.87, Hf: 1.75,
++  Ta: 1.7, W: 1.62, Re: 1.51, Os: 1.44, Ir: 1.41, Pt: 1.36, Au: 1.36, Hg: 1.32, Tl: 1.45, Pb: 1.46, Bi: 1.48, Th: 2.06, U: 1.96,
++};
++
++// ---------------------------------------------------------------------------
++// CIF text -> tokens, data items, loops
++// ---------------------------------------------------------------------------
++function tokenize(text: string): string[] {
++  const out: string[] = [];
++  const lines = text.replace(/\r\n?/g, "\n").split("\n");
++  let i = 0;
++  while (i < lines.length) {
++    let line = lines[i];
++    if (line.startsWith(";")) {
++      // multi-line text field
++      const parts = [line.slice(1)];
++      i++;
++      while (i < lines.length && !lines[i].startsWith(";")) { parts.push(lines[i]); i++; }
++      out.push(parts.join("\n"));
++      i++;
++      continue;
++    }
++    const hash = line.indexOf("#");
++    if (hash >= 0 && !/['"]/.test(line.slice(0, hash))) line = line.slice(0, hash);
++    const re = /'([^']*)'|"([^"]*)"|(\S+)/g;
++    let m: RegExpExecArray | null;
++    while ((m = re.exec(line))) out.push(m[1] ?? m[2] ?? m[3]);
++    i++;
++  }
++  return out;
++}
++
++interface CifBlock { items: Record<string, string>; loops: Record<string, string[]>[] }
++
++function parseBlocks(text: string): CifBlock {
++  const tok = tokenize(text);
++  const block: CifBlock = { items: {}, loops: [] };
++  let i = 0;
++  // use the first data block that has atom sites
++  while (i < tok.length) {
++    const t = tok[i];
++    if (t.toLowerCase().startsWith("data_") || t.toLowerCase() === "stop_" || t.toLowerCase().startsWith("save_")) { i++; continue; }
++    if (t.toLowerCase() === "loop_") {
++      i++;
++      const names: string[] = [];
++      while (i < tok.length && tok[i].startsWith("_")) { names.push(tok[i].toLowerCase()); i++; }
++      const loop: Record<string, string[]> = {};
++      for (const n of names) loop[n] = [];
++      let k = 0;
++      while (i < tok.length && !tok[i].startsWith("_") && !/^(loop_|data_|stop_|save_)/i.test(tok[i])) {
++        loop[names[k % names.length]].push(tok[i]);
++        k++; i++;
++      }
++      block.loops.push(loop);
++      continue;
++    }
++    if (t.startsWith("_")) {
++      block.items[t.toLowerCase()] = tok[i + 1] ?? "";
++      i += 2;
++      continue;
++    }
++    i++;
++  }
++  return block;
++}
++
++const num = (s: string | undefined, fallback = NaN): number => {
++  if (s === undefined) return fallback;
++  const v = parseFloat(s.replace(/\(.*\)/, ""));
++  return isFinite(v) ? v : fallback;
++};
++
++// ---------------------------------------------------------------------------
++// symmetry operations "x, y+1/2, -z" -> rotation matrix + translation
++// ---------------------------------------------------------------------------
++interface SymOp { R: number[][]; t: number[] }
++
++function parseSymop(s: string): SymOp | null {
++  const parts = s.toLowerCase().replace(/\s+/g, "").split(",");
++  if (parts.length !== 3) return null;
++  const R: number[][] = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
++  const t = [0, 0, 0];
++  for (let r = 0; r < 3; r++) {
++    // split into signed terms
++    const terms = parts[r].replace(/-/g, "+-").split("+").filter(Boolean);
++    for (const term of terms) {
++      const m = term.match(/^([+-]?\d*\.?\d*(?:\/\d+)?)\*?([xyz])?$/);
++      if (!m) return null;
++      let coef = 1;
++      const cs = m[1];
++      if (cs && cs !== "+" && cs !== "-") {
++        coef = cs.includes("/") ? parseFloat(cs.split("/")[0]) / parseFloat(cs.split("/")[1]) : parseFloat(cs);
++      } else if (cs === "-") coef = -1;
++      if (m[2]) R[r]["xyz".indexOf(m[2])] += coef;
++      else t[r] += coef;
++    }
++  }
++  return { R, t };
++}
++
++// ---------------------------------------------------------------------------
++export interface ParsedCif {
++  name: string;
++  cellpar: [number, number, number, number, number, number];
++  cell: number[][]; // rows a, b, c (A), a along x, b in the xy plane
++  symbols: string[];
++  positions: number[][]; // fractional, full cell
++  occupancy: number[];
++  spacegroup: string;
++  centering: number[][]; // pure translations (centering vectors)
++}
++
++export function parseCif(text: string, name = "CIF"): ParsedCif {
++  const blk = parseBlocks(text);
++  const it = blk.items;
++  const cellpar = [it["_cell_length_a"], it["_cell_length_b"], it["_cell_length_c"], it["_cell_angle_alpha"], it["_cell_angle_beta"], it["_cell_angle_gamma"]].map((v) => num(v));
++  if (cellpar.some((v) => !isFinite(v))) throw new Error("CIF: missing cell parameters");
++  const [a, b, c, al, be, ga] = cellpar;
++  const d2r = Math.PI / 180;
++  const cosA = Math.cos(al * d2r), cosB = Math.cos(be * d2r), cosG = Math.cos(ga * d2r), sinG = Math.sin(ga * d2r);
++  const cx = c * cosB, cy = (c * (cosA - cosB * cosG)) / sinG;
++  const cz = Math.sqrt(Math.max(c * c - cx * cx - cy * cy, 0));
++  const cell = [[a, 0, 0], [b * cosG, b * sinG, 0], [cx, cy, cz]];
++
++  // atom sites
++  const atomLoop = blk.loops.find((l) => "_atom_site_fract_x" in l);
++  if (!atomLoop) throw new Error("CIF: no _atom_site_fract_x loop");
++  const n = atomLoop["_atom_site_fract_x"].length;
++  const typeCol = atomLoop["_atom_site_type_symbol"] || atomLoop["_atom_site_label"];
++  const occCol = atomLoop["_atom_site_occupancy"];
++  const base: { sym: string; p: number[]; occ: number }[] = [];
++  for (let i = 0; i < n; i++) {
++    const raw = (typeCol?.[i] || "").replace(/[^A-Za-z]/g, "");
++    let sym = raw.slice(0, 2);
++    if (!(sym in LOBATO)) sym = raw.slice(0, 1);
++    if (!(sym in LOBATO)) throw new Error(`CIF: unknown element "${raw}"`);
++    const p = [num(atomLoop["_atom_site_fract_x"][i]), num(atomLoop["_atom_site_fract_y"][i]), num(atomLoop["_atom_site_fract_z"][i])];
++    if (p.some((v) => !isFinite(v))) continue;
++    base.push({ sym, p, occ: occCol ? num(occCol[i], 1) : 1 });
++  }
++
++  // symmetry operations
++  const symLoop = blk.loops.find((l) => "_symmetry_equiv_pos_as_xyz" in l || "_space_group_symop_operation_xyz" in l);
++  const opStrings = symLoop ? symLoop["_symmetry_equiv_pos_as_xyz"] || symLoop["_space_group_symop_operation_xyz"] : ["x,y,z"];
++  const ops = opStrings.map(parseSymop).filter((o): o is SymOp => !!o);
++  if (!ops.length) ops.push({ R: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], t: [0, 0, 0] });
++  const spacegroup = it["_symmetry_space_group_name_h-m"] || it["_space_group_name_h-m_alt"] || (it["_symmetry_int_tables_number"] ? `#${it["_symmetry_int_tables_number"]}` : symLoop ? "" : "P1 (no symmetry operations in file)");
++
++  // expand to the full cell
++  const symbols: string[] = [];
++  const positions: number[][] = [];
++  const occupancy: number[] = [];
++  const wrap = (v: number) => ((v % 1) + 1) % 1;
++  for (const at of base) {
++    for (const op of ops) {
++      const q = [0, 1, 2].map((r) => wrap(op.R[r][0] * at.p[0] + op.R[r][1] * at.p[1] + op.R[r][2] * at.p[2] + op.t[r]));
++      let dup = false;
++      for (let j = 0; j < positions.length; j++) {
++        if (symbols[j] !== at.sym) continue;
++        const d = positions[j].map((v, k) => Math.abs(wrap(v - q[k] + 0.5) - 0.5));
++        if (d.every((v) => v < 1e-3)) { dup = true; break; }
++      }
++      if (!dup) { symbols.push(at.sym); positions.push(q); occupancy.push(at.occ); }
++    }
++  }
++  // centering translations: from the symmetry list, and also any of the
++  // standard centerings that map the expanded atom list onto itself (a P1
++  // listing of a conventional cell carries them only implicitly); the
++  // reflections they extinguish never carry intensity and are dropped
++  const centering = ops.filter((o) => o.R.every((row, r) => row.every((v, cc) => v === (r === cc ? 1 : 0))) && o.t.some((v) => Math.abs(wrap(v)) > 1e-6)).map((o) => o.t.map(wrap));
++  const mapsOntoItself = (t: number[]) => positions.every((pos, j) => {
++    const q = pos.map((v, k) => wrap(v + t[k]));
++    return positions.some((p2, j2) => symbols[j2] === symbols[j] && p2.every((v, k) => Math.abs(wrap(v - q[k] + 0.5) - 0.5) < 1e-3));
++  });
++  for (const t of [[0, 0.5, 0.5], [0.5, 0, 0.5], [0.5, 0.5, 0], [0.5, 0.5, 0.5], [2 / 3, 1 / 3, 1 / 3], [1 / 3, 2 / 3, 2 / 3]]) {
++    if (!centering.some((c) => c.every((v, k) => Math.abs(v - t[k]) < 1e-6)) && mapsOntoItself(t)) centering.push(t);
++  }
++  return { name, cellpar: cellpar as ParsedCif["cellpar"], cell, symbols, positions, occupancy, spacegroup, centering };
++}
++
++// ---------------------------------------------------------------------------
++// structure factors -> CrystalData
++// ---------------------------------------------------------------------------
++function scatteringFactor(sym: string, g: number): number {
++  const [a, b] = LOBATO[sym];
++  const g2 = g * g;
++  let f = 0;
++  for (let i = 0; i < 5; i++) {
++    const d = 1 + b[i] * g2;
++    f += (a[i] * (2 + b[i] * g2)) / (d * d);
++  }
++  return f;
++}
++
++function inv3(m: number[][]): number[][] {
++  const [[a, b, c], [d, e, f], [g, h, i]] = m;
++  const A = e * i - f * h, B = -(d * i - f * g), C = d * h - e * g;
++  const det = a * A + b * B + c * C;
++  return [
++    [A / det, -(b * i - c * h) / det, (b * f - c * e) / det],
++    [B / det, (a * i - c * g) / det, -(a * f - c * d) / det],
++    [C / det, -(a * h - b * g) / det, (a * e - b * d) / det],
++  ];
++}
++
++const MAX_REFLECTIONS = 30000; // keeps the live solve responsive for large cells
++
++/** k_max (1/A) at which a cell of this volume (primitive lattice points per
++ *  centering) reaches the reflection budget, capped at the requested value. */
++export function kMaxForCell(p: ParsedCif, kMaxRequested: number): number {
++  const cell = p.cell;
++  const volume = Math.abs(cell[0][0] * (cell[1][1] * cell[2][2] - cell[1][2] * cell[2][1]) - cell[0][1] * (cell[1][0] * cell[2][2] - cell[1][2] * cell[2][0]) + cell[0][2] * (cell[1][0] * cell[2][1] - cell[1][1] * cell[2][0]));
++  const vPrim = volume / (p.centering.length + 1);
++  // N(k) = 4/3 pi k^3 V_prim
++  const kBudget = Math.cbrt((3 * MAX_REFLECTIONS) / (4 * Math.PI * vPrim));
++  return Math.min(kMaxRequested, Math.floor(kBudget * 20) / 20);
++}
++
++/** Build the simulator's crystal data from a parsed CIF at an energy and k_max (1/A). */
++export function crystalFromCif(p: ParsedCif, energyEv: number, kMaxRequested: number): CrystalData {
++  const kMax = kMaxForCell(p, kMaxRequested);
++  const cell = p.cell;
++  const inv = inv3(cell); // columns of inv = reciprocal vectors; recip rows b_i = inv^T rows
++  const recip = [[inv[0][0], inv[1][0], inv[2][0]], [inv[0][1], inv[1][1], inv[2][1]], [inv[0][2], inv[1][2], inv[2][2]]];
++  const volume = Math.abs(cell[0][0] * (cell[1][1] * cell[2][2] - cell[1][2] * cell[2][1]) - cell[0][1] * (cell[1][0] * cell[2][2] - cell[1][2] * cell[2][0]) + cell[0][2] * (cell[1][0] * cell[2][1] - cell[1][1] * cell[2][0]));
++  const gamma = relativisticGamma(energyEv);
++  const species = [...new Set(p.symbols)];
++  const nmax = recip.map((b) => Math.ceil(kMax / Math.hypot(b[0], b[1], b[2])) + 1);
++  const hkl: number[][] = [];
++  const g = new Float32Array(0);
++  const gList: number[] = [];
++  const F2: number[] = [];
++  const Ure: number[] = [];
++  const Uim: number[] = [];
++  const fCache = new Map<string, number>();
++  // extinguished by a centering translation when g . t is not an integer
++  const isCentered = (h: number, k: number, l: number) => p.centering.some((t) => { const x = h * t[0] + k * t[1] + l * t[2]; return Math.abs(x - Math.round(x)) > 1e-6; });
++  for (let h = -nmax[0]; h <= nmax[0]; h++) for (let k = -nmax[1]; k <= nmax[1]; k++) for (let l = -nmax[2]; l <= nmax[2]; l++) {
++    if (h === 0 && k === 0 && l === 0) continue;
++    const gx = h * recip[0][0] + k * recip[1][0] + l * recip[2][0];
++    const gy = h * recip[0][1] + k * recip[1][1] + l * recip[2][1];
++    const gz = h * recip[0][2] + k * recip[1][2] + l * recip[2][2];
++    const gl = Math.hypot(gx, gy, gz);
++    if (gl > kMax || isCentered(h, k, l)) continue;
++    // structure factor F = sum f_j occ_j exp(-2 pi i g.r_j) / V  (quantem convention)
++    let re = 0, im = 0;
++    const gk = gl.toFixed(5);
++    for (const s of species) {
++      const key = s + gk;
++      let f = fCache.get(key);
++      if (f === undefined) { f = scatteringFactor(s, gl); fCache.set(key, f); }
++      for (let j = 0; j < p.symbols.length; j++) {
++        if (p.symbols[j] !== s) continue;
++        const ph = -2 * Math.PI * (h * p.positions[j][0] + k * p.positions[j][1] + l * p.positions[j][2]);
++        re += f * p.occupancy[j] * Math.cos(ph);
++        im += f * p.occupancy[j] * Math.sin(ph);
++      }
++    }
++    re /= volume; im /= volume;
++    hkl.push([h, k, l]);
++    gList.push(gx, gy, gz);
++    F2.push(re * re + im * im);
++    // coupling U = gamma F / pi, plus an absorptive part i * fraction * U (same phase)
++    const ur = (gamma * re) / Math.PI, ui = (gamma * im) / Math.PI;
++    Ure.push(ur - ABSORPTION_FRACTION * ui);
++    Uim.push(ui + ABSORPTION_FRACTION * ur);
++  }
++  void g;
++  let f0 = 0;
++  for (let j = 0; j < p.symbols.length; j++) f0 += scatteringFactor(p.symbols[j], 0) * p.occupancy[j];
++  const u0 = (gamma * f0) / (Math.PI * volume);
++  const couplingRe = new Map<string, number>();
++  const couplingIm = new Map<string, number>();
++  for (let i = 0; i < hkl.length; i++) {
++    couplingRe.set(`${hkl[i][0]},${hkl[i][1]},${hkl[i][2]}`, Ure[i]);
++    couplingIm.set(`${hkl[i][0]},${hkl[i][1]},${hkl[i][2]}`, Uim[i]);
++  }
++  const [a, b, , , , ga] = p.cellpar;
++  return {
++    name: p.name,
++    spacegroup: p.spacegroup,
++    pointgroup: "",
++    cell,
++    recip,
++    positions_frac: p.positions,
++    numbers: p.symbols.map((s) => Math.max(1, SYMBOLS.indexOf(s))),
++    symbols: p.symbols,
++    colors: p.symbols.map((s) => JMOL[s] || [0.7, 0.7, 0.7]),
++    radii: p.symbols.map((s) => RADII[s] || 1.4),
++    hkl,
++    g: Float32Array.from(gList),
++    F2: Float32Array.from(F2),
++    U_re: Float32Array.from(Ure),
++    U_im: Float32Array.from(Uim),
++    couplingRe,
++    couplingIm,
++    u0_imag: ABSORPTION_FRACTION * u0,
++    absorptive: true,
++    energy_ev: energyEv,
++    wavelength: electronWavelength(energyEv),
++    k_max: kMax,
++    hexagonal: Math.abs(a - b) < 1e-3 * a && Math.abs(ga - 120) < 0.05,
++  };
++}
+diff --git a/widget/js/diffsim-web/index.ts b/widget/js/diffsim-web/index.ts
+index be4883eb..fa9d5443 100644
+--- a/widget/js/diffsim-web/index.ts
++++ b/widget/js/diffsim-web/index.ts
+@@ -29,6 +29,7 @@ import {
+   Frame, cbedImage, drawDisks, drawEwaldPanel, drawImage, drawKikuchiOverlay, drawKosselLines, setupCanvas, tiltGrid, toPx,
+ } from "../diffsim/pattern";
+ import { ENERGY_EV, PRESETS } from "./presets";
++import { ParsedCif, crystalFromCif, parseCif } from "./cif";
+ 
+ const DIRECT: Reflection = { index: -1, hkl: [0, 0, 0], g: [0, 0, 0], gLen: 0, s: 0 };
+ const SG_MAX = 0.05;
+@@ -94,7 +95,13 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+   const ENERGIES = [60e3, 80e3, 100e3, 120e3, 200e3, 300e3];
+   if (!ENERGIES.includes(state.energy)) ENERGIES.push(state.energy);
+   ENERGIES.sort((a, b) => a - b);
+-  let crystal: CrystalData = parseCrystal(PRESETS[state.preset], state.energy)!;
++  const cifs = new Map<string, ParsedCif>(); // structures loaded from CIF files, by menu name
++  const loadCrystal = (name: string, energy: number): CrystalData => {
++    const cif = cifs.get(name);
++    if (cif) return crystalFromCif(cif, energy, 3.0);
++    return parseCrystal(PRESETS[name], energy)!;
++  };
++  let crystal: CrystalData = loadCrystal(state.preset, state.energy);
+   let geom = cellGeometry(crystal, state.nCells, state.polyhedra);
+   const k0 = () => 1 / crystal.wavelength;
+ 
+@@ -118,7 +125,10 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+     .${id}-wrap { background: var(--${id}-bg, #111); color: var(--${id}-fg, #ccc); border: 1px solid var(--${id}-border, #444);
+       border-radius: 8px; padding: 10px 14px 8px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+       font-size: 13px; max-width: 100%; box-sizing: border-box; }
+-    .${id}-title { font-size: 16px; font-weight: 600; color: var(--${id}-title, #ddd); margin-bottom: 6px; text-align: center; }
++    .${id}-titlerow { position: relative; display: flex; align-items: center; justify-content: center; margin-bottom: 6px; min-height: 28px; }
++    .${id}-title { font-size: 16px; font-weight: 600; color: var(--${id}-title, #ddd); text-align: center; }
++    .${id}-titlerow .${id}-btn { position: absolute; right: 0; top: 50%; transform: translateY(-50%); }
++    .${id}-file { display: none; }
+     .${id}-top { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; justify-content: center; margin-bottom: 8px; }
+     .${id}-panels { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+     .${id}-panel { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 0 0 auto; }
+@@ -153,7 +163,11 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+   wrap.className = `${id}-wrap`;
+   const presetOptions = names.map((n) => `<option value="${n}"${n === state.preset ? " selected" : ""}>${n}</option>`).join("");
+   wrap.innerHTML = `
+-    <div class="${id}-title">Electron diffraction simulator</div>
++    <div class="${id}-titlerow">
++      <div class="${id}-title">Electron diffraction simulator</div>
++      <div class="${id}-btn" id="${id}-cifbtn" title="Load a crystal structure from a CIF file">load CIF…</div>
++      <input type="file" class="${id}-file" id="${id}-ciffile" accept=".cif,.CIF,text/plain">
++    </div>
+     <div class="${id}-top">
+       <label>structure <select id="${id}-preset">${presetOptions}</select></label>
+       <label>zone axis <input type="text" id="${id}-zone" size="8" placeholder="1 1 0"></label>
+@@ -295,21 +309,22 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+     if (state.mode === "nanobeam") {
+       nbTilts = precessionTilts(k0(), state.precession, state.dragging ? dragNodes : 16);
+       if (state.dynamical) {
+-        nbSolution = nanobeamSolve(crystal, q, state.patternRange, SG_MAX, maxBeams, nbTilts);
++        // the physics always uses every reflection the crystal carries; the pattern range only crops the drawing
++        nbSolution = nanobeamSolve(crystal, q, crystal.k_max, SG_MAX, maxBeams, nbTilts);
+         nb = { beams: nbSolution.beams, nDyn: Math.round(nbSolution.nDynMean) };
+       } else {
+-        nb = { beams: [DIRECT, ...labReflections(crystal, q, state.patternRange)], nDyn: 0 };
++        nb = { beams: [DIRECT, ...labReflections(crystal, q, crystal.k_max)], nDyn: 0 };
+         nbSolution = null;
+       }
+     } else if (state.mode === "cbed") {
+       const Rk = k0() * Math.sin(alpha);
+       const grid = tiltGrid(Rk, state.dragging ? CBED_GRID_DRAG : CBED_GRID);
+       if (state.dynamical) {
+-        const { beams, nDyn } = hybridBeams(crystal, q, state.patternRange, SG_MAX, state.dragging ? 20 : 32, Math.sin(alpha));
++        const { beams, nDyn } = hybridBeams(crystal, q, crystal.k_max, SG_MAX, state.dragging ? 20 : 32, Math.sin(alpha));
+         const dyn = beams.slice(0, nDyn);
+         cbed = { grid, beams, nDyn, sols: grid.tilts.map((t) => blochSolve(crystal, dyn, t)) };
+       } else {
+-        cbed = { grid, beams: [DIRECT, ...labReflections(crystal, q, state.patternRange)], nDyn: 0, sols: null };
++        cbed = { grid, beams: [DIRECT, ...labReflections(crystal, q, crystal.k_max)], nDyn: 0, sols: null };
+       }
+     }
+     if (state.mode === "kossel" || (state.mode === "nanobeam" && state.kikuchi)) {
+@@ -339,7 +354,7 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+       const ctx = ewaldCanvas.getContext("2d");
+       if (ctx) {
+         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+-        const refl = state.mode === "nanobeam" && nb.beams.length ? nb.beams : labReflections(crystal, state.quat, state.patternRange);
++        const refl = state.mode === "nanobeam" && nb.beams.length ? nb.beams : labReflections(crystal, state.quat, crystal.k_max);
+         drawEwaldPanel(ctx, Sc, Se, refl, k0(), state.patternRange, SG_MAX, VIEW_X, dark, state.mode === "nanobeam" ? state.precession : 0);
+       }
+     }
+@@ -604,9 +619,42 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+   $(`#${id}-go`).addEventListener("click", goZone);
+   $<HTMLInputElement>(`#${id}-zone`).addEventListener("keydown", (e) => { if (e.key === "Enter") goZone(); });
+   $(`#${id}-reset`).addEventListener("click", () => { setZoneAxis(crystal.hexagonal ? [0, 0, 1] : [1, 1, 0]); recompute(); });
++  // CIF upload: parse in the browser, add to the structure menu, select it
++  const fileInput = $<HTMLInputElement>(`#${id}-ciffile`);
++  $(`#${id}-cifbtn`).addEventListener("click", () => fileInput.click());
++  fileInput.addEventListener("change", async () => {
++    const file = fileInput.files?.[0];
++    if (!file) return;
++    try {
++      const text = await file.text();
++      const parsed = parseCif(text, file.name.replace(/\.cif$/i, ""));
++      const menuName = `${parsed.name} (CIF)`;
++      cifs.set(menuName, parsed);
++      const sel = $<HTMLSelectElement>(`#${id}-preset`);
++      if (![...sel.options].some((o) => o.value === menuName)) {
++        const opt = document.createElement("option");
++        opt.value = menuName; opt.textContent = menuName;
++        sel.appendChild(opt);
++      }
++      sel.value = menuName;
++      state.preset = menuName;
++      crystal = loadCrystal(menuName, state.energy);
++      const range = $<HTMLInputElement>(`#${id}-range`);
++      range.max = String(crystal.k_max);
++      if (state.patternRange > crystal.k_max) { state.patternRange = crystal.k_max; range.value = String(crystal.k_max); }
++      range.dispatchEvent(new Event("input")); // refresh the slider label
++      geomKey = "";
++      setZoneAxis(crystal.hexagonal ? [0, 0, 1] : [1, 1, 0]);
++      recompute();
++      $(`#${id}-status`).textContent = `${menuName}: ${parsed.symbols.length} atoms in the cell, ${parsed.spacegroup || "symmetry from the file"}, ${crystal.hkl.length} reflections out to ${crystal.k_max.toFixed(2)} Å⁻¹${crystal.k_max < 3 ? " (reduced for this cell size)" : ""}; absorption approximated as 8 % of the potential`;
++    } catch (err) {
++      $(`#${id}-status`).textContent = `could not read ${file.name}: ${(err as Error).message}`;
++    }
++    fileInput.value = "";
++  });
+   $<HTMLSelectElement>(`#${id}-preset`).addEventListener("change", (e) => {
+     state.preset = (e.target as HTMLSelectElement).value;
+-    crystal = parseCrystal(PRESETS[state.preset], state.energy)!;
++    crystal = loadCrystal(state.preset, state.energy);
+     const range = $<HTMLInputElement>(`#${id}-range`);
+     range.max = String(crystal.k_max);
+     if (state.patternRange > crystal.k_max) { state.patternRange = crystal.k_max; range.value = String(crystal.k_max); }
+@@ -642,7 +690,7 @@ export function render({ model, el }: { model: Model; el: HTMLElement }) {
+   $<HTMLInputElement>(`#${id}-ewald`).addEventListener("change", (e) => { state.showEwald = (e.target as HTMLInputElement).checked; computeSize(); drawAll(); });
+   $<HTMLSelectElement>(`#${id}-energy`).addEventListener("change", (e) => {
+     state.energy = +(e.target as HTMLSelectElement).value;
+-    crystal = parseCrystal(PRESETS[state.preset], state.energy)!;
++    crystal = loadCrystal(state.preset, state.energy);
+     recompute();
+   });
+   $<HTMLInputElement>(`#${id}-ncell`).addEventListener("change", (e) => {
+diff --git a/widget/js/diffsim-web/lobato.ts b/widget/js/diffsim-web/lobato.ts
+new file mode 100644
+index 00000000..d237d03c
+--- /dev/null
++++ b/widget/js/diffsim-web/lobato.ts
+@@ -0,0 +1,107 @@
++// Generated from quantem/diffraction/data/lobato.json: Lobato & Van Dyck (2014)
++// electron scattering factor parameters, 5 (a_i, b_i) pairs per element.
++export const LOBATO: Record<string, [number[], number[]]> = {
++  H: [[0.006473848488, -0.4901925768, 0.5732841604, -0.3794033015, 0.5544264748], [2.785198854, 2.776204283, 2.775385911, 2.767593029, 2.765118976]],
++  He: [[3.057451161, -62.00447791, 64.00555371, -5.001325785, 0.1517988287], [1.089672487, 0.9398387981, 0.9252890344, 0.8229474987, 0.5773931107]],
++  Li: [[3.926222729, -4.548619626, 2.193353129, 0.0699451265, 0.002098642249], [8.142760135, 4.98941077, 4.144289992, 0.4019223151, 0.1564790347]],
++  Be: [[3.398249706, -1.908668861, 0.03907021175, -0.01116310102, 0.009462044654], [4.442701786, 3.324515425, 0.1897728803, 0.08719186146, 0.082780906]],
++  B: [[1.472792486, -0.4019330422, 0.305998957, 0.01961442172, 0.0009771771061], [3.749740483, 0.5880665361, 0.5156396131, 0.1213775701, 0.06809824122]],
++  C: [[124.4660886, -220.3528571, 195.2353523, -98.10793613, 0.01420230412], [2.421208493, 2.305379438, 2.048519321, 1.933525529, 0.07689768185]],
++  N: [[58.13271507, -147.5424091, 130.1430656, -39.61956741, 0.01059577633], [1.700448564, 1.559038526, 1.415768275, 1.278418182, 0.05655877985]],
++  O: [[29.94740452, -77.61012663, 99.88177646, -51.21270055, 0.008196189544], [1.302839879, 1.157941053, 1.009885493, 0.9433279714, 0.04331976113]],
++  F: [[0.9489848945, -30.1333923, 52.79650781, -22.70627038, 0.006569976645], [1.458829332, 0.6887799932, 0.6542398693, 0.6148361308, 0.03428374195]],
++  Ne: [[0.5827411922, 0.3706765618, -0.5467449674, 0.4140526825, 0.005199030809], [1.281185731, 0.4445208972, 0.1986508755, 0.1854772467, 0.0275738382]],
++  Na: [[23.67006039, -21.85317862, 0.5924994481, -0.02446522903, 0.004839502217], [8.451487735, 8.040966005, 0.6249960005, 0.1324503949, 0.0233994362]],
++  Mg: [[4.855010477, -2.662209065, 0.4780012361, -0.07023070647, 0.003989058281], [5.946392738, 4.171303125, 0.3982698082, 0.1618861858, 0.01953450564]],
++  Al: [[2.834095616, -4.280041334, 4.421916805, -0.03457744719, 0.003523859414], [6.66235024, 0.5512947222, 0.5093289634, 0.1117848374, 0.01676023518]],
++  Si: [[2.871891426, -2.061735012, 2.171140242, -0.06630736331, 0.003010707097], [5.084871036, 0.4291781853, 0.3664854342, 0.1197106113, 0.01439945361]],
++  P: [[2.7915184, -4.365068378, 4.435584555, -0.08096357734, 0.00267900018], [3.900659619, 0.3298259684, 0.3060899565, 0.1080832325, 0.01258944953]],
++  S: [[2.679714156, -0.4742528222, 0.514835949, -0.0958360025, 0.002488719638], [3.068891212, 0.3782167022, 0.1887218119, 0.092337059, 0.01119208772]],
++  Cl: [[2.5662484, -0.3388763508, 1.145845588, -0.9231093165, 0.00229168002], [2.415949204, 0.4214142393, 0.109592405, 0.09909554582, 0.009996659489]],
++  Ar: [[2.459817464, -0.3641981771, 0.2505844772, -0.05774370295, 0.002301438668], [1.94004632, 0.3992410679, 0.1174724063, 0.0567803726, 0.009155798329]],
++  K: [[5.811078786, -50.25370965, 48.86094121, 0.0740628592, 0.0007278027386], [12.66914834, 3.956410397, 3.683850596, 0.1074585176, 0.006655767894]],
++  Ca: [[21.17811615, -339.0438243, 322.7569585, 0.06500776739, 0.0006558743666], [6.396086194, 3.740247139, 3.648884499, 0.09450906345, 0.005985206199]],
++  Sc: [[12.60351866, -276.8753821, 268.8716039, 0.05568241789, 0.0005770712551], [6.156256154, 3.088735543, 3.027276633, 0.08188747484, 0.005382898321]],
++  Ti: [[8.575957752, -210.3315635, 206.0971726, 0.0477773949, 0.0005057164845], [6.007806689, 2.602858567, 2.553523451, 0.0711429484, 0.004856284394]],
++  V: [[6.527684332, -200.4305768, 198.0150539, 0.04139115181, 0.0004474550243], [5.835524794, 2.232559524, 2.197860186, 0.06239738768, 0.004403836491]],
++  Cr: [[3.028317848, -95.53939331, 96.17615624, 0.0359777316, 0.0003914928907], [8.359115043, 1.802637903, 1.77509489, 0.05481444121, 0.003998289689]],
++  Mn: [[4.374175506, -160.9255109, 160.2733081, 0.0312303861, 0.000346966021], [5.510317055, 1.687982164, 1.666140478, 0.04833703903, 0.003647469601]],
++  Fe: [[3.798100908, -91.68935494, 91.44542522, 0.0272754344, 0.0003033798544], [5.317126459, 1.497130949, 1.468092418, 0.04272478501, 0.003327918552]],
++  Co: [[3.330378745, -77.00175965, 77.07252218, 0.0239904669, 0.0002682566655], [5.181359646, 1.329151223, 1.30284929, 0.03806454868, 0.00305010008]],
++  Ni: [[2.969080787, -75.74770691, 76.03982876, 0.02101621137, 0.0002311517511], [5.041809491, 1.182755079, 1.162165458, 0.03374790879, 0.002786808621]],
++  Cu: [[1.752071452, -43.04105235, 44.07059155, 0.01868761541, 0.0002017273248], [6.18750498, 1.002662636, 0.9853843114, 0.03029847039, 0.002558555987]],
++  Zn: [[2.466371105, -61.46785413, 62.01769452, 0.01641601739, 0.0001724871176], [4.910280785, 0.9678985203, 0.9512838348, 0.02696009677, 0.00234109611]],
++  Ga: [[2.760102031, -34.44526142, 35.22622672, 0.0132067197, 0.0001259455609], [6.101282245, 0.7651433136, 0.7513286234, 0.02248796343, 0.002067373743]],
++  Ge: [[3.182416353, -52.45140378, 52.96908272, 0.01140961686, 9.509543581e-05], [5.017190409, 0.7123957644, 0.7022801925, 0.01967472957, 0.001841466145]],
++  As: [[3.456429691, -33.31760444, 33.57121939, 0.009790022956, 6.534348623e-05], [4.01358016, 0.6623557781, 0.6457719411, 0.01709193532, 0.001603016028]],
++  Se: [[3.649050478, -43.68516622, 43.69202886, 0.008449022842, 3.786114741e-05], [3.250432671, 0.6096662017, 0.5969713008, 0.01485545127, 0.001336255874]],
++  Br: [[3.838463122, -52.2723471, 51.98612795, 0.007339559893, 1.64694208e-05], [2.611894706, 0.5661950629, 0.5552793267, 0.01297464694, 0.001029865369]],
++  Kr: [[4.025410303, -46.30423321, 45.72136819, 0.006353379596, 1.334778453e-06], [2.136483814, 0.5265911665, 0.5141367845, 0.01128072422, 0.0004880898579]],
++  Rb: [[3.389753516, 2.143483487, 0.3543226035, 0.003740093401, 3.003425023e-07], [20.57448144, 1.910799452, 0.1974105894, 0.008134594653, 0.0002926857911]],
++  Sr: [[4.770925093, 1.475978502, 0.3044513555, 0.003594749819, 3.000855492e-07], [13.36688813, 1.337383796, 0.1775323694, 0.00779105033, 0.0002822551396]],
++  Y: [[4.607210199, 1.42801851, 0.2955810456, 0.003389978409, 2.66862975e-07], [10.86869056, 1.311374559, 0.1680228708, 0.007359645454, 0.000262343281]],
++  Zr: [[4.311754534, 1.49331578, 0.2812360501, 0.003093377385, 2.580244485e-07], [9.458965805, 1.330636228, 0.1565068714, 0.006824105238, 0.0002498188791]],
++  Nb: [[3.111790391, 2.202590609, 0.2703307749, 0.002687991948, 2.325494834e-07], [10.69031413, 1.653163562, 0.1451151857, 0.006139563516, 0.0002322402359]],
++  Mo: [[2.831059684, 2.348581375, 0.2451058884, 0.002352821082, 2.312708383e-07], [10.43571958, 1.604828687, 0.1316969348, 0.005549779014, 0.0002227474638]],
++  Tc: [[2.571798593, 2.45633742, 0.2206584409, 0.00205531418, 2.321329478e-07], [10.16431171, 1.534419192, 0.1191386198, 0.005018532409, 0.0002145903791]],
++  Ru: [[2.332300304, 2.535780255, 0.1982080421, 0.001761201305, 1.981294116e-07], [9.921674602, 1.455856688, 0.1076821879, 0.004472435457, 0.0001965747162]],
++  Rh: [[2.113525349, 2.586363162, 0.1770639139, 0.00149737051, 2.054814456e-07], [9.659137259, 1.371066569, 0.09703530276, 0.003971285091, 0.0001913551907]],
++  Pd: [[0.6421597962, 2.979148144, 0.168154426, 0.001337442139, 1.914109683e-07], [5.974797503, 1.433594325, 0.09098684012, 0.003624101371, 0.0001806889144]],
++  Ag: [[1.553172167, 2.639303647, 0.142015487, 0.001008504601, 1.9463843e-07], [8.156202358, 1.216008875, 0.07900988649, 0.002965479014, 0.0001745930959]],
++  Cd: [[61.5307852, -78.60167412, 21.55012926, 0.1376850157, 0.0003246449309], [3.114681025, 2.760169834, 1.935513123, 0.07224683473, 0.001170016296]],
++  In: [[4.222321779, -26.41213184, 27.28528527, 0.1216179019, 0.0003068835464], [6.072655104, 1.64550179, 1.522570749, 0.06565079147, 0.001120938515]],
++  Sn: [[5.142220746, -25.49454138, 25.74144875, 0.1117782276, 0.0002936473847], [5.272726365, 1.531949592, 1.40257525, 0.06116853873, 0.001075608154]],
++  Sb: [[6.241640318, -93.38687244, 92.63328758, 0.1034126922, 0.0002818484269], [4.269841081, 1.394077461, 1.355668549, 0.05726679497, 0.001033079543]],
++  Te: [[7.377433018, -126.0251069, 124.128405, 0.09599783718, 0.0002710722164], [3.469177578, 1.297598109, 1.267710676, 0.05377717502, 0.000993084577]],
++  I: [[9.644006663, -122.9244354, 118.6825648, 0.0895025947, 0.0002612761215], [2.726455454, 1.237234259, 1.200620369, 0.05066786823, 0.0009554378834]],
++  Xe: [[15.54517497, -118.2410279, 108.009525, 0.0836259342, 0.0002519918624], [2.106373409, 1.208603761, 1.153952706, 0.04781893913, 0.0009198862576]],
++  Cs: [[4.287087392, 3.232506654, 0.6740295336, 0.06189080834, 0.000235612053], [22.65878708, 2.237973865, 0.3689955687, 0.04022665753, 0.0008837618909]],
++  Ba: [[6.244751874, 2.351722714, 0.4742793732, 0.06381138743, 0.0002346512806], [15.14313542, 1.453790006, 0.3208356464, 0.04043545321, 0.0008540811313]],
++  La: [[6.097881796, 2.194951647, 0.548172792, 0.06166695732, 0.0002268073559], [12.42885443, 1.505359924, 0.3337380397, 0.03877445535, 0.0008240498841]],
++  Ce: [[5.795268796, 2.370226641, 0.4713987569, 0.05743682606, 0.0002189794893], [14.28010551, 1.359690157, 0.3020173497, 0.03664367981, 0.0007954345265]],
++  Pr: [[5.604062554, 2.357962596, 0.4760010986, 0.05441233743, 0.0002114146022], [13.95174902, 1.312397549, 0.2949337012, 0.03486015425, 0.0007682616827]],
++  Nd: [[5.42908392, 2.336873254, 0.4833735541, 0.05146549646, 0.0002037761329], [13.65036494, 1.267598414, 0.2886106816, 0.03312918074, 0.0007423484838]],
++  Pm: [[5.267744451, 2.308558133, 0.493265479, 0.04863562797, 0.0001963088423], [13.36020968, 1.225858566, 0.2829196321, 0.03147353971, 0.0007176580251]],
++  Sm: [[5.126804285, 2.26925534, 0.5042093005, 0.04569239924, 0.0001886750505], [13.1581501, 1.181295082, 0.2771070382, 0.02979576045, 0.0006940110992]],
++  Eu: [[4.979623597, 2.241830875, 0.5129339614, 0.04298018485, 0.0001813816925], [12.83926631, 1.147054464, 0.2703871609, 0.0282418715, 0.0006714866032]],
++  Gd: [[5.0783583, 1.957440272, 0.5928259832, 0.04195020341, 0.0001752410915], [10.51327255, 1.117649413, 0.2843867418, 0.02726633276, 0.0006503108607]],
++  Tb: [[4.711616367, 2.172619508, 0.5397176013, 0.03797960045, 0.0001669237636], [12.31094159, 1.087437968, 0.2598049655, 0.02532899239, 0.000629278567]],
++  Dy: [[4.590755045, 2.13572373, 0.5513555601, 0.03560584067, 0.0001598240169], [12.06567406, 1.058117371, 0.2539944389, 0.02395087396, 0.0006094827484]],
++  Ho: [[4.484001106, 2.089043471, 0.5659326183, 0.03327035902, 0.0001524456103], [11.87492507, 1.028284937, 0.2489078079, 0.02258440655, 0.0005903744452]],
++  Er: [[4.376651408, 2.046451504, 0.5806628606, 0.03123885283, 0.0001453748697], [11.66530807, 1.003147697, 0.2441532927, 0.021361858, 0.0005721103385]],
++  Tm: [[4.283083182, 1.995380015, 0.5970535713, 0.02909516689, 0.000138064769], [11.4961906, 0.977039102, 0.239429133, 0.02009122333, 0.0005543771385]],
++  Yb: [[4.195638407, 1.94333286, 0.6124466173, 0.02715152077, 0.0001305947874], [11.41077505, 0.9490119245, 0.2349503265, 0.01890515763, 0.0005372336492]],
++  Lu: [[4.356925933, 1.695892048, 0.6639045201, 0.02630200188, 0.0001254973185], [9.294345147, 0.910500046, 0.2387465959, 0.01820985425, 0.000521559372]],
++  Hf: [[4.331384057, 1.527648647, 0.7357959229, 0.02495263232, 0.0001187408526], [7.876844338, 0.9425156426, 0.24169948, 0.01728998944, 0.0005058346313]],
++  Ta: [[4.197260013, 1.468548068, 0.7839312482, 0.02324940949, 0.0001112613586], [6.936740249, 1.017252766, 0.2389489397, 0.01623324331, 0.000490239004]],
++  W: [[3.976297158, 1.522926843, 0.7977062464, 0.02136667416, 0.0001030786894], [6.296857792, 1.112899512, 0.2310570407, 0.01510135456, 0.0004746824771]],
++  Re: [[3.751443814, 1.62768803, 0.7817567555, 0.01951708039, 9.431998043e-05], [5.797546361, 1.182236311, 0.219913586, 0.01398104555, 0.0004591271258]],
++  Os: [[3.484015173, 1.793779204, 0.7448783567, 0.01754277852, 8.448723516e-05], [5.439988461, 1.227921341, 0.206208857, 0.01278994017, 0.0004430322268]],
++  Ir: [[1.599565782, 2.975344522, 0.6950926784, 0.01487796275, 6.905495791e-05], [5.792444474, 1.55300983, 0.1886263359, 0.01117634707, 0.0004227723617]],
++  Pt: [[2.04021564, 2.899226346, 0.6363440838, 0.01320719196, 5.673821925e-05], [6.658194296, 1.413379238, 0.1740001045, 0.01006878045, 0.0004030771057]],
++  Au: [[1.675934671, 3.00486603, 0.5953400132, 0.01171631866, 4.296782976e-05], [5.522310932, 1.38007223, 0.1622292377, 0.009018148904, 0.0003792776675]],
++  Hg: [[2.235228504, 2.682766387, 0.5551949262, 0.01072733544, 3.28473992e-05], [5.02030989, 1.230775906, 0.152248123, 0.008283991169, 0.0003562419389]],
++  Tl: [[2.803427374, 2.71882788, 0.5224759154, 0.00984537837, 2.345245265e-05], [6.558768728, 1.169724225, 0.1435566918, 0.007619765262, 0.0003296276739]],
++  Pb: [[3.60861021, 2.450567747, 0.4786395001, 0.008872142352, 1.040019329e-05], [6.581625946, 1.027728527, 0.1335336806, 0.006848612389, 0.0002763888755]],
++  Bi: [[4.242099011, 2.099943421, 0.4328366314, 0.008020215704, 7.217850309e-07], [5.752801155, 0.8739014892, 0.1235999562, 0.006176003331, 0.0001414951776]],
++  Po: [[4.636200957, 1.780633114, 0.403730444, 0.007685395547, 8.954159028e-08], [4.888252998, 0.7563105269, 0.1173023645, 0.005930343942, 7.666686639e-05]],
++  At: [[4.965922506, 1.438155615, 0.3712992006, 0.007472564285, 1.141152842e-07], [4.091293788, 0.6292289966, 0.1110966787, 0.005772350103, 8.085118939e-05]],
++  Rn: [[5.306156145, 1.117331602, 0.3158587231, 0.007203422423, 1.073553306e-07], [3.488007355, 0.4811907411, 0.1018744679, 0.005592453744, 7.795066735e-05]],
++  Fr: [[4.52053399, 4.106953979, 0.7139468785, 0.01692940277, 8.574921292e-05], [19.44822342, 1.898246732, 0.1695535636, 0.01148195675, 0.0003461220383]],
++  Ra: [[6.52401072, 3.207870807, 0.5404787743, 0.008782788069, 6.910106029e-06], [14.00925543, 1.32635036, 0.1314085684, 0.006286474345, 0.0002278399815]],
++  Ac: [[6.896028536, 2.835141545, 0.5035068819, 0.00802294511, 9.204009548e-08], [11.07638257, 1.171326163, 0.1234946514, 0.005735155958, 7.197075418e-05]],
++  Th: [[7.093749002, 2.529123739, 0.4821078199, 0.007719366741, 7.271141994e-08], [9.094737952, 1.06391667, 0.1186194466, 0.005539457089, 6.584947305e-05]],
++  Pa: [[6.434013248, 2.970999705, 0.4607966518, 0.007240331258, 6.362366643e-08], [10.25968513, 1.131774523, 0.1127759354, 0.005274595834, 6.192638241e-05]],
++  U: [[6.210708268, 3.039344538, 0.4373399844, 0.006807147641, 6.182293277e-08], [10.02141059, 1.103998802, 0.1072189732, 0.005024321309, 6.005069942e-05]],
++  Np: [[6.004315983, 3.094316545, 0.4128084877, 0.006408916579, 6.730073762e-08], [9.817930467, 1.069787051, 0.1016352914, 0.004795248469, 6.028065987e-05]],
++  Pu: [[5.200617168, 3.498494404, 0.4054149311, 0.006223437008, 6.008593295e-08], [11.20383102, 1.128463695, 0.09893334727, 0.00465917432, 5.72590639e-05]],
++  Am: [[5.0253386, 3.518439883, 0.3819503494, 0.005821102081, 6.526093388e-08], [10.97721907, 1.084772148, 0.09367468749, 0.004426823469, 5.738568371e-05]],
++  Cm: [[5.346561003, 3.224684666, 0.3494617526, 0.005292517567, 6.159176302e-08], [9.231183798, 0.9728362292, 0.0870596221, 0.004130119645, 5.494638944e-05]],
++  Bk: [[5.225823503, 3.22818874, 0.3270988788, 0.004888825756, 5.212722694e-08], [9.071357066, 0.9311242775, 0.08207206021, 0.00389029656, 5.103679766e-05]],
++  Cf: [[4.586412478, 3.518695957, 0.3192617142, 0.00472979648, 5.513244808e-08], [10.31861021, 0.9572788378, 0.07968074314, 0.003771932, 5.097508604e-05]],
++  Es: [[4.457994807, 3.508672126, 0.3013753805, 0.004407637462, 4.887879032e-08], [10.08906934, 0.9194464474, 0.07564191778, 0.003570264651, 4.804951744e-05]],
++  Fm: [[4.338975764, 3.491850989, 0.281471099, 0.004002092715, 5.529298082e-08], [9.963309372, 0.878083957, 0.07116371158, 0.003321524042, 4.851031795e-05]],
++  Md: [[4.227294704, 3.472492275, 0.2648222295, 0.003690728778, 6.258714262e-08], [9.72400602, 0.842873776, 0.0673534744, 0.003123646063, 4.91217097e-05]],
++  No: [[4.109517024, 3.457991325, 0.2470873512, 0.003304239209, 5.991049262e-08], [9.677359945, 0.8069400425, 0.0632815437, 0.002875446396, 4.706791537e-05]],
++  Lr: [[4.521474212, 3.202129856, 0.223028727, 0.002817164539, 4.06427954e-08], [8.283099069, 0.7319189581, 0.0580942773, 0.00256168016, 4.038165155e-05]],
++};
+diff --git a/widget/js/diffsim/index.tsx b/widget/js/diffsim/index.tsx
+index ff532efa..a71f46f6 100644
+--- a/widget/js/diffsim/index.tsx
++++ b/widget/js/diffsim/index.tsx
+@@ -350,13 +350,14 @@ function DiffSim() {
+   }, [k0, precession, nPrecession, dragging]);
+   const nbSolution = React.useMemo(() => {
+     if (!crystal || mode !== "nanobeam" || !dynamical) return null;
+-    return nanobeamSolve(crystal, quat, qMaxDisp, SG_MAX, dragging ? Math.min(qual.nanobeam, 40) : qual.nanobeam, precNodes);
+-  }, [crystal, quat, qMaxDisp, mode, dynamical, dragging, qual, SG_MAX, precNodes]);
++    // the physics uses every reflection the crystal carries; the pattern range only crops the drawing
++    return nanobeamSolve(crystal, quat, crystal.k_max, SG_MAX, dragging ? Math.min(qual.nanobeam, 40) : qual.nanobeam, precNodes);
++  }, [crystal, quat, mode, dynamical, dragging, qual, SG_MAX, precNodes]);
+   const nbBeams = React.useMemo<Reflection[]>(() => {
+     if (!crystal || mode !== "nanobeam") return [];
+     if (nbSolution) return nbSolution.beams;
+-    return [DIRECT, ...labReflections(crystal, quat, qMaxDisp)];
+-  }, [crystal, quat, qMaxDisp, mode, nbSolution]);
++    return [DIRECT, ...labReflections(crystal, quat, crystal.k_max)];
++  }, [crystal, quat, mode, nbSolution]);
+   const nb = { beams: nbBeams, nDyn: nbSolution ? Math.round(nbSolution.nDynMean) : 0 };
+   const nbInten = React.useMemo(() => {
+     if (!crystal || mode !== "nanobeam") return new Float64Array(0);
+@@ -375,8 +376,8 @@ function DiffSim() {
+     if (!crystal || mode !== "cbed") return null;
+     const Rk = k0 * Math.sin(alpha);
+     const grid = tiltGrid(Rk, dragging ? 5 : qual.grid);
+-    if (!dynamical) return { grid, beams: [DIRECT, ...labReflections(crystal, quat, qMaxDisp)], nDyn: 0, sols: null };
+-    const { beams, nDyn } = hybridBeams(crystal, quat, qMaxDisp, SG_MAX, dragging ? Math.min(qual.beams, 24) : qual.beams, Math.sin(alpha));
++    if (!dynamical) return { grid, beams: [DIRECT, ...labReflections(crystal, quat, crystal.k_max)], nDyn: 0, sols: null };
++    const { beams, nDyn } = hybridBeams(crystal, quat, crystal.k_max, SG_MAX, dragging ? Math.min(qual.beams, 24) : qual.beams, Math.sin(alpha));
+     const dyn = beams.slice(0, nDyn);
+     const sols = grid.tilts.map((t) => blochSolve(crystal, dyn, t));
+     return { grid, beams, nDyn, sols };
+@@ -449,7 +450,7 @@ function DiffSim() {
+     const ctx = canvas.getContext("2d");
+     if (!ctx) return;
+     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+-    const refl = mode === "nanobeam" && nbBeams.length ? nbBeams : labReflections(crystal, quat, qMaxDisp);
++    const refl = mode === "nanobeam" && nbBeams.length ? nbBeams : labReflections(crystal, quat, crystal.k_max);
+     drawEwaldPanel(ctx, Sc, Se, refl, k0, qMaxDisp, SG_MAX, viewX, dark, mode === "nanobeam" ? precession || 0 : 0);
+   }, [quat, Sc, Se, dark, viewX, showEwald, crystal, mode, nbBeams, qMaxDisp, k0, SG_MAX, precession]);
+ 
+diff --git a/widget/js/diffsim/pattern.ts b/widget/js/diffsim/pattern.ts
+index 3bd01980..ca8230f9 100644
+--- a/widget/js/diffsim/pattern.ts
++++ b/widget/js/diffsim/pattern.ts
+@@ -380,8 +380,8 @@ export function drawKosselLines(
+     // line p . n = distance, direction t = (-ny, nx); drawn between two lab points
+     const [x0, y0] = toPx(f, nx * l.distance - ny * L, ny * l.distance + nx * L);
+     const [x1, y1] = toPx(f, nx * l.distance + ny * L, ny * l.distance - nx * L);
+-    ctx.strokeStyle = dark ? `rgba(20,20,20,${0.25 + 0.75 * l.strength})` : `rgba(30,30,30,${0.2 + 0.8 * l.strength})`;
+-    ctx.lineWidth = Math.max(1, l.width * s);
++    ctx.strokeStyle = dark ? `rgba(20,20,20,${Math.min(1, 0.1 + 0.9 * l.strength)})` : `rgba(30,30,30,${Math.min(1, 0.1 + 0.9 * l.strength)})`;
++    ctx.lineWidth = Math.max(0.6, l.width * s);
+     ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(x1, y1); ctx.stroke();
+   }
+   if (labels) {
+diff --git a/widget/js/diffsim/physics.ts b/widget/js/diffsim/physics.ts
+index 1745202c..3ec54420 100644
+--- a/widget/js/diffsim/physics.ts
++++ b/widget/js/diffsim/physics.ts
+@@ -407,13 +407,19 @@ export interface KosselLine {
+  * g_xy . theta = g_z - lambda |g|^2 / 2, a straight line at small angles.
+  * The width is the two-beam rocking width |U_g| / (k0 |g_xy|).
+  */
++/** Coupling of a strong reflection (Si 111 at 200 keV is 0.05 1/A^2): line darkness is measured against it. */
++export const U_REF_LINES = 0.04;
++const MAX_LINES = 200; // strongest lines kept: enough for the rosettes of small cells, readable for large ones
++
+ export function kosselLines(c: CrystalData, q: Quat, kMax: number, fieldRad: number): KosselLine[] {
+   const R = quatToMatrix(q);
+   const lam = c.wavelength;
+   const k0 = 1 / lam;
+   const lines: KosselLine[] = [];
+-  let uMax = 1e-12;
+-  for (let i = 0; i < c.hkl.length; i++) uMax = Math.max(uMax, Math.hypot(c.U_re[i], c.U_im[i]));
++  // strength is ABSOLUTE (|U_g| / U_REF_LINES, capped at 1): a weakly
++  // scattering cell gives faint lines, and only the strongest MAX_LINES are
++  // kept so a large cell does not draw a hundred thousand of them
++  const uMin = 0.02 * U_REF_LINES;
+   for (let i = 0; i < c.hkl.length; i++) {
+     const gc: Vec3 = [c.g[3 * i], c.g[3 * i + 1], c.g[3 * i + 2]];
+     const gLen = Math.hypot(gc[0], gc[1], gc[2]);
+@@ -424,8 +430,12 @@ export function kosselLines(c: CrystalData, q: Quat, kMax: number, fieldRad: num
+     const dist = (g[2] - (lam * gLen * gLen) / 2) / gxy;
+     if (Math.abs(dist) > fieldRad * 1.5) continue;
+     const u = Math.hypot(c.U_re[i], c.U_im[i]);
+-    if (u < 1e-4 * uMax) continue;
+-    lines.push({ hkl: c.hkl[i], normal: [g[0] / gxy, g[1] / gxy], distance: dist, width: u / (k0 * gxy), strength: u / uMax, gxy });
++    if (u < uMin) continue;
++    lines.push({ hkl: c.hkl[i], normal: [g[0] / gxy, g[1] / gxy], distance: dist, width: u / (k0 * gxy), strength: Math.min(1, u / U_REF_LINES), gxy });
++  }
++  if (lines.length > MAX_LINES) {
++    lines.sort((a, b) => b.strength - a.strength);
++    lines.length = MAX_LINES;
+   }
+   return lines;
+ }
+diff --git a/widget/scripts/build.mjs b/widget/scripts/build.mjs
+index 7c8daea9..5f02583b 100644
+--- a/widget/scripts/build.mjs
++++ b/widget/scripts/build.mjs
+@@ -9,6 +9,9 @@ const watch = process.argv.includes("--watch");
+ const widgets = [
+   { name: "show2d" },
+   { name: "show4dstem" },
++  { name: "diffsim" },
++  // framework-free build of the diffraction simulator for web pages (MyST anywidget directive)
++  { name: "diffsim-web", entry: "js/diffsim-web/index.ts", outfile: "dist/diffraction-sim.js" },
+ ];
+ 
+ rmSync("src/quantem/widget/static", { recursive: true, force: true });
+@@ -29,8 +32,8 @@ const baseOpts = {
+ for (const w of widgets) {
+   const opts = {
+     ...baseOpts,
+-    entryPoints: [`js/${w.name}/index.tsx`],
+-    outfile: `src/quantem/widget/static/${w.name}.js`,
++    entryPoints: [w.entry || `js/${w.name}/index.tsx`],
++    outfile: w.outfile || `src/quantem/widget/static/${w.name}.js`,
+   };
+   if (watch) {
+     const ctx = await context(opts);
